@@ -7,19 +7,48 @@ struct DesireView: View {
     @State private var history: [JSONValue] = []
     @State private var status = ""
     private let fields = [("longing", "想念"), ("tenderness", "温柔"), ("playfulness", "玩心"), ("intensity", "浓度"), ("attachment", "依恋"), ("possessiveness", "占有欲")]
+    @State private var showHistory = false
+    @Environment(\.scenePhase) private var phase
     var body: some View {
-        Page(title: "Desire", subtitle: "A little more than words.") {
-            GlassCard {
-                VStack(spacing: 24) {
-                    FlowerView(values: fields.map { state[$0.0].number }).padding(.vertical, 20)
-                    ForEach(fields, id: \.0) { key, title in
-                        HStack { Text(title).font(.subheadline).frame(width: 55, alignment: .leading); ProgressView(value: min(100, max(0, state[key].number)), total: 100).tint(VesperTheme.accent); Text(state == .null ? "—" : String(Int(state[key].number))).font(.caption).monospacedDigit().frame(width: 30) }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack {
+                    Spacer()
+                    Text("Desire").font(VesperTheme.title(54))
+                    Spacer()
+                    Button { showHistory = true } label: { Image(systemName: "clock.arrow.circlepath").font(.system(size: 23)) }.accessibilityLabel("Desire history")
+                }.padding(.top, 8)
+                Text("此刻的潮汐").font(.system(size: 24, design: .serif)).padding(.top, 12)
+                Rectangle().fill(VesperTheme.muted.opacity(0.4)).frame(width: 28, height: 1)
+                DesireTide(values: fields.map { key, _ in
+                    if case .number(let value) = state[key] { return value }; return nil
+                }).frame(height: 390).clipShape(RoundedRectangle(cornerRadius: 3))
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("此刻").font(.system(size: 25, design: .serif))
+                        Rectangle().fill(VesperTheme.muted.opacity(0.4)).frame(width: 24, height: 1)
+                        Text(history.first(where: { !$0["note"].string.isEmpty })?["note"].string ?? "有些心绪先抵达岸边，\n有些还在慢慢靠近。")
+                            .font(.system(size: 16, design: .serif)).lineSpacing(6).textSelection(.enabled)
                     }
                 }
+                Text("潮水轻轻起伏，数值决定抵岸的距离").font(.system(size: 11, design: .serif)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity)
+                if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
+            }.padding(20).frame(maxWidth: 700).frame(maxWidth: .infinity)
+        }.background(.white.opacity(0.28))
+        .task { await load() }.refreshable { await load() }
+        .onChange(of: phase) { _, value in if value == .active { Task { await load() } } }
+        .sheet(isPresented: $showHistory) {
+            NavigationStack {
+                ScrollView { VStack(spacing: 16) {
+                    if history.isEmpty { Text("No history yet.").foregroundStyle(VesperTheme.muted) }
+                    ForEach(history) { entry in GlassCard { VStack(alignment: .leading, spacing: 8) {
+                        Text(entry["note"].string).textSelection(.enabled)
+                        Text(entry["createdAt"].string).font(.caption).foregroundStyle(VesperTheme.muted)
+                    } } }
+                }.padding() }.navigationTitle("History")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showHistory = false } } }
             }
-            if !status.isEmpty { Text(status).font(.caption) }
-            ForEach(history) { entry in GlassCard { VStack(alignment: .leading, spacing: 8) { Text(entry["note"].string).font(.subheadline).textSelection(.enabled); Text(entry["createdAt"].string).font(.caption).foregroundStyle(VesperTheme.muted) } } }
-        }.task { await load() }.refreshable { await load() }
+        }
     }
     private func load() async {
         do {

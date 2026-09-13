@@ -55,9 +55,9 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     cardTitle("Desire")
                     Spacer(minLength: 0)
-                    HomeDesireFlower(values: fields.map { key in
+                    DesireTide(values: fields.map { key in
                         if case .number(let value) = desire[key] { return min(100, max(0, value)) }; return nil
-                    }).frame(height: 132).frame(maxWidth: .infinity)
+                    }, compact: true).frame(height: 132).clipShape(RoundedRectangle(cornerRadius: 16)).frame(maxWidth: .infinity)
                     Spacer(minLength: 0)
                     if desire == .null { Text(desireError ? "Unable to refresh" : "Not loaded yet").font(.system(size: 10)).foregroundStyle(VesperTheme.muted) }
                 }
@@ -141,31 +141,86 @@ private struct HomeCard<Content: View>: View {
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.90), lineWidth: 1.3))
     }
 }
-private struct HomeDesireFlower: View {
+struct DesireTide: View {
     let values: [Double?]
-    private let angles: [Double] = [-30, 30, -90, 90, -150, 150]
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var phase
+    private let labels = ["想念", "温柔", "玩心", "浓度", "依恋", "占有"]
     var body: some View {
-        ZStack {
-            ForEach(0..<6) { index in
-                let value = values[index]
-                let scale = 0.45 + (value ?? 0) * 0.0055
-                Image("DesirePetal").resizable().frame(width: 58, height: 70)
-                    .offset(y: -28).scaleEffect(scale).rotationEffect(.degrees(angles[index]))
-                    .opacity(value == nil ? 0.3 : 0.65 + (value ?? 0) * 0.0035)
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active)) { timeline in
+            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            Canvas { context, size in
+                draw(context: context, size: size, time: time)
             }
-            Circle().fill(Color(red: 1, green: 0.97, blue: 0.79)).frame(width: 8, height: 8)
-        }.accessibilityElement(children: .ignore).accessibilityLabel("Desire flower, sized by current mood values")
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("此刻的潮汐")
+        .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "未加载" : "未加载") }.joined(separator: "，"))
     }
-}
-struct FlowerView: View {
-    var values: [Double] = [60, 60, 60, 60, 60, 60]
-    var body: some View {
-        ZStack {
-            ForEach(0..<6) { i in
-                Ellipse().fill(LinearGradient(colors: [.white.opacity(0.8), VesperTheme.accent.opacity(0.65)], startPoint: .top, endPoint: .bottom))
-                    .frame(width: 40, height: 48 + CGFloat(values[i]) * 0.32).offset(y: -24).rotationEffect(.degrees(Double(i) * 60))
+    private func value(_ i: Int) -> Double { values.indices.contains(i) ? min(100, max(0, values[i] ?? 0)) : 0 }
+    private func shore(_ x: CGFloat, size: CGSize, time: Double) -> CGFloat {
+        let u = min(5, max(0, Double(x / size.width) * 6 - 0.5))
+        let index = min(4, Int(u)), f = u - Double(index)
+        let blend = f * f * (3 - 2 * f)
+        let v = value(index) * (1 - blend) + value(index + 1) * blend
+        let base = size.height * (0.65 - v * 0.0043)
+        let ripple = sin(Double(x) * 0.027 + time * 0.65) * 2 + sin(Double(x) * 0.071 - time * 0.43) * 0.8
+        return base + CGFloat(ripple)
+    }
+    private func line(size: CGSize, time: Double, offset: CGFloat = 0) -> Path {
+        var path = Path()
+        for x in stride(from: CGFloat(0), through: size.width, by: 2) {
+            let point = CGPoint(x: x, y: shore(x, size: size, time: time) + offset)
+            if x == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        path.addLine(to: CGPoint(x: size.width, y: shore(size.width, size: size, time: time) + offset))
+        return path
+    }
+    private func draw(context: GraphicsContext, size: CGSize, time: Double) {
+        let bottom = size.height - (compact ? 0 : 40)
+        let rect = CGRect(origin: .zero, size: size)
+        context.fill(Path(rect), with: .linearGradient(Gradient(colors: [Color(red: 0.96, green: 0.96, blue: 0.94), Color(red: 0.88, green: 0.92, blue: 0.94)]), startPoint: .zero, endPoint: CGPoint(x: size.width, y: size.height)))
+        // Deterministic mineral grains, not per-frame random noise.
+        for i in 0..<550 {
+            let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width
+            let y = CGFloat((i * 211 + 43) % 991) / 991 * size.height
+            context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(0.45)))
+        }
+        var water = line(size: size, time: time)
+        water.addLine(to: CGPoint(x: size.width, y: bottom)); water.addLine(to: CGPoint(x: 0, y: bottom)); water.closeSubpath()
+        context.fill(water, with: .linearGradient(Gradient(colors: [Color(red: 0.72, green: 0.85, blue: 0.88), Color(red: 0.42, green: 0.66, blue: 0.77), Color(red: 0.24, green: 0.45, blue: 0.61)]), startPoint: CGPoint(x: 0, y: size.height * 0.22), endPoint: CGPoint(x: 0, y: bottom)))
+        var sea = context; sea.clip(to: water)
+        // Fine crossing caustics give the water depth without an opaque image.
+        for row in 0..<36 {
+            var caustic = Path()
+            for column in 0...60 {
+                let x = CGFloat(column) / 60 * size.width
+                let y = CGFloat(row) / 36 * bottom + CGFloat(sin(Double(column) * 0.42 + Double(row) * 1.7 + time * 0.12) * 4 + cos(Double(column) * 0.19 - Double(row)) * 3)
+                if column == 0 { caustic.move(to: CGPoint(x: x, y: y)) } else { caustic.addLine(to: CGPoint(x: x, y: y)) }
             }
-            Circle().fill(Color(red: 1, green: 0.97, blue: 0.79)).frame(width: 15, height: 15)
-        }.frame(height: 130).accessibilityLabel("Desire flower")
+            sea.stroke(caustic, with: .color(.white.opacity(0.12)), lineWidth: 0.7)
+        }
+        for offset in [CGFloat(0), 8, 18] {
+            context.stroke(line(size: size, time: time, offset: offset), with: .color(.white.opacity(offset == 0 ? 0.75 : 0.4)), lineWidth: offset == 0 ? 3 : 0.8)
+        }
+        for i in 0..<360 {
+            let x = CGFloat(i) / 359 * size.width
+            let d = CGFloat(sin(Double(i) * 4.7) * 3)
+            let y = shore(x, size: size, time: time) + d
+            sea.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.8, height: 1.2)), with: .color(.white.opacity(0.6)))
+        }
+        if !compact {
+            for i in 0..<6 {
+                let x = size.width * (CGFloat(i) + 0.5) / 6
+                let y = shore(x, size: size, time: 0) - 22
+                var guide = Path(); guide.move(to: CGPoint(x: x, y: y)); guide.addLine(to: CGPoint(x: x, y: y + 19))
+                context.stroke(guide, with: .color(VesperTheme.muted.opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
+                context.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)), with: .color(VesperTheme.muted))
+                let number = values.indices.contains(i) ? values[i].map { String(Int(min(100, max(0, $0)))) } ?? "—" : "—"
+                context.draw(Text(number).font(.system(size: 19, design: .serif)).foregroundColor(VesperTheme.ink), at: CGPoint(x: x, y: y - 17))
+                context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(VesperTheme.ink), at: CGPoint(x: x, y: size.height - 14))
+            }
+        }
     }
 }

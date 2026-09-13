@@ -199,6 +199,7 @@ struct NativeCallView: View {
     @State private var waiting = false
     @State private var previousMessages = Set<String>()
     @State private var silence: Task<Void, Never>?
+    @State private var sendingTask: Task<Void, Never>?
     @State private var notice: String?
     var body: some View {
         ZStack {
@@ -239,7 +240,7 @@ struct NativeCallView: View {
             caption = answer; Task { await voice.play(answer, store: store) }
         }
         .onDisappear { visible = false; end() }
-        .onChange(of: phase) { _, phase in if phase != .active { end() } }
+        .onChange(of: phase) { _, phase in if phase == .background { end() } }
     }
     private func submit() {
         let text = speech.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -247,12 +248,12 @@ struct NativeCallView: View {
         silence?.cancel(); speech.stop(); caption = text; waiting = true; notice = nil
         previousMessages = Set(chat.messages.map(\.id))
         let frame = video ? camera.snapshot() : nil
-        Task { if !(await chat.send(text, images: frame.map { [$0] } ?? [])) { waiting = false; notice = chat.error ?? "Message was not sent." } }
+        sendingTask = Task { if !(await chat.send(text, images: frame.map { [$0] } ?? [])) { waiting = false; notice = chat.error ?? "Message was not sent." } }
     }
     private func toggleCamera() {
         if video { video = false; camera.stop(); return }
         cameraBusy = true
-        Task { do { try await camera.start(); if visible { video = true } else { camera.stop() } } catch { notice = error.localizedDescription }; cameraBusy = false }
+        Task { do { try await camera.start(); if visible && phase == .active { video = true } else { camera.stop() } } catch { notice = error.localizedDescription }; cameraBusy = false }
     }
-    private func end() { active = false; video = false; silence?.cancel(); speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); if waiting { Task { await chat.interrupt() } }; waiting = false }
+    private func end() { active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); if waiting { Task { await chat.interrupt() } }; waiting = false }
 }

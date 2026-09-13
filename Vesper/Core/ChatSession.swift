@@ -181,7 +181,9 @@ import SwiftUI
                 fileContext += "\nAttachment: \(file.name) (\(file.mime))\nDownload: \(attachment["url"].string)"
                 if file.mime.hasPrefix("text/") || ["application/json", "application/xml"].contains(file.mime), let preview = String(data: file.data, encoding: .utf8) { fileContext += "\nFile preview:\n" + String(preview.prefix(120000)) }
             }
+            try Task.checkCancellation()
             try await connect()
+            try Task.checkCancellation()
             if let threadID {
                 _ = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
             } else {
@@ -204,6 +206,7 @@ import SwiftUI
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             params["input"] = .array(input)
             if !model.isEmpty { params["model"] = .string(model) }
+            try Task.checkCancellation()
             let result = try await rpc("turn/start", params)
             turnID = result["turn"]["id"].string
             if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index]["status"] = .string("delivered"); try await persist(messages[index]) }

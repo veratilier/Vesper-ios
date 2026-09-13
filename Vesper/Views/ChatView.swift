@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     var onMenu: () -> Void = {}
+    var restoreLatest = true
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var player: MusicPlayer
@@ -63,7 +64,7 @@ struct ChatView: View {
     }
     private var photoContent: some View {
         chatContent
-        .task { chat.configure(store); await chat.openLatestConversation() }
+        .task { chat.configure(store); if restoreLatest { await chat.openLatestConversation() } }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
         .onChange(of: speech.error) { _, error in if let error { chat.error = error } }

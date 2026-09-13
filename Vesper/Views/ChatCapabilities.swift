@@ -194,6 +194,10 @@ struct NativeCallView: View {
     @StateObject private var voice = CallVoice()
     @StateObject private var camera = CallCamera()
     @Environment(\.scenePhase) private var phase
+    @State private var startedAt: Date?
+    @State private var callConversation = ""
+    @State private var usedVideo = false
+    @State private var transcript: [JSONValue] = []
     @State private var visible = true
     @State private var active = false
     @State private var muted = false
@@ -208,22 +212,40 @@ struct NativeCallView: View {
     var body: some View {
         ZStack {
             Background()
-            VStack(spacing: 22) {
+            VStack(spacing: 16) {
                 Text("Call").font(.headline)
                 if video { CallCameraPreview(camera: camera).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 24)) }
                 else { Image(systemName: "person.crop.circle").font(.system(size: 90)).foregroundStyle(VesperTheme.muted) }
                 Text(voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active ? "Paused" : "Rowan").font(VesperTheme.title(32))
-                ScrollView { Text(speech.listening ? speech.text : caption).frame(maxWidth: .infinity).textSelection(.enabled) }.frame(maxHeight: 160)
+                if let startedAt { Text(startedAt, style: .timer).monospacedDigit().font(.subheadline) }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(Array(transcript.enumerated()), id: \.offset) { _, entry in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(entry["speaker"].string).font(.caption).foregroundStyle(VesperTheme.muted)
+                                    Text(entry["text"].string).textSelection(.enabled)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            if speech.listening { Text("Vera · " + (speech.text.isEmpty ? "Listening…" : speech.text)).foregroundStyle(VesperTheme.muted) }
+                            if waiting { Text("Rowan · " + liveAnswer).foregroundStyle(VesperTheme.muted) }
+                            Color.clear.frame(height: 1).id("call-bottom")
+                        }
+                    }.frame(maxHeight: .infinity)
+                    .onChange(of: speech.text) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
+                    .onChange(of: transcript.count) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
+                    .onChange(of: liveAnswer) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
+                }
                 if video { Text("A camera frame is shared with each spoken message.").font(.caption).foregroundStyle(.secondary) }
                 if VoiceConfiguration.connection(store)["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
                 if let error = notice ?? speech.error ?? voice.error { Text(error).font(.caption).foregroundStyle(.red) }
                 Spacer(minLength: 0)
-                if !active { Button("Start call") { player.pause(); active = true; Task { await speech.start() } }.buttonStyle(.borderedProminent).disabled(chat.busy) }
+                if !active { Button { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID; Task { await speech.start() } } label: { Text("Start call").foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(chat.busy) }
                 HStack(spacing: 30) {
                     Button { muted.toggle(); silence?.cancel(); if muted { speech.stop() } else if !waiting && !voice.speaking { Task { await speech.start() } } } label: { Label(muted ? "Unmute" : "Mute", systemImage: muted ? "mic.slash" : "mic") }.disabled(!active)
                     Button { toggleCamera() } label: { Label(video ? "Camera off" : "Camera", systemImage: video ? "video.slash" : "video") }.disabled(cameraBusy)
                     Button { end(); dismiss() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
-                }.labelStyle(.iconOnly).font(.title2).frame(height: 50)
+                }.labelStyle(.titleAndIcon).font(.subheadline).frame(minHeight: 50).padding(.bottom, 12)
                 if active && !waiting && !voice.speaking && !muted {
                     Button(speech.listening ? "Send now" : "Resume listening") {
                         if speech.listening && !speech.text.isEmpty { submit() } else { Task { await speech.start() } }
@@ -241,7 +263,7 @@ struct NativeCallView: View {
             let replies = chat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string != "user" && !ChatPresentation.isActivity($0) }
             let answer = replies.map { $0["content"].string }.joined(separator: "\n")
             guard !answer.isEmpty else { notice = chat.error ?? "No reply received. Resume when ready."; return }
-            caption = answer; Task { await voice.play(answer, store: store) }
+            caption = answer; transcript.append(.object(["speaker": .string("Rowan"), "text": .string(answer), "at": .string(ISO8601DateFormatter().string(from: Date()))])); Task { await voice.play(answer, store: store) }
         }
         .onDisappear { visible = false; end() }
         .onChange(of: phase) { _, phase in if phase == .background { end() } }
@@ -250,6 +272,7 @@ struct NativeCallView: View {
         let text = speech.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard active, !waiting, !chat.busy, !text.isEmpty else { return }
         silence?.cancel(); speech.stop(); caption = text; waiting = true; notice = nil
+        transcript.append(.object(["speaker": .string("Vera"), "text": .string(text), "at": .string(ISO8601DateFormatter().string(from: Date()))]))
         previousMessages = Set(chat.messages.map(\.id))
         let frame = video ? camera.snapshot() : nil
         sendingTask = Task { if !(await chat.send(text, images: frame.map { [$0] } ?? [])) { waiting = false; notice = chat.error ?? "Message was not sent." } }
@@ -257,7 +280,19 @@ struct NativeCallView: View {
     private func toggleCamera() {
         if video { video = false; camera.stop(); return }
         cameraBusy = true
-        Task { do { try await camera.start(); if visible && phase == .active { video = true } else { camera.stop() } } catch { notice = error.localizedDescription }; cameraBusy = false }
+        Task { do { try await camera.start(); if visible && phase == .active { video = true; usedVideo = true } else { camera.stop() } } catch { notice = error.localizedDescription }; cameraBusy = false }
     }
-    private func end() { active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); if waiting { Task { await chat.interrupt() } }; waiting = false }
+    private var liveAnswer: String {
+        let value = chat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string == "agent" && !ChatPresentation.isActivity($0) }.map { $0["content"].string }.joined(separator: "\n")
+        return value.isEmpty ? "Thinking…" : value
+    }
+    private func end() {
+        if let start = startedAt {
+            startedAt = nil
+            let entries = transcript; let target = callConversation; let wasVideo = usedVideo
+            let ended = Date()
+            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target) }
+        }
+        chat.callActive = false
+        active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); if waiting { Task { await chat.interrupt() } }; waiting = false }
 }

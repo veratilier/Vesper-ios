@@ -1,7 +1,11 @@
 import Foundation
 import SwiftUI
+import UserNotifications
 
 @MainActor final class ChatSession: ObservableObject {
+    @Published var incomingCall = false
+    @Published var callActive = false
+    private var notifiedMessages = Set<String>()
     @Published var thinkingSummary = ""
     @Published var messages: [JSONValue] = []
     @Published var conversations: [JSONValue] = []
@@ -231,7 +235,7 @@ import SwiftUI
                 let catalog = try await api.request("/api/codex/tools")
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = (UserDefaults.standard.string(forKey: "nativeInstructions") ?? "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese.") + "\nVesper Desire is independent. Use only the built-in desire_* tools; never the official Rowan Desire connector or desire.r-vera.com."
-                let result = try await rpc("thread/start", .object(["dynamicTools": catalog["tools"], "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(catalog["tools"].array.filter { $0["name"].string != "request_native_call" } + [Self.callTool]), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
                 threadID = id
@@ -286,6 +290,31 @@ import SwiftUI
         guard let threadID, let turnID else { return }
         do { _ = try await rpc("turn/interrupt", .object(["threadId": .string(threadID), "turnId": .string(turnID)])) }
         catch { self.error = error.localizedDescription }
+    }
+    private static let callTool: JSONValue = .object([
+        "name": .string("request_native_call"),
+        "description": .string("Invite Vera to a voice call in the currently open native app. Only an invitation: she must accept and start. Not a background/phone-network call. Do not report that she answered. Available only in native threads created with this tool."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object([:]), "additionalProperties": .bool(false)])
+    ])
+    func saveCall(start: Date, end: Date, video: Bool, transcript: [JSONValue], target: String) async {
+        let seconds = max(0, Int(end.timeIntervalSince(start)))
+        let title = "\(video ? "Video" : "Voice") call · \(seconds / 60):\(String(format: "%02d", seconds % 60))"
+        let message: JSONValue = .object(["id": .string("call-" + UUID().uuidString), "conversationId": .string(target), "role": .string("agent"), "content": .string(title), "createdAt": .string(ISO8601DateFormatter().string(from: end)), "source": .string("vesper"), "status": .string("delivered"), "metadata": .object(["showTurnStatus": .bool(false), "call": .object(["startedAt": .string(ISO8601DateFormatter().string(from: start)), "endedAt": .string(ISO8601DateFormatter().string(from: end)), "transcript": .array(transcript), "video": .bool(video)])])])
+        if conversationID == target { messages.append(message) }
+        do {
+            guard let api else { throw ServiceError(message: "Not connected") }
+            _ = try await api.request("/conversations/\(target)/messages", method: "POST", body: message, history: true)
+        } catch { self.error = "Call ended, but its record could not be synced: " + error.localizedDescription }
+    }
+    private func notifyReply(_ message: JSONValue) async {
+        guard !message.id.isEmpty, notifiedMessages.insert(message.id).inserted else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Rowan"; content.body = String(message["content"].string.prefix(180))
+        if content.body.isEmpty { content.body = "Sent you an attachment" }
+        content.sound = .default; content.threadIdentifier = conversationID
+        content.userInfo = ["conversationId": conversationID]
+        do { try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "message-" + message.id, content: content, trigger: nil)) }
+        catch { self.error = "Message received; notification could not be displayed: " + error.localizedDescription }
     }
     private func persist(_ message: JSONValue) async throws {
         guard let api else { return }
@@ -354,6 +383,7 @@ import SwiftUI
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 messages.append(message); do { try await persist(message) } catch { self.error = "Reply received, but history could not be saved." }
             }
+            if let message = messages.first(where: { $0.id == itemID }) { await notifyReply(message) }
         } else if method == "turn/completed" {
             if !thinkingSummary.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
@@ -380,6 +410,13 @@ import SwiftUI
         var args = p["arguments"]
         if case .string(let raw) = args { args = (try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))) ?? .object([:]) }
         do {
+            if name == "request_native_call" {
+                guard UIApplication.shared.applicationState == .active, !callActive, !incomingCall else { throw ServiceError(message: "Vera cannot receive an in-app call invitation right now.") }
+                incomingCall = true
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Invitation displayed in app; not answered. Wait for Vera to accept and start the call.")])])])]))
+                events.append("request_native_call · invitation displayed")
+                return
+            }
             let r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(threadID ?? ""), "conversationId": .string(conversationID), "turnId": .string(turnID ?? ""), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
             if ["send_chat_file", "album_send_photos"].contains(name) {
                 let result = r["result"]
@@ -392,6 +429,7 @@ import SwiftUI
                 if targetConversation == conversationID {
                     if let index = messages.firstIndex(where: { $0.id == fileMessage.id }) { messages[index] = fileMessage }
                     else { messages.append(fileMessage) }
+                    await notifyReply(fileMessage)
                 }
             }
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))

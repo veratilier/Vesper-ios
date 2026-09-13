@@ -1,6 +1,8 @@
 import SwiftUI
+import UserNotifications
 
 @main struct VesperApp: App {
+    @UIApplicationDelegateAdaptor(VesperNotificationDelegate.self) private var notificationDelegate
     @StateObject private var store = AppStore()
     @StateObject private var player = MusicPlayer()
     @StateObject private var chat = ChatSession()
@@ -35,6 +37,7 @@ enum Destination: String, CaseIterable, Identifiable {
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
+    @State private var acceptedCall = false
     @State private var opening = true
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
@@ -93,7 +96,18 @@ struct RootView: View {
                 .accessibilityAddTraits(.isModal)
         }
         if opening { OpeningView { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { opening = false } }.transition(.opacity).zIndex(2) }
-        }.task(id: store.token) { await refreshUsage() }
+        }
+        .alert("Rowan is inviting you to a call", isPresented: $chat.incomingCall) {
+            Button("Accept") { destination = .chat; acceptedCall = true }
+            Button("Decline", role: .cancel) { }
+        } message: { Text("Your microphone stays off until you start the call.") }
+        .fullScreenCover(isPresented: $acceptedCall) { NativeCallView() }
+        .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
+            guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
+            destination = .chat
+            Task { await chat.open(.object(["id": .string(id)])) }
+        }
+        .task(id: store.token) { await refreshUsage() }
         .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
         .onChange(of: phase) { _, phase in if phase == .active { Task { await refreshUsage() } } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
@@ -178,5 +192,20 @@ struct WeeklyUsageView: View {
                 Text("\(100 - remaining)% used · \(remaining)% remaining").font(.system(size: 11))
             } else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError ?? "Connect in Settings")).font(.system(size: 11)) }
         }.foregroundStyle(VesperTheme.muted)
+    }
+}
+
+final class VesperNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .list])
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: info) }
+        completionHandler()
     }
 }

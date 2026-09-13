@@ -127,7 +127,7 @@ struct DataSettingsView: View {
 }
 
 enum VoiceConfiguration {
-    static func connection(_ store: AppStore) -> JSONValue {
+    @MainActor static func connection(_ store: AppStore) -> JSONValue {
         let saved = CredentialStore.read(account: "call-voice-configuration")
         if let value = try? JSONDecoder().decode(JSONValue.self, from: Data(saved.utf8)) { return value }
         return store.document("connections")["Agent 声音"]
@@ -334,7 +334,7 @@ struct NotificationSettingsView: View {
         Page(title: "Notifications", subtitle: "Choose how Vesper can notify you.") {
             GlassCard { VStack(alignment: .leading, spacing: 18) {
                 Text(statusText).font(.headline)
-                Text("Permission allows scheduled date reminders. Chat and autonomous wake push delivery is not connected in this build.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+                Text("Allows date reminders and notifications for new replies received by this app. Delivery while the app is closed requires the server push service; it is not connected yet.").font(.subheadline).foregroundStyle(VesperTheme.muted)
                 if loaded && authorization == .notDetermined {
                     Button { Task { await requestPermission() } } label: {
                         Text(busy ? "Requesting…" : "Allow notifications")

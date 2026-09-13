@@ -328,7 +328,8 @@ struct ChatView: View {
                         }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
                     } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
-                if !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
+                if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
+                if message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
@@ -588,6 +589,32 @@ private struct AssistantMessageHeading: View {
                         Text("No saved details for this message.").font(.caption)
                     }
                 }.foregroundStyle(VesperTheme.muted).padding(.vertical, 4)
+            }
+        }
+    }
+}
+
+private struct CallRecordButton: View {
+    let message: JSONValue
+    @State private var showing = false
+    var body: some View {
+        Button { showing = true } label: {
+            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }.buttonStyle(.plain).sheet(isPresented: $showing) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text(message["content"].string).font(.headline)
+                        if message["metadata"]["call"]["transcript"].array.isEmpty { Text("No conversation was recorded.").foregroundStyle(.secondary) }
+                        ForEach(Array(message["metadata"]["call"]["transcript"].array.enumerated()), id: \.offset) { _, entry in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(entry["speaker"].string + " · " + ChatPresentation.time(entry["at"].string)).font(.caption).foregroundStyle(.secondary)
+                                Text(entry["text"].string).textSelection(.enabled)
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
+                }.navigationTitle("Call transcript").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showing = false } } }
             }
         }
     }

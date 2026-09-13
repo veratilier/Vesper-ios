@@ -31,6 +31,13 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(rows.flatMap(\.messages), messages)
         XCTAssertEqual(rows[1].messages.count, 2)
     }
+    func testUserInputBlocksStayVisibleOutsideTools() throws {
+        let data = Data(#"[{"id":"u1","role":"system","content":"Hello","metadata":{"blockType":"userMessage"}},{"id":"u2","type":"userInput","content":"Still here"},{"id":"a1","role":"agent","content":"Yes"}]"#.utf8)
+        let messages = try JSONDecoder().decode([JSONValue].self, from: data)
+        XCTAssertTrue(ChatPresentation.isUser(messages[0]))
+        XCTAssertTrue(ChatPresentation.isUser(messages[1]))
+        XCTAssertEqual(ChatPresentation.rows(messages).map(\.activity), [false, false, false])
+    }
     func testHistoryDatesHandleBothTimestampFormats() {
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25.235339Z").isEmpty)
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25Z").isEmpty)

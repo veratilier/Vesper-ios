@@ -202,7 +202,7 @@ struct ChatView: View {
         }
     }
     private func messageRow(_ message: JSONValue) -> some View {
-        let user = message["role"].string == "user"
+        let user = ChatPresentation.isUser(message)
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
@@ -342,11 +342,15 @@ enum ChatPresentation {
         let activity: Bool
         var messages: [JSONValue]
     }
+    static func isUser(_ message: JSONValue) -> Bool {
+        let role = message["role"].string.lowercased()
+        return role == "user" || ["userMessage", "userInput"].contains(message["metadata"]["blockType"].string) || ["userMessage", "userInput"].contains(message["type"].string)
+    }
     static func isThinking(_ message: JSONValue) -> Bool {
         ["reasoning", "reasoningSummary", "thinking"].contains(message["metadata"]["blockType"].string) || !message["metadata"]["thoughtSummary"].string.isEmpty
     }
     static func isActivity(_ message: JSONValue) -> Bool {
-        if message["role"].string == "user" { return false }
+        if isUser(message) { return false }
         if ["system", "tool", "function"].contains(message["role"].string) { return true }
         let block = message["metadata"]["blockType"].string
         return !block.isEmpty && !["agentMessage", "assistantMessage", "outputMessage", "text", "message", "musicCard", "sticker"].contains(block)

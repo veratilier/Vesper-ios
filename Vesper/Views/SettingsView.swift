@@ -6,6 +6,7 @@ struct SettingsView: View {
     var body: some View {
         Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
             NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
+            NavigationLink { NotificationSettingsView() } label: { settingsRow("Notifications", subtitle: "Permission and system settings", icon: "bell") }
             NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Schedule, prompt and recent activity", icon: "sparkles") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
             NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
@@ -307,5 +308,57 @@ private struct VesperConnectorView: View {
         do { _ = try await store.api.request("/api/mcp/owner-token", method: "POST", body: .object(["token": .string(value)])); try CredentialStore.save(value, account: "vesper-mcp-owner"); status = "Token saved. Test it before connecting." }
         catch { status = error.localizedDescription }
         busy = false
+    }
+}
+
+struct NotificationSettingsView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
+    @State private var authorization: UNAuthorizationStatus = .notDetermined
+    @State private var loaded = false
+    @State private var busy = false
+    @State private var error = ""
+    private var statusText: String {
+        guard loaded else { return "Checking permission…" }
+        switch authorization {
+        case .notDetermined: return "Not requested"
+        case .denied: return "Notifications are off"
+        case .authorized: return "Notifications are allowed"
+        case .provisional: return "Quiet notifications are allowed"
+        case .ephemeral: return "Temporary permission"
+        @unknown default: return "Unknown permission status"
+        }
+    }
+    var body: some View {
+        Page(title: "Notifications", subtitle: "Choose how Vesper can notify you.") {
+            GlassCard { VStack(alignment: .leading, spacing: 18) {
+                Text(statusText).font(.headline)
+                Text("Permission allows scheduled date reminders. Chat and autonomous wake push delivery is not connected in this build.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+                if loaded && authorization == .notDetermined {
+                    Button { Task { await requestPermission() } } label: {
+                        Text(busy ? "Requesting…" : "Allow notifications")
+                            .foregroundStyle(.white).padding(.horizontal, 20).frame(minHeight: 44)
+                            .background(VesperTheme.ink, in: Capsule())
+                    }.buttonStyle(.plain).disabled(busy)
+                } else if loaded {
+                    Button("Open notification settings") {
+                        if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                    }.buttonStyle(.plain)
+                }
+                if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
+            } }
+        }.task(id: scenePhase) { if scenePhase == .active { await refreshPermission() } }
+    }
+    @MainActor private func refreshPermission() async {
+        authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        loaded = true
+    }
+    @MainActor private func requestPermission() async {
+        guard !busy else { return }
+        busy = true; error = ""
+        defer { busy = false }
+        do { _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
+        catch { self.error = error.localizedDescription }
+        await refreshPermission()
     }
 }

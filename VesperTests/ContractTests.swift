@@ -90,4 +90,21 @@ final class ContractTests: XCTestCase {
         guard case .string(let text) = message else { return XCTFail("JSON-RPC must use WebSocket text frames") }
         XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)), packet)
     }
+    @MainActor func testMusicQueueRemainsSeparateFromLibraryRefresh() {
+        let a: JSONValue = .object(["id": .string("a"), "title": .string("A")])
+        let b: JSONValue = .object(["id": .string("b"), "title": .string("B")])
+        let player = MusicPlayer()
+        player.updateLibrary([a])
+        player.setQueue([b, b])
+        player.updateLibrary([a, b])
+        XCTAssertEqual(player.tracks.map(\.id), ["b"])
+        XCTAssertEqual(player.track.id, "b")
+        player.setQueue([a, b], append: true)
+        XCTAssertEqual(player.tracks.map(\.id), ["b", "a"])
+        player.remove("b")
+        XCTAssertEqual(player.track.id, "a")
+        player.remove("a")
+        XCTAssertEqual(player.track, .null)
+    }
+
 }

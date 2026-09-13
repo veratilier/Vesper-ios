@@ -8,15 +8,15 @@ struct ServiceError: LocalizedError {
 
 enum CredentialStore {
     private static let service = "com.vera.vesper.native"
-    static func read() -> String {
+    static func read(account: String = "device-token") -> String {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-            kSecAttrAccount as String: "device-token", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+            kSecAttrAccount as String: account, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let d = result as? Data else { return "" }
         return String(data: d, encoding: .utf8) ?? ""
     }
-    static func save(_ token: String) throws {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "device-token"]
+    static func save(_ token: String, account: String = "device-token") throws {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         let values: [String: Any] = [kSecValueData as String: Data(token.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(q as CFDictionary, values as CFDictionary)
         if status == errSecItemNotFound {

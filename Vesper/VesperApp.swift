@@ -56,7 +56,7 @@ struct RootView: View {
                     ToolbarItem(placement: .topBarLeading) { Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
                     ToolbarItem(placement: .principal) { Text(destination == .home ? "Vesper" : destination.rawValue).font(destination == .home ? VesperTheme.title(28) : .headline) }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.title2) }.accessibilityLabel("Settings")
+                        if destination != .music { Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.title2) }.accessibilityLabel("Settings") }
                     }
                 }
                 .alert("Vesper", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {

@@ -124,6 +124,7 @@ final class ContractTests: XCTestCase {
             let result: JSONValue = .object(["message": caption, "attachments": .array([.object(["name": .string("note.md")])])])
             let message = ChatFileDelivery.message(result, conversationID: "c", threadID: "t", turnID: "turn", callID: "call", createdAt: "now")
             XCTAssertEqual(message["content"].string, "文件")
+            XCTAssertEqual(message["metadata"]["attachmentOnly"], .bool(true))
             XCTAssertEqual(message["metadata"]["attachments"], result["attachments"])
         }
     }

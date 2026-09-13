@@ -367,10 +367,27 @@ import SwiftUI
     private func executeTool(_ packet: JSONValue) async {
         guard let api else { return }
         let p = packet["params"]; let name = p["tool"].string.isEmpty ? p["name"].string : p["tool"].string
+        let targetConversation = conversationID
+        let targetThread = threadID ?? ""
+        let targetTurn = turnID ?? ""
+        let callID = p["callId"].string.isEmpty ? (p["itemId"].string.isEmpty ? packet["id"].pretty : p["itemId"].string) : p["callId"].string
         var args = p["arguments"]
         if case .string(let raw) = args { args = (try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))) ?? .object([:]) }
         do {
             let r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(threadID ?? ""), "conversationId": .string(conversationID), "turnId": .string(turnID ?? ""), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
+            if ["send_chat_file", "album_send_photos"].contains(name) {
+                let result = r["result"]
+                guard !result["attachments"].array.isEmpty else { throw ServiceError(message: "The tool returned no attachments; file delivery was not confirmed.") }
+                let fileID = "files:\(targetThread):\(callID)"
+                let existing = targetConversation == conversationID ? messages.first(where: { $0.id == fileID }) : nil
+                let fileMessage = ChatFileDelivery.message(result, conversationID: targetConversation, threadID: targetThread, turnID: targetTurn, callID: callID, createdAt: existing?["createdAt"].string ?? isoNow())
+                // Confirm persistence before reporting successful delivery to the model.
+                _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: fileMessage, history: true)
+                if targetConversation == conversationID {
+                    if let index = messages.firstIndex(where: { $0.id == fileMessage.id }) { messages[index] = fileMessage }
+                    else { messages.append(fileMessage) }
+                }
+            }
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))
             events.append("\(name) · completed")
         } catch {
@@ -416,5 +433,14 @@ enum UserHistoryRecovery {
             } else { result.append(restored) }
         }
         return result
+    }
+}
+
+
+/// Tool-returned attachments are ordinary assistant messages, as on the web client.
+enum ChatFileDelivery {
+    static func message(_ result: JSONValue, conversationID: String, threadID: String, turnID: String, callID: String, createdAt: String) -> JSONValue {
+        let id = "files:\(threadID):\(callID)"
+        return .object(["id": .string(id), "conversationId": .string(conversationID), "role": .string("agent"), "content": .string(result["message"].string), "status": .string("delivered"), "createdAt": .string(createdAt), "source": .string("codex"), "metadata": .object(["attachments": result["attachments"], "itemId": .string(id), "threadId": .string(threadID), "turnId": .string(turnID), "blockType": .string("agentMessage"), "showTurnStatus": .bool(false)])])
     }
 }

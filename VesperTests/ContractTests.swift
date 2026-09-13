@@ -107,4 +107,16 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(player.track, .null)
     }
 
+    func testToolFileDeliveryProducesPersistentVisibleAttachmentMessage() {
+        let file: JSONValue = .object(["key": .string("file.md"), "url": .string("https://example.com/api/media/file.md"), "name": .string("note.md"), "type": .string("application/octet-stream"), "size": .number(12)])
+        let result: JSONValue = .object(["attachments": .array([file]), "message": .string("A note")])
+        let message = ChatFileDelivery.message(result, conversationID: "c", threadID: "t", turnID: "turn", callID: "call", createdAt: "2026-09-14T02:43:00Z")
+        XCTAssertEqual(message.id, "files:t:call")
+        XCTAssertEqual(message["metadata"]["attachments"], .array([file]))
+        XCTAssertEqual(message["conversationId"].string, "c")
+        XCTAssertFalse(ChatPresentation.isActivity(message))
+        XCTAssertEqual(ChatPresentation.displayRows([message]).map(\.id), [message.id])
+        XCTAssertEqual(ChatFileDelivery.message(result, conversationID: "c", threadID: "t", turnID: "turn", callID: "call", createdAt: "later").id, message.id)
+    }
+
 }

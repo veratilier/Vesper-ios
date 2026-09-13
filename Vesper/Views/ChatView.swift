@@ -229,11 +229,18 @@ struct ChatView: View {
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
+                if !user && message["metadata"]["showTurnStatus"] != .bool(false) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
                 if !message["metadata"]["attachments"].array.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { Link(destination: url) { Label(attachment["name"].string, systemImage: "doc").font(.caption).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { Link(destination: url) { HStack(spacing: 12) {
+                            Image(systemName: "doc.text").font(.title2)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(attachment["name"].string.isEmpty ? "Download file" : attachment["name"].string).font(.subheadline).lineLimit(2)
+                                Text("Tap to open · " + ByteCountFormatter.string(fromByteCount: Int64(max(0, attachment["size"].number)), countStyle: .file)).font(.caption2).foregroundStyle(VesperTheme.muted)
+                            }
+                            Image(systemName: "arrow.down.to.line").font(.subheadline)
+                        }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
                     } } }
                 }
                 Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)

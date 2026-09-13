@@ -52,6 +52,7 @@ import SwiftUI
         guard !busy else { return }; disconnect(); conversationID = UUID().uuidString; threadID = nil; turnID = nil; messages = []; events = []; status = "New conversation"
     }
     func disconnect() {
+        connectionTask?.cancel(); connectionTask = nil
         receiveTask?.cancel(); receiveTask = nil; socket?.cancel(with: .goingAway, reason: nil); socket = nil; initialized = false
         for (_, timer) in timeouts { timer.cancel() }; timeouts.removeAll()
         let requests = pending; pending.removeAll()
@@ -59,8 +60,12 @@ import SwiftUI
     }
     private func sendPacket(_ packet: JSONValue) async throws {
         guard let socket else { throw ServiceError(message: "Chat is disconnected.") }
+        try await socket.send(Self.wireMessage(packet))
+    }
+    static func wireMessage(_ packet: JSONValue) throws -> URLSessionWebSocketTask.Message {
         let data = try JSONEncoder().encode(packet)
-        try await socket.send(.data(data))
+        // Match the browser and app-server JSON-RPC text-frame transport.
+        return .string(String(decoding: data, as: UTF8.self))
     }
     private func rpc(_ method: String, _ params: JSONValue = .object([:])) async throws -> JSONValue {
         let id = UUID().uuidString
@@ -69,7 +74,7 @@ import SwiftUI
             timeouts[id] = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled, let self, let c = self.pending.removeValue(forKey: id) else { return }
-                self.timeouts.removeValue(forKey: id); c.resume(throwing: ServiceError(message: "Chat request timed out. Check history before resending."))
+                self.timeouts.removeValue(forKey: id); c.resume(throwing: ServiceError(message: "Request timed out (\(method)). Check history before resending."))
             }
             Task { [weak self] in
                 guard let self else { return }
@@ -102,15 +107,20 @@ import SwiftUI
                     await self?.handle(packet)
                 }
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self?.socket === ws else { return }
                 self?.error = "Chat connection interrupted. Reopen the conversation to check the server history before resending."
                 self?.busy = false; self?.disconnect()
             }
         }
+        do {
         _ = try await rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])]))
         try await sendPacket(.object(["method": .string("initialized")]))
         initialized = true
         status = "Connected"
+        } catch {
+            if socket === ws { disconnect() }
+            throw error
+        }
     }
     func loadModels() async {
         guard !loadingModels, !busy else { return }
@@ -186,7 +196,7 @@ import SwiftUI
         do {
             try await connect(); usage = try await rpc("account/rateLimits/read")
             if weeklyRemaining == nil { usageError = "Weekly usage unavailable" }
-        } catch { usageError = "Unable to refresh · Retry" }
+        } catch { usageError = error.localizedDescription }
     }
     var weeklyRemaining: Int? {
         let limits = usage["rateLimitsByLimitId"]["codex"] == .null ? usage["rateLimits"] : usage["rateLimitsByLimitId"]["codex"]

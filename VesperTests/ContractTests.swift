@@ -38,4 +38,10 @@ final class ContractTests: XCTestCase {
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25.235339Z").contains("2026-09-12T"))
     }
 
+    @MainActor func testJSONRPCUsesTextFrames() throws {
+        let packet: JSONValue = .object(["id": .string("usage-read"), "method": .string("account/rateLimits/read")])
+        let message = try ChatSession.wireMessage(packet)
+        guard case .string(let text) = message else { return XCTFail("JSON-RPC must use WebSocket text frames") }
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)), packet)
+    }
 }

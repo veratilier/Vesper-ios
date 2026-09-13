@@ -59,7 +59,12 @@ struct WakeView: View {
                 Text("\(prompt.unicodeScalars.count) / \(max(8000, Int(runtime["promptMaxLength"].number)))").font(.caption)
                 if version < 2 { Text("The background service must support prompt editing before this field can be saved.").font(.caption) }
                 Button("Restore default prompt") { prompt = runtime["defaultPrompt"].string }.disabled(version < 2 || busy)
-                Button(busy ? "Saving…" : "Save settings") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(version < 1 || busy || (version >= 2 && (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || prompt.unicodeScalars.count > max(8000, Int(runtime["promptMaxLength"].number)))))
+                Button { Task { await save() } } label: {
+                    Text(busy ? "Saving…" : "Save settings")
+                        .font(.body.weight(.semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 20).frame(minHeight: 44)
+                        .background(VesperTheme.ink, in: Capsule())
+                }.buttonStyle(.plain).disabled(version < 1 || busy || (version >= 2 && (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || prompt.unicodeScalars.count > max(8000, Int(runtime["promptMaxLength"].number)))))
                 if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
             }}
             Text("Recent activity").font(VesperTheme.title(30))

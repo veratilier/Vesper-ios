@@ -5,6 +5,8 @@ import SwiftUI
     @Published var messages: [JSONValue] = []
     @Published var conversations: [JSONValue] = []
     @Published var models: [JSONValue] = []
+    @Published var loadingModels = false
+    @Published var modelError: String?
     @Published var usage: JSONValue = .null
     @Published var model = ""
     @Published var busy = false
@@ -97,11 +99,37 @@ import SwiftUI
         _ = try await rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])]))
         try await sendPacket(.object(["method": .string("initialized")]))
         initialized = true
-        if let result = try? await rpc("model/list", .object(["limit": .number(100)])) { models = result["data"].array }
         status = "Connected"
     }
+    func loadModels() async {
+        guard !loadingModels, !busy else { return }
+        loadingModels = true; modelError = nil
+        defer { loadingModels = false }
+        do {
+            guard api != nil else { throw ServiceError(message: "Configure the connection in Settings first.") }
+            try await connect()
+            var loaded: [JSONValue] = []
+            var cursor = ""
+            var seen = Set<String>()
+            repeat {
+                var params: JSONValue = .object(["limit": .number(100)])
+                if !cursor.isEmpty { params["cursor"] = .string(cursor) }
+                let result = try await rpc("model/list", params)
+                loaded.append(contentsOf: result["data"].array)
+                cursor = result["nextCursor"].string
+                if !cursor.isEmpty && !seen.insert(cursor).inserted { throw ServiceError(message: "The model list could not be fully loaded. Please retry.") }
+            } while !cursor.isEmpty
+            var identifiers = Set<String>()
+            models = loaded.compactMap { item in
+                let name = item["model"].string
+                guard !name.isEmpty, identifiers.insert(name).inserted else { return nil }
+                var normalized = item; normalized["id"] = .string(name); return normalized
+            }
+            if models.isEmpty { modelError = "The server returned no available models." }
+        } catch { modelError = error.localizedDescription; if !initialized { disconnect() } }
+    }
     func send(_ text: String, images: [Data] = []) async -> Bool {
-        guard !busy, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) else { return false }
+        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) else { return false }
         busy = true; status = "Connecting…"
         let messageID = UUID().uuidString
         do {

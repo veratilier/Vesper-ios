@@ -7,6 +7,7 @@ struct ChatView: View {
     @EnvironmentObject private var chat: ChatSession
     @State private var draft = ""
     @State private var history = false
+    @State private var modelPicker = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var images: [Data] = []
     @State private var loadingPhotos = false
@@ -70,18 +71,13 @@ struct ChatView: View {
                 TextField("Write to Rowan…", text: $draft, axis: .vertical).lineLimit(1...5).focused($focused).font(.system(size: 16))
                 HStack {
                     PhotosPicker(selection: $selectedPhotos, maxSelectionCount: 5, matching: .images) { Image(systemName: "plus").font(.system(size: 18)).frame(width: 44, height: 44) }.disabled(chat.busy || loadingPhotos).accessibilityLabel("Attach photos")
-                    Menu {
-                        Picker("Model", selection: $chat.model) {
-                            Text("Default model").tag("")
-                            ForEach(chat.models) { model in Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string).tag(model["model"].string) }
-                        }
-                    } label: {
+                    Button { focused = false; modelPicker = true } label: {
                         HStack(spacing: 4) { Text(chat.model.isEmpty ? "Default" : chat.model).lineLimit(1).truncationMode(.middle); Image(systemName: "chevron.down").font(.system(size: 9)) }
                             .font(.system(size: 12)).frame(maxWidth: 160, minHeight: 44, alignment: .leading)
                     }.disabled(chat.busy).accessibilityLabel("Select model")
                     Spacer()
                     if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 25)).frame(width: 44, height: 44) }.accessibilityLabel("Stop reply") }
-                    else { Button { let sending = draft; let outgoing = images; Task { if await chat.send(sending, images: outgoing) { if draft == sending { draft = "" }; images = []; selectedPhotos = [] } } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 25)).frame(width: 44, height: 44) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty) || loadingPhotos).accessibilityLabel("Send message") }
+                    else { Button { let sending = draft; let outgoing = images; Task { if await chat.send(sending, images: outgoing) { if draft == sending { draft = "" }; images = []; selectedPhotos = [] } } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 25)).frame(width: 44, height: 44) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty) || loadingPhotos || chat.loadingModels).accessibilityLabel("Send message") }
                 }
             }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26)).overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.8), lineWidth: 1.5)).padding(.horizontal, 16).padding(.vertical, 8)
         }
@@ -102,6 +98,31 @@ struct ChatView: View {
             }
         }
         .onDisappear { if !chat.busy { chat.disconnect() } }
+        .sheet(isPresented: $modelPicker) {
+            NavigationStack {
+                List {
+                    Button { chat.model = ""; modelPicker = false } label: {
+                        HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
+                    }
+                    ForEach(chat.models) { model in
+                        Button { chat.model = model["model"].string; modelPicker = false } label: {
+                            HStack {
+                                Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string)
+                                Spacer()
+                                if chat.model == model["model"].string { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                    if chat.loadingModels { ProgressView("Loading models…") }
+                    if let error = chat.modelError {
+                        Text(error).font(.caption).foregroundStyle(.secondary)
+                        Button("Retry") { Task { await chat.loadModels() } }.disabled(chat.loadingModels)
+                    }
+                }.navigationTitle("Model").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { modelPicker = false } } }
+                    .task { chat.configure(store); await chat.loadModels() }
+            }.presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: $history) {
             NavigationStack { List(chat.conversations) { item in Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(.secondary) } }.disabled(chat.busy) }.navigationTitle("Conversations") }
         }

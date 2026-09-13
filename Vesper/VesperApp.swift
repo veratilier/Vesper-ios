@@ -101,13 +101,22 @@ struct RootView: View {
             Button("Accept") { destination = .chat; acceptedCall = true }
             Button("Decline", role: .cancel) { }
         } message: { Text("Your microphone stays off until you start the call.") }
-        .fullScreenCover(isPresented: $acceptedCall) { NativeCallView() }
+        .fullScreenCover(isPresented: $acceptedCall) { NativeCallView(initiator: "agent") }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
             destination = .chat
             Task { await chat.open(.object(["id": .string(id)])) }
         }
         .task(id: store.token) { await refreshUsage() }
+        .task(id: sidebar) {
+            guard sidebar else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                if phase == .active { await refreshUsage() }
+            }
+        }
+        .onChange(of: chat.busy) { old, new in if old && !new && sidebar { Task { await refreshUsage() } } }
         .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
         .onChange(of: phase) { _, phase in if phase == .active { Task { await refreshUsage() } } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
@@ -190,6 +199,8 @@ struct WeeklyUsageView: View {
             if let remaining = chat.weeklyRemaining {
                 ProgressView(value: Double(100 - remaining), total: 100)
                 Text("\(100 - remaining)% used · \(remaining)% remaining").font(.system(size: 11))
+                if let error = chat.usageError { Text("Refresh failed · " + error).font(.system(size: 10)) }
+                else if let updated = chat.usageUpdatedAt { Text("Updated " + updated.formatted(date: .omitted, time: .shortened)).font(.system(size: 10)) }
             } else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError ?? "Connect in Settings")).font(.system(size: 11)) }
         }.foregroundStyle(VesperTheme.muted)
     }

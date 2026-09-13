@@ -165,7 +165,7 @@ struct CallCameraPreview: UIViewRepresentable {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try AVAudioSession.sharedInstance().setActive(true)
-            let connection = connectionOverride ?? VoiceConfiguration.connection(store)
+            let connection = VoiceConfiguration.normalized(connectionOverride ?? VoiceConfiguration.connection(store))
             if !connection["apiKey"].string.isEmpty {
                 var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
                 request.httpMethod = "POST"; request.timeoutInterval = 30
@@ -174,7 +174,7 @@ struct CallCameraPreview: UIViewRepresentable {
                 request.httpBody = try JSONEncoder().encode(JSONValue.object(["text": .string(text), "connection": connection]))
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard generation == id else { return }
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: "Voice playback failed. Check Agent Voice settings.") }
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: VoiceConfiguration.failure(data, response: response, connection: connection)) }
                 audio = try AVAudioPlayer(data: data); audio?.delegate = self
                 guard audio?.play() == true else { throw ServiceError(message: "Voice playback failed.") }
             } else {
@@ -188,6 +188,7 @@ struct CallCameraPreview: UIViewRepresentable {
 }
 
 struct NativeCallView: View {
+    var initiator = "user"
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var player: MusicPlayer
@@ -293,7 +294,7 @@ struct NativeCallView: View {
             startedAt = nil
             let entries = transcript; let target = callConversation; let wasVideo = usedVideo
             let ended = Date()
-            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target) }
+            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator) }
         }
         chat.callActive = false
         active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); if waiting { Task { await chat.interrupt() } }; waiting = false }

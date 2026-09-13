@@ -13,6 +13,7 @@ import AVFoundation
     @Published var models: [JSONValue] = []
     @Published var loadingModels = false
     @Published var modelError: String?
+    @Published var usageUpdatedAt: Date?
     @Published var usage: JSONValue = .null
     @Published var loadingUsage = false
     @Published var usageError: String?
@@ -230,8 +231,8 @@ import AVFoundation
             if models.isEmpty { modelError = "The server returned no available models." }
         } catch { modelError = error.localizedDescription; if !initialized { disconnect() } }
     }
-    func send(_ text: String, images: [Data] = [], files: [ChatFile] = []) async -> Bool {
-        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty) else { return false }
+    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil) async -> Bool {
+        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil) else { return false }
         busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
         let messageID = UUID().uuidString
         do {
@@ -258,7 +259,7 @@ import AVFoundation
                 let catalog = try await api.request("/api/codex/tools")
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = (UserDefaults.standard.string(forKey: "nativeInstructions") ?? "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese.") + "\nVesper Desire is independent. Use only the built-in desire_* tools; never the official Rowan Desire connector or desire.r-vera.com."
-                let result = try await rpc("thread/start", .object(["dynamicTools": .array(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool]), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
                 threadID = id
@@ -266,8 +267,10 @@ import AVFoundation
             guard let threadID else { throw ServiceError(message: "No chat thread.") }
             _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(conversations.first(where: { $0.id == conversationID })?["title"].string ?? String(text.prefix(50))), "source": .string("codex")]), history: true)
             var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
-            let modelInputText = (text.isEmpty ? "Please inspect the attachments." : text) + fileContext
+            let musicContext = music.map { "\nShared music: " + $0["title"].string + " — " + $0["artist"].string + " (song ID: " + $0["neteaseId"].string + ")" } ?? ""
+            let modelInputText = (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text) + fileContext + musicContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
+            if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }
             messages.append(user)
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
@@ -300,7 +303,7 @@ import AVFoundation
         loadingUsage = true; usageError = nil
         defer { loadingUsage = false }
         do {
-            try await connect(); usage = try await rpc("account/rateLimits/read")
+            try await connect(); usage = try await rpc("account/rateLimits/read"); usageUpdatedAt = Date()
             if weeklyRemaining == nil { usageError = "Weekly usage unavailable" }
         } catch { usageError = error.localizedDescription }
     }
@@ -327,10 +330,10 @@ import AVFoundation
         "description": .string("Invite Vera to a voice call in the currently open native app. Only an invitation: she must accept and start. Not a background/phone-network call. Do not report that she answered. Available only in native threads created with this tool."),
         "inputSchema": .object(["type": .string("object"), "properties": .object([:]), "additionalProperties": .bool(false)])
     ])
-    func saveCall(start: Date, end: Date, video: Bool, transcript: [JSONValue], target: String) async {
+    func saveCall(start: Date, end: Date, video: Bool, transcript: [JSONValue], target: String, initiator: String = "user") async {
         let seconds = max(0, Int(end.timeIntervalSince(start)))
         let title = "\(video ? "Video" : "Voice") call · \(seconds / 60):\(String(format: "%02d", seconds % 60))"
-        let message: JSONValue = .object(["id": .string("call-" + UUID().uuidString), "conversationId": .string(target), "role": .string("agent"), "content": .string(title), "createdAt": .string(ISO8601DateFormatter().string(from: end)), "source": .string("vesper"), "status": .string("delivered"), "metadata": .object(["showTurnStatus": .bool(false), "call": .object(["startedAt": .string(ISO8601DateFormatter().string(from: start)), "endedAt": .string(ISO8601DateFormatter().string(from: end)), "transcript": .array(transcript), "video": .bool(video)])])])
+        let message: JSONValue = .object(["id": .string("call-" + UUID().uuidString), "conversationId": .string(target), "role": .string(initiator == "agent" ? "agent" : "user"), "content": .string(title), "createdAt": .string(ISO8601DateFormatter().string(from: end)), "source": .string("vesper"), "status": .string("delivered"), "metadata": .object(["showTurnStatus": .bool(false), "call": .object(["startedAt": .string(ISO8601DateFormatter().string(from: start)), "endedAt": .string(ISO8601DateFormatter().string(from: end)), "transcript": .array(transcript), "video": .bool(video), "initiator": .string(initiator)])])])
         if conversationID == target { messages.append(message) }
         do {
             guard let api else { throw ServiceError(message: "Not connected") }
@@ -373,7 +376,7 @@ import AVFoundation
             try? await sendPacket(.object(["id": packet["id"], "error": .object(["code": .number(-32601), "message": .string("This request needs a client with support for this interaction.")])]))
             return
         }
-        if method == "account/rateLimits/updated" { usage = p; usageError = nil }
+        if method == "account/rateLimits/updated" { usage = p; usageError = nil; usageUpdatedAt = Date() }
         else if method == "item/reasoning/summaryTextDelta" {
             thinkingSummary += p["delta"].string
         }
@@ -453,7 +456,7 @@ import AVFoundation
                 guard let store = appStore else { throw ServiceError(message: "Device is not connected") }
                 let text = args["text"].string.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty, text.count <= 5000 else { throw ServiceError(message: "Voice text must contain 1–5000 characters") }
-                let connection = VoiceConfiguration.connection(store)
+                let connection = VoiceConfiguration.normalized(VoiceConfiguration.connection(store))
                 guard !connection["apiKey"].string.isEmpty else { throw ServiceError(message: "Configure your voice in Settings first") }
                 var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
                 request.httpMethod = "POST"; request.timeoutInterval = 60
@@ -461,7 +464,7 @@ import AVFoundation
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = try JSONEncoder().encode(JSONValue.object(["text": .string(text), "connection": connection]))
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: "Configured voice service failed") }
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: VoiceConfiguration.failure(data, response: response, connection: connection)) }
                 let audio = try AVAudioPlayer(data: data)
                 var attachment = try await api.uploadFile(data, name: "Rowan-voice.mp3", mime: "audio/mpeg")
                 attachment["type"] = .string("audio/mpeg"); attachment["transcript"] = .string(text); attachment["duration"] = .number(audio.duration)
@@ -599,5 +602,18 @@ enum ChatFileDelivery {
         let id = "files:\(threadID):\(callID)"
         let caption = result["message"].string.trimmingCharacters(in: .whitespacesAndNewlines)
         return .object(["id": .string(id), "conversationId": .string(conversationID), "role": .string("agent"), "content": .string(caption.isEmpty ? "文件" : caption), "status": .string("delivered"), "createdAt": .string(createdAt), "source": .string("codex"), "metadata": .object(["attachments": result["attachments"], "attachmentOnly": .bool(caption.isEmpty), "itemId": .string(id), "threadId": .string(threadID), "turnId": .string(turnID), "blockType": .string("agentMessage"), "showTurnStatus": .bool(false)])])
+    }
+}
+
+
+enum NativeToolCatalog {
+    static func normalize(_ tools: [JSONValue]) throws -> [JSONValue] {
+        try tools.map { tool in
+            let value = tool["function"] == .null ? tool : tool["function"]
+            let schema = value["inputSchema"] == .null ? value["parameters"] : value["inputSchema"]
+            guard !value["name"].string.isEmpty, case .object = schema else { throw ServiceError(message: "Invalid tool definition in Vesper catalog") }
+            // All definitions use the same canonical tagged format.
+            return .object(["type": .string("function"), "name": value["name"], "description": .string(value["description"].string), "inputSchema": schema])
+        }
     }
 }

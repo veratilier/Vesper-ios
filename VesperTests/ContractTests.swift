@@ -4,6 +4,24 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    func testMixedToolCatalogUsesOneCanonicalFormat() throws {
+        let legacy: JSONValue = .object(["name": .string("native_health"), "description": .string("Read"), "inputSchema": .object(["type": .string("object")])])
+        var canonical = legacy; canonical["type"] = .string("function"); canonical["name"] = .string("server_tool")
+        let result = try NativeToolCatalog.normalize([canonical, legacy])
+        XCTAssertEqual(result.map { $0["type"].string }, ["function", "function"])
+        XCTAssertEqual(result.map { $0["name"].string }, ["server_tool", "native_health"])
+        XCTAssertEqual(result[1]["inputSchema"], legacy["inputSchema"])
+        XCTAssertThrowsError(try NativeToolCatalog.normalize([.object(["name": .string("broken")])]))
+    }
+    func testMiniMaxFullEndpointIsNotAppendedTwice() {
+        let config: JSONValue = .object(["provider": .string("MiniMax"), "baseUrl": .string("https://api.minimax.chat/v1/t2a_v2"), "groupId": .string("group")])
+        let result = VoiceConfiguration.normalized(config)
+        XCTAssertEqual(result["baseUrl"].string, "https://api.minimax.chat")
+        XCTAssertEqual(result["endpoint"].string, "https://api.minimax.chat/v1/t2a_v2?GroupId=group")
+        XCTAssertEqual(VoiceConfiguration.normalized(result), result)
+        var root = config; root["baseUrl"] = .string("https://api.minimax.io")
+        XCTAssertEqual(VoiceConfiguration.normalized(root), root)
+    }
     func testDateCountersRepeatAndIncludeToday() throws {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
         let now = try XCTUnwrap(f.date(from: "2026-09-14"))

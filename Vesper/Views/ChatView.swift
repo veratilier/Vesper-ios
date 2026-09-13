@@ -116,6 +116,9 @@ struct ChatView: View {
     @State private var call = false
     @State private var filePicker = false
     @State private var musicPicker = false
+    @State private var pendingMusic: JSONValue?
+    @State private var nearBottom = true
+    @State private var viewportHeight: CGFloat = 0
     @State private var locationPicker = false
     @State private var confirmNew = false
     @State private var deleting: JSONValue?
@@ -140,11 +143,22 @@ struct ChatView: View {
                         if chat.busy {
                             AssistantMessageHeading(message: .object(["status": .string(chat.busy ? "streaming" : "delivered"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events)
                         }
-                        Color.clear.frame(height: 1).id("bottom")
+                        Color.clear.frame(height: 1).id("bottom").background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
                     }.padding(.horizontal, 20).padding(.vertical, 14)
                 }.scrollDismissesKeyboard(.interactively)
+                .coordinateSpace(name: "chat-scroll")
+                .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
+                .onPreferenceChange(ChatBottomPosition.self) { bottom in nearBottom = bottom <= viewportHeight + 80 }
+                .overlay(alignment: .bottom) {
+                    if !nearBottom && !chat.messages.isEmpty {
+                        Button { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }; nearBottom = true } label: {
+                            Image(systemName: "arrow.down").font(.system(size: 16, weight: .semibold)).frame(width: 40, height: 40).background(.regularMaterial, in: Circle()).overlay(Circle().stroke(.white.opacity(0.8)))
+                        }.buttonStyle(.plain).accessibilityLabel("Jump to latest message").padding(.bottom, 8)
+                    }
+                }
                 .task { await Task.yield(); proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: chat.messages.count) { _, _ in withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: chat.messages.count) { _, _ in if nearBottom || chat.messages.last?["role"].string == "user" { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) } } }
+                .onChange(of: chat.messages.last?["content"].string) { _, _ in if nearBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -334,8 +348,9 @@ struct ChatView: View {
                         }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
                     } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
+                if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: message["metadata"]["musicCard"]) }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
-                if message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
+                if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
@@ -353,6 +368,9 @@ struct ChatView: View {
     }
     private var composer: some View {
         VStack(spacing: 4) {
+            if let track = pendingMusic {
+                HStack { ChatMusicCard(track: track); Button { pendingMusic = nil } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Remove music") }
+            }
             if voiceRecorder.recording {
                 HStack { Image(systemName: "waveform"); Text("Recording"); if let start = voiceRecorder.startedAt { Text(start, style: .timer).monospacedDigit() }; Spacer(); Button("Cancel") { voiceRecorder.cancel() } }.font(.caption)
             }
@@ -376,7 +394,7 @@ struct ChatView: View {
                 Spacer()
                 Button { focused = false; drawer = false; player.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
-                else { Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty && files.isEmpty && voiceRecorder.file == nil) || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels).accessibilityLabel("Send") }
+                else { Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty && files.isEmpty && voiceRecorder.file == nil && pendingMusic == nil) || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels).accessibilityLabel("Send") }
             }
         }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
     }
@@ -406,7 +424,7 @@ struct ChatView: View {
     }
     private var musicSheet: some View {
         NavigationStack { List {
-            ForEach(store.document("music").array) { track in Button { draft += (draft.isEmpty ? "" : "\n") + "Listen with me: " + track["title"].string + " — " + track["artist"].string + "\n" + track["url"].string; musicPicker = false } label: { Label(track["title"].string, systemImage: "music.note") } }
+            ForEach(store.document("music").array) { track in Button { pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "url", "neteaseId"].map { ($0, track[$0]) })); musicPicker = false; drawer = false } label: { Label(track["title"].string, systemImage: "music.note") } }
             if store.document("music").array.isEmpty { Text("Add songs in Music first.") }
         }.navigationTitle("Music").toolbar { Button("Done") { musicPicker = false } } }.presentationDetents([.medium, .large])
     }
@@ -451,11 +469,11 @@ struct ChatView: View {
         if let item = store.document("favorites").array.first(where: { $0["messageId"].string == message.id }) { _ = await store.remove("favorites", id: item.id); return }
         _ = await store.upsert("favorites", item: .object(["id": .string(UUID().uuidString), "folderId": .string("default"), "messageId": .string(message.id), "conversationId": .string(chat.conversationID), "conversationTitle": .string("Conversations"), "content": message["content"], "role": message["role"], "createdAt": message["createdAt"]]))
     }
-    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = [] } } }
+    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil } } }
     private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; call = true }
     private func send() {
-        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); drawer = false
-        Task { if await chat.send(sending, images: outgoing, files: outgoingFiles) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = []; voiceRecorder.cancel() } }
+        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; drawer = false
+        Task { if await chat.send(sending, images: outgoing, files: outgoingFiles, music: music) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = []; pendingMusic = nil; voiceRecorder.cancel() } }
     }
 
 }
@@ -655,4 +673,9 @@ private struct CallRecordButton: View {
             }
         }
     }
+}
+
+private struct ChatBottomPosition: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

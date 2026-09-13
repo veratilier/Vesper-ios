@@ -127,6 +127,27 @@ struct DataSettingsView: View {
 }
 
 enum VoiceConfiguration {
+    static func normalized(_ original: JSONValue) -> JSONValue {
+        var value = original
+        guard var url = URLComponents(string: original["baseUrl"].string.trimmingCharacters(in: .whitespacesAndNewlines)), url.scheme == "https" else { return value }
+        let isMini = original["provider"].string.lowercased().contains("minimax") || (url.host ?? "").contains("minimax")
+        if isMini && url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).hasSuffix("t2a_v2") {
+            let group = original["groupId"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !group.isEmpty, !(url.queryItems ?? []).contains(where: { $0.name == "GroupId" }) { url.queryItems = (url.queryItems ?? []) + [URLQueryItem(name: "GroupId", value: group)] }
+            value["endpoint"] = .string(url.string ?? "")
+            url.path = ""; url.query = nil; url.fragment = nil
+            value["baseUrl"] = .string(url.string ?? original["baseUrl"].string)
+        }
+        return value
+    }
+    static func failure(_ data: Data, response: URLResponse, connection: JSONValue) -> String {
+        let payload = try? JSONDecoder().decode(JSONValue.self, from: data)
+        var detail = payload?["error"].string ?? ""
+        if detail.isEmpty { detail = "Voice service request failed" }
+        let key = connection["apiKey"].string
+        if !key.isEmpty { detail = detail.replacingOccurrences(of: key, with: "[redacted]") }
+        return "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0): " + String(detail.prefix(350))
+    }
     @MainActor static func connection(_ store: AppStore) -> JSONValue {
         let saved = CredentialStore.read(account: "call-voice-configuration")
         if let value = try? JSONDecoder().decode(JSONValue.self, from: Data(saved.utf8)) { return value }

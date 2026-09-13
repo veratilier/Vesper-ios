@@ -1,5 +1,24 @@
 import SwiftUI
 import UserNotifications
+import PhotosUI
+import UIKit
+
+private struct DatePhotoBackground: View {
+    let url: String
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.white.opacity(0.82)
+                if let imageURL = URL(string: url), imageURL.scheme == "https" {
+                    AsyncImage(url: imageURL) { image in
+                        image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                    } placeholder: { Color.clear }
+                    Color.white.opacity(0.42)
+                }
+            }
+        }.clipped()
+    }
+}
 
 struct CollectionView: View {
     enum Kind: String { case notes = "Notes", reminders = "Reminders", dates = "Dates"
@@ -328,7 +347,8 @@ private struct DatesBoard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) { Text(DateCounter.count(item).map(String.init) ?? "—").font(.system(size: 72, weight: .light, design: .rounded)).monospacedDigit(); Text("天").font(.title3) }
                 Text("目标日：" + DateCounter.dateLabel(item)).font(.caption).foregroundStyle(VesperTheme.muted)
             }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-                .background(.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 14))
+                .background { DatePhotoBackground(url: item["backgroundUrl"].string) }
+                .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(alignment: .top) { RoundedRectangle(cornerRadius: 3).fill(DateCounter.color(item)).frame(height: 5).padding(.horizontal, 14) }
         }.buttonStyle(.plain)
     }
@@ -365,6 +385,10 @@ private struct DateEditor: View {
     @State private var highlight = false
     @State private var validation = ""
     @State private var saving = false
+    @State private var backgroundUrl = ""
+    @State private var backgroundPhoto: PhotosPickerItem?
+    @State private var backgroundData: Data?
+    @State private var loadingBackground = false
     var body: some View {
         NavigationStack {
             Form {
@@ -380,6 +404,19 @@ private struct DateEditor: View {
                     Picker("提醒（下次目标日）", selection: $reminder) {
                         Text("不提醒").tag(-1); Text("当天").tag(0); Text("提前一天").tag(1); Text("提前一周").tag(7)
                     }
+                }
+                Section("背景") {
+                    PhotosPicker(selection: $backgroundPhoto, matching: .images) { Label("更换背景", systemImage: "photo") }.disabled(saving || loadingBackground)
+                    if loadingBackground { ProgressView("正在读取照片…") }
+                    if let backgroundData, let image = UIImage(data: backgroundData) {
+                        Image(uiImage: image).resizable().scaledToFill().frame(height: 150).clipped().listRowInsets(EdgeInsets())
+                    } else if !backgroundUrl.isEmpty {
+                        DatePhotoBackground(url: backgroundUrl).frame(height: 150)
+                    }
+                    if backgroundData != nil || !backgroundUrl.isEmpty {
+                        Button("恢复默认背景") { backgroundData = nil; backgroundUrl = ""; backgroundPhoto = nil }.disabled(saving || loadingBackground)
+                    }
+                    Text("保存后应用到这个纪念日的封面。").font(.caption).foregroundStyle(VesperTheme.muted)
                 }
                 Section {
                     DisclosureGroup("进阶设置") {
@@ -397,11 +434,25 @@ private struct DateEditor: View {
                 .navigationTitle(item["title"].string.isEmpty ? "添加新日子" : "编辑日子").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
-                    ToolbarItem(placement: .confirmationAction) { Button("Save") { Task { await save() } }.disabled(saving || store.saving) }
+                    ToolbarItem(placement: .confirmationAction) { Button("Save") { Task { await save() } }.disabled(saving || store.saving || loadingBackground) }
                 }
-        }.onAppear(perform: load).interactiveDismissDisabled(saving)
+        }.onAppear(perform: load).interactiveDismissDisabled(saving || loadingBackground)
+            .onChange(of: backgroundPhoto) { _, photo in
+                guard let photo else { return }
+                Task {
+                    loadingBackground = true; defer { loadingBackground = false }
+                    do {
+                        guard let data = try await photo.loadTransferable(type: Data.self), let image = UIImage(data: data) else { throw ServiceError(message: "无法读取这张照片。") }
+                        let scale = min(1, 1600 / max(image.size.width, image.size.height))
+                        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+                        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+                        backgroundData = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }.jpegData(compressionQuality: 0.85)
+                    } catch { validation = error.localizedDescription }
+                }
+            }
     }
     private func load() {
+        backgroundUrl = item["backgroundUrl"].string
         title = item["title"].string; date = DateCounter.baseDate(item) ?? .now; lunar = item["calendar"].string == "lunar"
         category = item["category"].string.isEmpty ? "生活" : item["category"].string; pinned = item["pinned"].bool
         repeatRule = item["repeatRule"].string.isEmpty ? (item["repeats"].bool ? "yearly" : "none") : item["repeatRule"].string
@@ -417,6 +468,16 @@ private struct DateEditor: View {
         guard !endEnabled || endDate >= Calendar.current.startOfDay(for: date) else { validation = "结束日不能早于目标日"; return }
         saving = true; defer { saving = false }
         var next = item
+        if let backgroundData {
+            do {
+                let upload = try await store.api.uploadImage(backgroundData, name: "anniversary-background.jpg")
+                let url = upload["url"].string
+                if url.isEmpty { backgroundUrl = try APIClient.validatedURL(store.baseURL, path: "/api/media/" + upload["key"].string).absoluteString }
+                else { backgroundUrl = url }
+                self.backgroundData = nil
+            } catch { validation = error.localizedDescription; return }
+        }
+        next["backgroundUrl"] = .string(backgroundUrl)
         let f = DateFormatter(); f.calendar = Calendar(identifier: .gregorian); f.dateFormat = "yyyy-MM-dd"
         next["title"] = .string(title); next["date"] = .string(f.string(from: date)); next["calendar"] = .string(lunar ? "lunar" : "solar")
         next["category"] = .string(category); next["pinned"] = .bool(pinned); next["repeatRule"] = .string(repeatRule); next["repeats"] = .bool(repeatRule == "yearly")

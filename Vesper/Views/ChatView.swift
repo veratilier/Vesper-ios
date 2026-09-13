@@ -45,6 +45,7 @@ private struct ChatAttachmentPreview: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) { if let localURL { ShareLink(item: localURL) { Label("Save or share", systemImage: "square.and.arrow.up") } } }
+            }
             .task { await load() }
             .onDisappear { if let directory { try? FileManager.default.removeItem(at: directory) } }
         }

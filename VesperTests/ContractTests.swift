@@ -107,6 +107,20 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(player.track, .null)
     }
 
+    func testAttachmentContextDoesNotBecomeASecondUserMessage() throws {
+        let saved = try JSONDecoder().decode([JSONValue].self, from: Data(#"[{"id":"local","role":"user","content":"看看附件","metadata":{"attachments":[{"name":"note.md","url":"https://example.test/note.md"}]}}]"#.utf8))
+        let expanded = "看看附件\nAttachment: note.md (text/markdown)\nDownload: https://example.test/note.md\nFile preview:\nprivate file body"
+        let snapshot: JSONValue = .object(["turns": .array([.object(["id": .string("turn"), "items": .array([.object(["id": .string("remote"), "type": .string("userMessage"), "text": .string(expanded)])])])])
+        let merged = UserHistoryRecovery.merge(saved, snapshot: snapshot, conversationID: "c", tombstones: [])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0]["content"].string, "看看附件")
+        XCTAssertEqual(merged[0]["metadata"]["attachments"], saved[0]["metadata"]["attachments"])
+        XCTAssertEqual(UserHistoryRecovery.merge(merged, snapshot: snapshot, conversationID: "c", tombstones: []), merged)
+        var different = saved
+        different[0]["metadata"]["attachments"] = .array([.object(["name": .string("other.md"), "url": .string("https://example.test/other.md")])])
+        XCTAssertEqual(UserHistoryRecovery.merge(different, snapshot: snapshot, conversationID: "c", tombstones: []).count, 2)
+    }
+
     func testToolFileDeliveryProducesPersistentVisibleAttachmentMessage() {
         let file: JSONValue = .object(["key": .string("file.md"), "url": .string("https://example.com/api/media/file.md"), "name": .string("note.md"), "type": .string("application/octet-stream"), "size": .number(12)])
         let result: JSONValue = .object(["attachments": .array([file]), "message": .string("A note")])

@@ -239,11 +239,12 @@ import SwiftUI
             guard let threadID else { throw ServiceError(message: "No chat thread.") }
             _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(String(text.prefix(50))), "source": .string("codex")]), history: true)
             var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
-            user["metadata"] = .object(["attachments": .array(attachments)])
+            let modelInputText = (text.isEmpty ? "Please inspect the attachments." : text) + fileContext
+            user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
             messages.append(user)
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
-            var input: [JSONValue] = [.object(["type": .string("text"), "text": .string((text.isEmpty ? "Please inspect the attachments." : text) + fileContext)])]
+            var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             params["input"] = .array(input)
             if !model.isEmpty { params["model"] = .string(model) }
@@ -254,7 +255,12 @@ import SwiftUI
             try Task.checkCancellation()
             let result = try await rpc("turn/start", params)
             turnID = result["turn"]["id"].string
-            if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index]["status"] = .string("delivered"); try await persist(messages[index]) }
+            if let index = messages.firstIndex(where: { $0.id == messageID }) {
+                messages[index]["status"] = .string("delivered")
+                messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
+                messages[index]["metadata"]["threadId"] = .string(threadID)
+                try await persist(messages[index])
+            }
             status = "Rowan is replying…"; return true
         } catch {
             self.error = error.localizedDescription; busy = false; status = "Could not confirm the send"
@@ -419,6 +425,28 @@ enum UserHistoryRecovery {
             let text = (item["text"].string.isEmpty ? (item["content"].string.isEmpty ? chunks : item["content"].string) : item["text"].string).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, !text.lowercased().hasPrefix("[vesper response preference — not user content:"), !text.hasPrefix("旧记忆背景（只作为长期背景") else { continue }
             if tombstones.contains(where: { $0["messageId"].string == item.id || $0["stableId"].string == item.id || $0["itemId"].string == item.id }) { continue }
+            // Older native messages did not save the turn ID or expanded model input.
+            // Match only the exact generated attachment header and its upload URL,
+            // never a generic "Attachment:" phrase or a caption alone.
+            let attachmentMatches = result.indices.filter { index in
+                let existing = result[index]
+                guard existing["role"].string == "user", !existing["metadata"]["attachments"].array.isEmpty else { return false }
+                let existingTurn = existing["metadata"]["turnId"].string
+                guard existingTurn.isEmpty || existingTurn == turnID else { return false }
+                let caption = existing["content"].string
+                let prefix = caption.isEmpty ? "Please inspect the attachments." : caption
+                guard text.hasPrefix(prefix + "\nAttachment: ") else { return false }
+                return existing["metadata"]["attachments"].array.contains { attachment in
+                    let url = attachment["url"].string
+                    let name = attachment["name"].string
+                    return !url.isEmpty && !name.isEmpty && text.contains("\nAttachment: " + name + " (") && text.contains("\nDownload: " + url)
+                }
+            }
+            if attachmentMatches.count == 1, let index = attachmentMatches.first {
+                result[index]["metadata"]["itemId"] = .string(item.id)
+                result[index]["metadata"]["turnId"] = .string(turnID)
+                continue
+            }
             if result.contains(where: { existing in
                 existing.id == item.id || existing["metadata"]["itemId"].string == item.id ||
                 (!turnID.isEmpty && existing["role"].string == "user" && existing["metadata"]["turnId"].string == turnID && (existing["content"].string == text || existing["metadata"]["modelInputText"].string == text))

@@ -215,10 +215,7 @@ struct ChatView: View {
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2).foregroundStyle(VesperTheme.muted) }
-                if !message["metadata"]["thoughtSummary"].string.isEmpty {
-                    DisclosureGroup("Thinking") { Text(message["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled) }.font(.caption).foregroundStyle(VesperTheme.muted)
-                }
+                if !user { AssistantMessageHeading(message: message) }
                 if !message["metadata"]["attachments"].array.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
@@ -374,14 +371,14 @@ enum ChatPresentation {
         }
         return result
     }
-    static func time(_ raw: String) -> String {
+    static func time(_ raw: String, full: Bool = false) -> String {
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var date = parser.date(from: raw)
         if date == nil { parser.formatOptions = [.withInternetDateTime]; date = parser.date(from: raw) }
         guard let date else { return "" }
         let formatter = DateFormatter()
-        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm"
+        formatter.dateFormat = full ? "M/d HH:mm:ss" : (Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm")
         return formatter.string(from: date)
     }
 }
@@ -437,6 +434,30 @@ private struct MiniTerminal: View {
         LazyVStack(alignment: .leading, spacing: 2) {
             ForEach(Array(value.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
                 Text(line.isEmpty ? " " : line).foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : line.hasPrefix("@@") ? Color.cyan : Color.white.opacity(0.9))
+            }
+        }
+    }
+}
+
+private struct AssistantMessageHeading: View {
+    let message: JSONValue
+    @State private var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
+                    Text(ChatPresentation.time(message["createdAt"].string, full: true))
+                    if message["status"].string == "streaming" { Text("Thinking…") }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
+                }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
+            }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Thinking").font(.caption).italic()
+                    Text(message["metadata"]["thoughtSummary"].string.isEmpty ? "No saved thinking summary for this message." : message["metadata"]["thoughtSummary"].string)
+                        .font(.system(size: 13)).textSelection(.enabled)
+                }.foregroundStyle(VesperTheme.muted).padding(.vertical, 4)
             }
         }
     }

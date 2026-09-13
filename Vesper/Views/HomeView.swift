@@ -115,18 +115,26 @@ struct HomeView: View {
     }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {
-            HomeCard {
-                VStack(alignment: .leading, spacing: 0) {
-                    cardTitle("Desire")
-                    Spacer(minLength: 0)
-                    DesireTide(values: fields.map { key in
-                        if case .number(let value) = desire[key] { return min(100, max(0, value)) }; return nil
-                    }, compact: true).frame(height: 132).clipShape(RoundedRectangle(cornerRadius: 16)).frame(maxWidth: .infinity)
-                    Spacer(minLength: 0)
-                    if desire == .null { Text(desireError ? "Unable to refresh" : "Not loaded yet").font(.system(size: 10)).foregroundStyle(VesperTheme.muted) }
-                }
-            }.frame(height: height)
+            GeometryReader { geometry in
+                Image("DesireCoast")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .overlay(alignment: .top) {
+                        LinearGradient(colors: [.white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 88)
+                    }
+                    .overlay(alignment: .topLeading) {
+                        cardTitle("Desire").padding(12)
+                    }
+            }
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 22))
+            .overlay { RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.85), lineWidth: 1.3) }
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Desire")
     }
     private var usageCard: some View {
         HomeCard {

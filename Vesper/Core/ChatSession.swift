@@ -406,6 +406,13 @@ import SwiftUI
 /// Recover user-authored items from the same snapshot used by the web client.
 /// Do not replace saved bubbles, invent timestamps, or resurrect deleted items.
 enum UserHistoryRecovery {
+    static func parsedTime(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
     static func timestamp(_ value: JSONValue) -> String {
         if case .number(let number) = value {
             return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: number > 10_000_000_000 ? number / 1000 : number))
@@ -453,6 +460,27 @@ enum UserHistoryRecovery {
             }) { continue }
             let itemTime = item["createdAt"] == .null ? item["startedAt"] : item["createdAt"]
             let time = timestamp(itemTime == .null ? turnTime : itemTime)
+            // Correlate legacy local IDs one-to-one. Equal text alone is not
+            // identity: require a unique, nearby timestamp and compatible turn.
+            if let snapshotDate = parsedTime(time), !turnID.isEmpty {
+                let candidates = result.indices.filter { index in
+                    let existing = result[index]
+                    guard existing["role"].string == "user",
+                          existing["metadata"]["itemId"].string.isEmpty,
+                          existing["metadata"]["attachments"].array.isEmpty,
+                          existing["content"].string.trimmingCharacters(in: .whitespacesAndNewlines) == text,
+                          existing["metadata"]["turnId"].string.isEmpty || existing["metadata"]["turnId"].string == turnID,
+                          let savedDate = parsedTime(existing["createdAt"].string),
+                          abs(savedDate.timeIntervalSince(snapshotDate)) <= 10 else { return false }
+                    return true
+                }
+                if candidates.count == 1, let index = candidates.first {
+                    result[index]["metadata"]["itemId"] = .string(item.id)
+                    result[index]["metadata"]["turnId"] = .string(turnID)
+                    result[index]["metadata"]["threadId"] = thread["id"]
+                    continue
+                }
+            }
             let restored: JSONValue = .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(time), "status": .string("delivered"), "source": .string("codex"), "metadata": .object(["itemId": .string(item.id), "turnId": .string(turnID), "threadId": thread["id"], "blockType": item["type"]])])
             if let index = result.firstIndex(where: { !turnID.isEmpty && $0["metadata"]["turnId"].string == turnID }) {
                 result.insert(restored, at: index)

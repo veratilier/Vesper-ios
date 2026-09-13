@@ -107,6 +107,23 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(player.track, .null)
     }
 
+    func testLegacyTextRecoveryMatchesOnceAndPreservesRepeatedSends() throws {
+        let saved = try JSONDecoder().decode([JSONValue].self, from: Data(#"[{"id":"local1","role":"user","content":"再试一次","createdAt":"2026-09-14T02:43:36.000Z"},{"id":"local2","role":"user","content":"再试一次","createdAt":"2026-09-14T02:50:30Z"}]"#.utf8))
+        let snapshot = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"id":"t1","startedAt":"2026-09-14T02:43:37Z","items":[{"id":"remote1","type":"userMessage","text":"再试一次"}]},{"id":"t2","startedAt":"2026-09-14T02:50:32Z","items":[{"id":"remote2","type":"userMessage","text":"再试一次"}]}]}"#.utf8))
+        let merged = UserHistoryRecovery.merge(saved, snapshot: snapshot, conversationID: "c", tombstones: [])
+        XCTAssertEqual(merged.map(\.id), ["local1", "local2"])
+        XCTAssertEqual(merged[0]["metadata"]["itemId"].string, "remote1")
+        XCTAssertEqual(merged[1]["metadata"]["itemId"].string, "remote2")
+        XCTAssertEqual(UserHistoryRecovery.merge(merged, snapshot: snapshot, conversationID: "c", tombstones: []), merged)
+        var unknown = saved
+        unknown[0]["createdAt"] = .string("")
+        XCTAssertEqual(UserHistoryRecovery.merge(unknown, snapshot: snapshot, conversationID: "c", tombstones: []).count, 3)
+        var ambiguous = saved
+        var duplicate = saved[0]; duplicate["id"] = .string("second-real-send")
+        ambiguous.append(duplicate)
+        XCTAssertEqual(UserHistoryRecovery.merge(ambiguous, snapshot: snapshot, conversationID: "c", tombstones: []).count, 4)
+    }
+
     func testAttachmentContextDoesNotBecomeASecondUserMessage() throws {
         let saved = try JSONDecoder().decode([JSONValue].self, from: Data(#"[{"id":"local","role":"user","content":"看看附件","metadata":{"attachments":[{"name":"note.md","url":"https://example.test/note.md"}]}}]"#.utf8))
         let expanded = "看看附件\nAttachment: note.md (text/markdown)\nDownload: https://example.test/note.md\nFile preview:\nprivate file body"

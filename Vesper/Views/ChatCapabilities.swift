@@ -10,6 +10,8 @@ struct ChatFile: Identifiable {
     let name: String
     let mime: String
     let data: Data
+    var transcript: String? = nil
+    var duration: Double? = nil
 }
 
 @MainActor final class SpeechInput: ObservableObject {

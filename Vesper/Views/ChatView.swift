@@ -94,6 +94,7 @@ struct ChatView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var player: MusicPlayer
+    @StateObject private var voiceRecorder = VoiceMessageRecorder()
     @StateObject private var speech = SpeechInput()
     @StateObject private var location = ChatLocation()
     @State private var speechBase = ""
@@ -105,6 +106,9 @@ struct ChatView: View {
     @State private var history = false
     @State private var historyTab = 0
     @State private var query = ""
+    @State private var renaming: JSONValue?
+    @State private var renameText = ""
+    @State private var removingConversation: JSONValue?
     @State private var modelPicker = false
     @State private var drawer = false
     @State private var photoPicker = false
@@ -152,8 +156,9 @@ struct ChatView: View {
         .task { chat.configure(store); if restoreLatest { await chat.openLatestConversation() } }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
+        .onChange(of: voiceRecorder.error) { _, error in if let error { chat.error = error } }
         .onChange(of: speech.error) { _, error in if let error { chat.error = error } }
-        .onDisappear { speech.stop() }
+        .onDisappear { speech.stop(); voiceRecorder.cancel() }
         .photosPicker(isPresented: $avatarPicker, selection: $avatarPhoto, matching: .images)
         .onChange(of: avatarPhoto) { _, pick in
             guard let pick else { return }
@@ -317,7 +322,8 @@ struct ChatView: View {
                 if !user && message["metadata"]["showTurnStatus"] != .bool(false) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
                 if !message["metadata"]["attachments"].array.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
-                        if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
+                        if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
+                        else if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
                         else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { HStack(spacing: 12) {
                             Image(systemName: "doc.text").font(.title2)
                             VStack(alignment: .leading, spacing: 4) {
@@ -329,7 +335,7 @@ struct ChatView: View {
                     } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
-                if message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
+                if message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
@@ -347,6 +353,16 @@ struct ChatView: View {
     }
     private var composer: some View {
         VStack(spacing: 4) {
+            if voiceRecorder.recording {
+                HStack { Image(systemName: "waveform"); Text("Recording"); if let start = voiceRecorder.startedAt { Text(start, style: .timer).monospacedDigit() }; Spacer(); Button("Cancel") { voiceRecorder.cancel() } }.font(.caption)
+            }
+            if voiceRecorder.processing { HStack { ProgressView(); Text("Preparing voice message…").font(.caption) } }
+            if let voice = voiceRecorder.file {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack { Label("Voice · \(Int(voice.duration ?? 0))s", systemImage: "waveform"); Spacer(); Button("Remove") { voiceRecorder.cancel() } }
+                    Text(voice.transcript?.isEmpty == false ? voice.transcript! : "No transcript; audio can still be sent.").font(.caption).lineLimit(3)
+                }.font(.subheadline).padding(8)
+            }
             if !images.isEmpty {
                 ScrollView(.horizontal) { HStack { ForEach(Array(images.enumerated()), id: \.offset) { index, data in
                     if let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill().frame(width: 60, height: 60).clipShape(RoundedRectangle(cornerRadius: 10)).overlay(alignment: .topTrailing) { Button { images.remove(at: index) } label: { Image(systemName: "xmark.circle.fill") }.disabled(chat.busy) } }
@@ -358,9 +374,9 @@ struct ChatView: View {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; if speech.listening { speech.stop() } else { player.pause(); speechBase = draft; Task { await speech.start() } } } label: { Image(systemName: speech.listening ? "mic.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Voice input").disabled(chat.busy)
+                Button { focused = false; drawer = false; player.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
-                else { Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty && files.isEmpty) || loadingPhotos || chat.loadingModels).accessibilityLabel("Send") }
+                else { Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty && files.isEmpty && voiceRecorder.file == nil) || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels).accessibilityLabel("Send") }
             }
         }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
     }
@@ -400,7 +416,16 @@ struct ChatView: View {
                 Picker("Collection", selection: $historyTab) { Text("Conversations").tag(0); Text("Favorites").tag(1) }.pickerStyle(.segmented).padding(.horizontal)
                 List {
                     if historyTab == 0 {
-                        ForEach(chat.conversations.filter { query.isEmpty || $0["title"].string.localizedCaseInsensitiveContains(query) }) { item in Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(.secondary) } }.disabled(chat.busy) }
+                        ForEach(chat.conversations.filter { query.isEmpty || $0["title"].string.localizedCaseInsensitiveContains(query) }) { item in
+                            HStack {
+                                Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain)
+                                Menu {
+                                    Button("Rename") { renameText = item["title"].string; renaming = item }
+                                    Button("Delete", role: .destructive) { removingConversation = item }
+                                } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36) }
+                            }.disabled(chat.busy || chat.callActive)
+                            .swipeActions { Button("Delete", role: .destructive) { removingConversation = item }; Button("Rename") { renameText = item["title"].string; renaming = item }.tint(.blue) }
+                        }
                     } else {
                         ForEach(store.document("favorites").array.filter { query.isEmpty || $0["content"].string.localizedCaseInsensitiveContains(query) }) { item in
                             VStack(alignment: .leading, spacing: 10) {
@@ -411,6 +436,14 @@ struct ChatView: View {
                     }
                 }.searchable(text: $query)
             }.navigationTitle("Collection").navigationBarTitleDisplayMode(.inline).toolbar { Button("Done") { history = false } }
+            .alert("Rename conversation", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+                TextField("Name", text: $renameText)
+                Button("Cancel", role: .cancel) { renaming = nil }
+                Button("Save") { if let item = renaming { Task { await chat.renameConversation(item, title: renameText) } }; renaming = nil }
+            }
+            .confirmationDialog("Delete this conversation from the list?", isPresented: Binding(get: { removingConversation != nil }, set: { if !$0 { removingConversation = nil } }), titleVisibility: .visible) {
+                Button("Delete conversation", role: .destructive) { if let item = removingConversation { Task { await chat.removeConversation(item) } }; removingConversation = nil }
+            } message: { Text("This archives the conversation on the server.") }
         }.presentationDetents([.large])
     }
     private func isFavorite(_ message: JSONValue) -> Bool { store.document("favorites").array.contains { $0["messageId"].string == message.id } }
@@ -418,11 +451,11 @@ struct ChatView: View {
         if let item = store.document("favorites").array.first(where: { $0["messageId"].string == message.id }) { _ = await store.remove("favorites", id: item.id); return }
         _ = await store.upsert("favorites", item: .object(["id": .string(UUID().uuidString), "folderId": .string("default"), "messageId": .string(message.id), "conversationId": .string(chat.conversationID), "conversationTitle": .string("Conversations"), "content": message["content"], "role": message["role"], "createdAt": message["createdAt"]]))
     }
-    private func newChat() { speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = [] } } }
-    private func openCall() { speech.stop(); focused = false; drawer = false; call = true }
+    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = [] } } }
+    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; call = true }
     private func send() {
-        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files; drawer = false
-        Task { if await chat.send(sending, images: outgoing, files: outgoingFiles) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = [] } }
+        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); drawer = false
+        Task { if await chat.send(sending, images: outgoing, files: outgoingFiles) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = []; voiceRecorder.cancel() } }
     }
 
 }
@@ -572,19 +605,23 @@ private struct AssistantMessageHeading: View {
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in MiniTerminal(execution: item["metadata"]["execution"]) }
+            let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
+            if !toolEvents.isEmpty {
+                MiniTerminal(execution: .object(["title": .string("Tool activity"), "status": .string(message["status"].string), "output": .string(toolEvents.joined(separator: "\n"))]))
+            }
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Thinking").font(.caption).italic()
                     if !message["metadata"]["thoughtSummary"].string.isEmpty {
                         Text(message["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                     }
-                    ForEach(activities) { item in
-                        if item["metadata"]["execution"] != .null { MiniTerminal(execution: item["metadata"]["execution"]) }
-                        else {
+                    ForEach(activities.filter { $0["metadata"]["execution"] == .null }) { item in
+                        Group {
                             Text(item["metadata"]["thoughtSummary"].string.isEmpty ? item["content"].string : item["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                         }
                     }
-                    ForEach(Array(liveEvents.enumerated()), id: \.offset) { _, event in Text(event).font(.system(size: 12, design: .monospaced)) }
+
                     if activities.isEmpty && liveEvents.isEmpty && message["metadata"]["thoughtSummary"].string.isEmpty {
                         Text("No saved details for this message.").font(.caption)
                     }

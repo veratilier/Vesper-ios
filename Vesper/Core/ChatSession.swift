@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UserNotifications
+import AVFoundation
 
 @MainActor final class ChatSession: ObservableObject {
     @Published var incomingCall = false
@@ -61,11 +62,29 @@ import UserNotifications
         "apps.asdk_app_6a92be9d9e1c819197f58017d0e2b985.enabled": .bool(false),
         "apps.app_6a92be9d9e1c819197f58017d0e2b985.enabled": .bool(false)
     ])
-    func configure(_ store: AppStore) { api = store.api; endpoint = store.socketURL }
+    private weak var appStore: AppStore?
+    func configure(_ store: AppStore) { appStore = store; api = store.api; endpoint = store.socketURL }
     func loadConversations() async {
         guard let api else { return }
         do { let r = try await api.request("/conversations", history: true); conversations = r["conversations"].array }
         catch { self.error = error.localizedDescription }
+    }
+    func renameConversation(_ item: JSONValue, title: String) async {
+        guard !busy, let api else { return }
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            _ = try await api.request("/conversations/\(item.id)", method: "PATCH", body: .object(["title": .string(String(name.prefix(120)))]), history: true)
+            await loadConversations()
+        } catch { self.error = error.localizedDescription }
+    }
+    func removeConversation(_ item: JSONValue) async {
+        guard !busy, !callActive, let api else { return }
+        do {
+            _ = try await api.request("/conversations/\(item.id)", method: "DELETE", history: true)
+            if conversationID == item.id { newConversation() }
+            await loadConversations()
+        } catch { self.error = error.localizedDescription }
     }
     func open(_ conversation: JSONValue) async {
         guard !busy, let api else { return }
@@ -221,7 +240,11 @@ import UserNotifications
             var fileContext = ""
             for file in files {
                 let attachment = try await api.uploadFile(file.data, name: file.name, mime: file.mime)
-                attachments.append(attachment)
+                var decorated = attachment
+                decorated["type"] = .string(file.mime)
+                if let transcript = file.transcript { decorated["transcript"] = .string(transcript); decorated["duration"] = .number(file.duration ?? 0) }
+                attachments.append(decorated)
+                if let transcript = file.transcript { fileContext += "\nVoice transcript: " + (transcript.isEmpty ? "Unavailable; do not invent the audio contents." : transcript) }
                 fileContext += "\nAttachment: \(file.name) (\(file.mime))\nDownload: \(attachment["url"].string)"
                 if file.mime.hasPrefix("text/") || ["application/json", "application/xml"].contains(file.mime), let preview = String(data: file.data, encoding: .utf8) { fileContext += "\nFile preview:\n" + String(preview.prefix(120000)) }
             }
@@ -235,13 +258,13 @@ import UserNotifications
                 let catalog = try await api.request("/api/codex/tools")
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = (UserDefaults.standard.string(forKey: "nativeInstructions") ?? "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese.") + "\nVesper Desire is independent. Use only the built-in desire_* tools; never the official Rowan Desire connector or desire.r-vera.com."
-                let result = try await rpc("thread/start", .object(["dynamicTools": .array(catalog["tools"].array.filter { $0["name"].string != "request_native_call" } + [Self.callTool]), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(catalog["tools"].array.filter { !["request_native_call", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.voiceTool]), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
                 threadID = id
             }
             guard let threadID else { throw ServiceError(message: "No chat thread.") }
-            _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(String(text.prefix(50))), "source": .string("codex")]), history: true)
+            _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(conversations.first(where: { $0.id == conversationID })?["title"].string ?? String(text.prefix(50))), "source": .string("codex")]), history: true)
             var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
             let modelInputText = (text.isEmpty ? "Please inspect the attachments." : text) + fileContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
@@ -291,6 +314,10 @@ import UserNotifications
         do { _ = try await rpc("turn/interrupt", .object(["threadId": .string(threadID), "turnId": .string(turnID)])) }
         catch { self.error = error.localizedDescription }
     }
+    private static let voiceTool: JSONValue = .object([
+        "name": .string("send_native_voice"), "description": .string("Send Vera an audio message synthesized using her configured ElevenLabs/MiniMax voice. Include the exact spoken text. Success means the audio message was saved, not listened to."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object(["text": .object(["type": .string("string")])]), "required": .array([.string("text")]), "additionalProperties": .bool(false)])
+    ])
     private static let callTool: JSONValue = .object([
         "name": .string("request_native_call"),
         "description": .string("Invite Vera to a voice call in the currently open native app. Only an invitation: she must accept and start. Not a background/phone-network call. Do not report that she answered. Available only in native threads created with this tool."),
@@ -385,8 +412,9 @@ import UserNotifications
             }
             if let message = messages.first(where: { $0.id == itemID }) { await notifyReply(message) }
         } else if method == "turn/completed" {
-            if !thinkingSummary.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
+            if !thinkingSummary.isEmpty || !events.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
+                messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
                 do { try await persist(messages[index]); thinkingSummary = "" } catch { self.error = "Reply received, but the thinking summary could not be saved." }
             }
             busy = false; status = ""; turnID = nil
@@ -410,6 +438,29 @@ import UserNotifications
         var args = p["arguments"]
         if case .string(let raw) = args { args = (try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))) ?? .object([:]) }
         do {
+            if name == "send_native_voice" {
+                guard let store = appStore else { throw ServiceError(message: "Device is not connected") }
+                let text = args["text"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty, text.count <= 5000 else { throw ServiceError(message: "Voice text must contain 1–5000 characters") }
+                let connection = VoiceConfiguration.connection(store)
+                guard !connection["apiKey"].string.isEmpty else { throw ServiceError(message: "Configure your voice in Settings first") }
+                var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
+                request.httpMethod = "POST"; request.timeoutInterval = 60
+                request.setValue(store.token, forHTTPHeaderField: "x-vesper-device-token")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONEncoder().encode(JSONValue.object(["text": .string(text), "connection": connection]))
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: "Configured voice service failed") }
+                let audio = try AVAudioPlayer(data: data)
+                var attachment = try await api.uploadFile(data, name: "Rowan-voice.mp3", mime: "audio/mpeg")
+                attachment["type"] = .string("audio/mpeg"); attachment["transcript"] = .string(text); attachment["duration"] = .number(audio.duration)
+                let message: JSONValue = .object(["id": .string("voice:" + targetThread + ":" + callID), "conversationId": .string(targetConversation), "role": .string("agent"), "content": .string(text), "createdAt": .string(isoNow()), "status": .string("delivered"), "metadata": .object(["attachments": .array([attachment]), "voiceMessage": .bool(true)])])
+                _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+                if targetConversation == conversationID { if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message } else { messages.append(message) }; await notifyReply(message) }
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Voice message saved with transcript")])])])]))
+                events.append("send_native_voice · completed")
+                return
+            }
             if name == "request_native_call" {
                 guard UIApplication.shared.applicationState == .active, !callActive, !incomingCall else { throw ServiceError(message: "Vera cannot receive an in-app call invitation right now.") }
                 incomingCall = true

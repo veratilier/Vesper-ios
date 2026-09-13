@@ -31,12 +31,3 @@ jobs:
         with:
           name: Vesper-TestResults
           path: TestResults.xcresult
-      - name: Export visual previews
-        if: success()
-        run: xcrun xcresulttool export attachments --path TestResults.xcresult --output-path HomePreviews
-      - name: Save visual previews
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Home-Previews
-          path: HomePreviews

@@ -24,7 +24,7 @@ struct HomeView: View {
                         Button("Connect Vesper in Settings") { navigate(.settings) }.font(.footnote)
                     }
                     let width = max(240, min(geometry.size.width, 650) - 32)
-                    let height: CGFloat = typeSize.isAccessibilitySize ? 300 : 208
+                    let height: CGFloat = typeSize.isAccessibilitySize ? 300 : max(208, (geometry.size.height - 152) / 2)
                     if typeSize.isAccessibilitySize {
                         desireCard(height: height)
                         usageCard
@@ -74,7 +74,7 @@ struct HomeView: View {
                 }
                 HStack { Text("Weekly limit"); Spacer(minLength: 2); Text(remainingUsage.map { "\($0)%" } ?? "—") }.font(.system(size: 10))
                 if let remaining = remainingUsage { ProgressView(value: Double(remaining), total: 100).tint(VesperTheme.accent) }
-                else { Text(refreshingUsage ? "Loading…" : "Tap refresh").font(.system(size: 9)).foregroundStyle(VesperTheme.muted) }
+                else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError == nil ? "Tap refresh" : "Unable to refresh · Retry")).font(.system(size: 9)).foregroundStyle(VesperTheme.muted) }
             }
         }
     }
@@ -126,9 +126,7 @@ struct HomeView: View {
         chat.configure(store); await chat.loadUsage()
     }
     private var remainingUsage: Int? {
-        let limits = chat.usage["rateLimitsByLimitId"]["codex"] == .null ? chat.usage["rateLimits"] : chat.usage["rateLimitsByLimitId"]["codex"]
-        guard let weekly = [limits["primary"], limits["secondary"]].first(where: { $0["windowDurationMins"].number == 10080 }), case .number(let used) = weekly["usedPercent"] else { return nil }
-        return Int(max(0, min(100, 100 - used)).rounded())
+        chat.weeklyRemaining
     }
     private var greeting: String { let h = Calendar.current.component(.hour, from: .now); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening" }
     private func cardTitle(_ value: String) -> some View {

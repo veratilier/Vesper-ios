@@ -34,6 +34,8 @@ enum Destination: String, CaseIterable, Identifiable {
 }
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var chat: ChatSession
+    @State private var opening = true
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
     @State private var sidebar = false
@@ -45,10 +47,9 @@ struct RootView: View {
             ZStack {
                 Background()
                 if destination == .home {
-                    VStack(spacing: 0) { homeHeader; content; tabBar }
+                    VStack(spacing: 0) { homeHeader; content }
                 } else { content }
             }
-                .safeAreaInset(edge: .bottom, spacing: 0) { if destination != .chat && destination != .home { tabBar } }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar(destination == .home ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
@@ -66,7 +67,7 @@ struct RootView: View {
                 .task { await store.refresh() }
                 .onChange(of: phase) { _, value in if value == .active { Task { await store.refresh() } } }
         }
-        .accessibilityHidden(sidebar)
+        .accessibilityHidden(sidebar || opening)
         if sidebar {
             Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { withAnimation { sidebar = false } }.accessibilityLabel("Close sidebar").accessibilityAddTraits(.isButton)
             VStack(alignment: .leading, spacing: 12) {
@@ -83,6 +84,7 @@ struct RootView: View {
                                     .background(destination == item ? Color.gray.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 14))
                             }.accessibilityAddTraits(destination == item ? .isSelected : [])
                         }
+                        WeeklyUsageView().padding(.horizontal, 18).padding(.vertical, 12)
                     }.padding(.horizontal, 12)
                 }
             }.padding(.top, 8).frame(width: 280).frame(maxHeight: .infinity)
@@ -90,7 +92,11 @@ struct RootView: View {
                 .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
                 .accessibilityAddTraits(.isModal)
         }
-        }.animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
+        if opening { OpeningView { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { opening = false } }.transition(.opacity).zIndex(2) }
+        }.task(id: store.token) { await refreshUsage() }
+        .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
+        .onChange(of: phase) { _, phase in if phase == .active { Task { await refreshUsage() } } }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
     @ViewBuilder private var content: some View {
         switch destination {
@@ -117,16 +123,60 @@ struct RootView: View {
             Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.system(size: 25)).frame(width: 44, height: 44) }.accessibilityLabel("Settings")
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
     }
-    private var tabBar: some View {
-        HStack {
-            ForEach([Destination.home, .chat, .music, .settings]) { item in
-                Button { destination = item } label: {
-                    VStack(spacing: 4) { Image(systemName: item.icon).font(.system(size: destination == .home ? 19 : 22)); Text(item.rawValue).font(destination == .home ? .system(size: 11) : .caption) }
-                        .frame(maxWidth: .infinity).padding(.vertical, destination == .home ? 8 : 12)
-                        .background(destination == item ? Color.gray.opacity(0.15) : .clear, in: Capsule())
-                }.accessibilityAddTraits(destination == item ? .isSelected : [])
+    private func refreshUsage() async {
+        guard !store.token.isEmpty else { return }
+        chat.configure(store); await chat.loadUsage()
+    }
+}
+
+struct OpeningView: View {
+    let enter: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = false
+    @State private var ready = false
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color(red: 0.92, green: 0.94, blue: 0.96)
+                Image("OpeningScene").resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped().opacity(visible ? 1 : 0)
+                VStack(spacing: 12) {
+                    Text("Vesper").font(VesperTheme.title(72))
+                    Text("Somewhere we belong.").font(.system(size: 15, design: .serif).italic())
+                }.foregroundStyle(.white).shadow(color: .black.opacity(0.25), radius: 8)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready ? 1 : 0)
+                VStack { Spacer(); Button(action: enter) {
+                    Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
+                        .padding(.horizontal, 30).padding(.vertical, 13)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.7)))
+                }.buttonStyle(.plain).padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0).disabled(!ready) }
             }
-        }.padding(5).background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().stroke(.white.opacity(0.85), lineWidth: 2)).padding(.horizontal, 20).padding(.bottom, 8)
+        }.ignoresSafeArea().task {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.85)) { visible = true }
+            if !reduceMotion { try? await Task.sleep(for: .milliseconds(850)) }
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { ready = true }
+        }
+    }
+}
+
+struct WeeklyUsageView: View {
+    @EnvironmentObject private var chat: ChatSession
+    @EnvironmentObject private var store: AppStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Weekly usage").font(.system(size: 12))
+                Spacer()
+                Button { Task { chat.configure(store); await chat.loadUsage() } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 32, height: 32)
+                }.disabled(chat.loadingUsage || store.token.isEmpty).accessibilityLabel("Refresh weekly usage")
+            }
+            if let remaining = chat.weeklyRemaining {
+                ProgressView(value: Double(100 - remaining), total: 100)
+                Text("\(100 - remaining)% used · \(remaining)% remaining").font(.system(size: 11))
+            } else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError ?? "Connect in Settings")).font(.system(size: 11)) }
+        }.foregroundStyle(VesperTheme.muted)
     }
 }

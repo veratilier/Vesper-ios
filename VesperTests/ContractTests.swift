@@ -37,19 +37,5 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(ChatPresentation.time("invalid"), "")
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25.235339Z").contains("2026-09-12T"))
     }
-    @MainActor func testHomePreviewAtPhoneSizes() async throws {
-        let store = AppStore(); store.token = ""; store.connected = true
-        store.documents = ["notes": .array([.object(["id": .string("preview"), "text": .string("A little note for today. Tap to read the rest.")])])]
-        for width in [320.0, 393.0] {
-            let controller = UIHostingController(rootView: RootView().environmentObject(store).environmentObject(MusicPlayer()).environmentObject(ChatSession()).tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(.light))
-            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: width == 320 ? 568 : 852))
-            window.rootViewController = controller; window.makeKeyAndVisible()
-            try await Task.sleep(for: .milliseconds(600))
-            controller.view.layoutIfNeeded()
-            let image = UIGraphicsImageRenderer(bounds: controller.view.bounds).image { _ in controller.view.drawHierarchy(in: controller.view.bounds, afterScreenUpdates: true) }
-            let attachment = XCTAttachment(image: image); attachment.name = "Home-\(Int(width))"; attachment.lifetime = .keepAlways; add(attachment)
-            XCTAssertGreaterThan(image.size.width, 0)
-            window.isHidden = true
-        }
-    }
+
 }

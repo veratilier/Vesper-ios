@@ -8,6 +8,9 @@ import SwiftUI
     @Published var loadingModels = false
     @Published var modelError: String?
     @Published var usage: JSONValue = .null
+    @Published var loadingUsage = false
+    @Published var usageError: String?
+    private var connectionTask: Task<Void, Error>?
     @Published var model = ""
     @Published var busy = false
     @Published var status = ""
@@ -76,6 +79,14 @@ import SwiftUI
         }
     }
     func connect() async throws {
+        if initialized { return }
+        if let connectionTask { try await connectionTask.value; return }
+        let task = Task { try await self.establishConnection() }
+        connectionTask = task
+        defer { connectionTask = nil }
+        try await task.value
+    }
+    private func establishConnection() async throws {
         guard !initialized, let api else { return }
         guard !api.token.isEmpty, var u = URLComponents(string: endpoint), u.scheme == "wss", u.host != nil else { throw ServiceError(message: "Pair this device in Settings first.") }
         u.queryItems = (u.queryItems ?? []).filter { $0.name != "token" } + [URLQueryItem(name: "token", value: api.token)]
@@ -169,8 +180,18 @@ import SwiftUI
         }
     }
     func loadUsage() async {
-        do { try await connect(); usage = try await rpc("account/rateLimits/read") }
-        catch { status = "Usage unavailable" }
+        guard !loadingUsage, let api, !api.token.isEmpty else { return }
+        loadingUsage = true; usageError = nil
+        defer { loadingUsage = false }
+        do {
+            try await connect(); usage = try await rpc("account/rateLimits/read")
+            if weeklyRemaining == nil { usageError = "Weekly usage unavailable" }
+        } catch { usageError = "Unable to refresh · Retry" }
+    }
+    var weeklyRemaining: Int? {
+        let limits = usage["rateLimitsByLimitId"]["codex"] == .null ? usage["rateLimits"] : usage["rateLimitsByLimitId"]["codex"]
+        guard let weekly = [limits["primary"], limits["secondary"]].first(where: { $0["windowDurationMins"].number == 10080 }), case .number(let used) = weekly["usedPercent"] else { return nil }
+        return Int(max(0, min(100, 100 - used)).rounded())
     }
     func interrupt() async {
         guard let threadID, let turnID else { return }
@@ -203,7 +224,8 @@ import SwiftUI
             try? await sendPacket(.object(["id": packet["id"], "error": .object(["code": .number(-32601), "message": .string("This request needs a client with support for this interaction.")])]))
             return
         }
-        if method == "item/agentMessage/delta" {
+        if method == "account/rateLimits/updated" { usage = p; usageError = nil }
+        else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
             guard !itemID.isEmpty else { return }
             if let index = messages.firstIndex(where: { $0.id == itemID }) { messages[index]["content"] = .string(messages[index]["content"].string + p["delta"].string) }

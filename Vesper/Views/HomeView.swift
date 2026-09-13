@@ -9,6 +9,10 @@ struct HomeView: View {
     @State private var desire: JSONValue = .null
     @State private var desireError = false
     @State private var refreshingUsage = false
+    @StateObject private var weatherLocation = ChatLocation()
+    @State private var weather: JSONValue = .null
+    @State private var weatherLoading = false
+    @State private var weatherError = false
     let navigate: (Destination) -> Void
     private let fields = ["longing", "tenderness", "playfulness", "intensity", "attachment", "possessiveness"]
     var body: some View {
@@ -20,11 +24,12 @@ struct HomeView: View {
                         Text(greeting + ", Vera").font(VesperTheme.title(32)).minimumScaleFactor(0.65).lineLimit(1)
                         Text("A place for today, too.").font(.system(size: 14)).foregroundStyle(VesperTheme.muted)
                     }.padding(.top, 10).padding(.bottom, 4)
+                    weatherRow
                     if !store.connected {
                         Button("Connect Vesper in Settings") { navigate(.settings) }.font(.footnote)
                     }
                     let width = max(240, min(geometry.size.width, 650) - 32)
-                    let height: CGFloat = typeSize.isAccessibilitySize ? 300 : max(208, (geometry.size.height - 152) / 2)
+                    let height: CGFloat = typeSize.isAccessibilitySize ? 300 : min(250, max(200, (width - 12) * 0.60 + 12))
                     if typeSize.isAccessibilitySize {
                         desireCard(height: height)
                         usageCard
@@ -37,17 +42,76 @@ struct HomeView: View {
                             VStack(spacing: 12) { usageCard.frame(height: 80); notesCard(height: height - 92) }
                         }
                         HStack(alignment: .top, spacing: 12) {
-                            remindersCard(height: height).frame(width: (width - 12) * 0.37)
+                            remindersCard(height: height - 14).frame(width: (width - 12) * 0.40)
                             musicCard(height: height)
                         }
                     }
                 }.padding(.horizontal, 16).padding(.bottom, 20).frame(maxWidth: 650).frame(maxWidth: .infinity)
-            }.refreshable { await store.refresh(); await loadDesire(); await loadUsage() }
+            }.refreshable { await store.refresh(); await loadDesire(); await loadUsage(); await refreshWeather() }
         }.buttonStyle(.plain)
-        .task { player.updateLibrary(store.document("music").array); await loadDesire() }
+        .task { player.updateLibrary(store.document("music").array); await loadDesire(); await refreshWeather() }
+        .onChange(of: weatherLocation.coordinate?.latitude) { _, _ in Task { await refreshWeather() } }
         .onChange(of: store.document("music")) { _, tracks in player.updateLibrary(tracks.array) }
         .onChange(of: store.token) { _, _ in Task { await loadDesire() } }
         .onChange(of: phase) { _, value in if value == .active { Task { await loadDesire() } } }
+    }
+    private var weatherRow: some View {
+        Button {
+            if case .number = store.document("environment")["latitude"] { Task { await refreshWeather() } }
+            else { weatherLocation.locate() }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: weatherIcon)
+                if case .number(let temperature) = weather["temperature"] {
+                    Text("\(Int(temperature.rounded()))° · " + weatherDescription)
+                    Text(ChatPresentation.time(weather["updatedAt"].string)).font(.system(size: 10)).opacity(0.7)
+                } else {
+                    Text(weatherLoading || weatherLocation.loading ? "Updating weather…" : weatherError || weatherLocation.error != nil ? "Weather unavailable · Retry" : "Local weather · Tap to enable")
+                }
+                Spacer()
+                Image(systemName: "arrow.clockwise").font(.system(size: 10))
+            }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
+        }.disabled(weatherLoading).padding(.vertical, 2)
+    }
+    private var weatherDescription: String {
+        switch Int(weather["code"].number) {
+        case 0: return "Clear"
+        case 1...3: return "Cloudy"
+        case 45, 48: return "Fog"
+        case 51...67, 80...82: return "Rain"
+        case 71...77, 85, 86: return "Snow"
+        case 95...99: return "Thunderstorms"
+        default: return "Weather"
+        }
+    }
+    private var weatherIcon: String {
+        switch weatherDescription {
+        case "Clear": return "sun.max"
+        case "Rain": return "cloud.rain"
+        case "Snow": return "cloud.snow"
+        case "Thunderstorms": return "cloud.bolt.rain"
+        case "Fog": return "cloud.fog"
+        default: return "cloud.sun"
+        }
+    }
+    private func refreshWeather() async {
+        guard !weatherLoading else { return }
+        let environment = store.document("environment")
+        let latitude: Double, longitude: Double
+        if let coordinate = weatherLocation.coordinate { latitude = coordinate.latitude; longitude = coordinate.longitude }
+        else if case .number(let lat) = environment["latitude"], case .number(let lon) = environment["longitude"] { latitude = lat; longitude = lon }
+        else { return }
+        guard (-90...90).contains(latitude), (-180...180).contains(longitude) else { return }
+        weatherLoading = true; defer { weatherLoading = false }
+        do {
+            guard let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(latitude)&longitude=\(longitude)&current=temperature_2m,weather_code&timezone=auto") else { return }
+            var request = URLRequest(url: url); request.timeoutInterval = 15
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw ServiceError(message: "Weather unavailable") }
+            let result = try JSONDecoder().decode(JSONValue.self, from: data)
+            guard case .number = result["current"]["temperature_2m"] else { throw ServiceError(message: "Weather unavailable") }
+            weather = .object(["temperature": result["current"]["temperature_2m"], "code": result["current"]["weather_code"], "updatedAt": .string(isoNow())]); weatherError = false
+        } catch { weatherError = true; weather = .null }
     }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {
@@ -84,7 +148,7 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     cardTitle("Notes")
                     Text(store.document("notes").array.first?["text"].string ?? "A little space for your thoughts.")
-                        .font(.system(size: 12)).lineSpacing(2).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.system(size: 10.5)).lineSpacing(2).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 0)
                 }
             }.frame(height: height)

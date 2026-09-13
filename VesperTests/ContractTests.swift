@@ -48,6 +48,14 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(UserHistoryRecovery.merge(restored, snapshot: snapshot, conversationID: "c", tombstones: []), restored)
         XCTAssertEqual(UserHistoryRecovery.merge([reply], snapshot: snapshot, conversationID: "c", tombstones: [.object(["itemId": .string("u1")])]), [reply])
     }
+    func testToolDetailsAttachToReplyWithoutHidingUserMessages() throws {
+        let data = Data(#"[{"id":"u","role":"user","content":"Hi"},{"id":"tool","role":"system","metadata":{"turnId":"t","execution":{"title":"Read"}}},{"id":"a","role":"agent","content":"Hello","metadata":{"turnId":"t"}}]"#.utf8)
+        let messages = try JSONDecoder().decode([JSONValue].self, from: data)
+        let rows = ChatPresentation.displayRows(messages)
+        XCTAssertEqual(rows.map(\.id), ["u", "a"])
+        XCTAssertTrue(rows[0].activities.isEmpty)
+        XCTAssertEqual(rows[1].activities.map(\.id), ["tool"])
+    }
     func testHistoryDatesHandleBothTimestampFormats() {
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25.235339Z").isEmpty)
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25Z").isEmpty)

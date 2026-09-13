@@ -41,17 +41,15 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
-                        ForEach(ChatPresentation.rows(chat.messages)) { row in
-                            if row.activity { activityRow(row) }
-                            else if let message = row.messages.first { messageRow(message).id(message.id) }
+                        ForEach(ChatPresentation.displayRows(chat.messages)) { row in
+                            if let message = row.messages.first {
+                                if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
+                                else { messageRow(message, activities: row.activities).id(message.id) }
+                            }
                         }
-                        if !chat.thinkingSummary.isEmpty {
-                            DisclosureGroup("Thinking") { Text(chat.thinkingSummary).font(.system(size: 13)).textSelection(.enabled) }.font(.caption).foregroundStyle(VesperTheme.muted)
+                        if chat.busy {
+                            AssistantMessageHeading(message: .object(["status": .string(chat.busy ? "streaming" : "delivered"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events)
                         }
-                        if !chat.events.isEmpty {
-                            DisclosureGroup("Tools · \(chat.events.count)") { ForEach(Array(chat.events.enumerated()), id: \.offset) { _, event in Text(event).font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading) } }.font(.caption).foregroundStyle(VesperTheme.muted)
-                        }
-                        if chat.busy { HStack { ProgressView().controlSize(.small); Text("Thinking…").font(.caption) }.foregroundStyle(VesperTheme.muted) }
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(.horizontal, 20).padding(.vertical, 14)
                 }.scrollDismissesKeyboard(.interactively)
@@ -210,12 +208,12 @@ struct ChatView: View {
             Image(systemName: "person.fill").font(.system(size: 19)).foregroundStyle(VesperTheme.muted)
         }
     }
-    private func messageRow(_ message: JSONValue) -> some View {
+    private func messageRow(_ message: JSONValue, activities: [JSONValue]) -> some View {
         let user = ChatPresentation.isUser(message)
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user { AssistantMessageHeading(message: message) }
+                if !user { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
                 if !message["metadata"]["attachments"].array.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
@@ -235,24 +233,6 @@ struct ChatView: View {
             }.frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
             if !user { Spacer(minLength: 20) }
         }
-    }
-    private func activityRow(_ row: ChatPresentation.Row) -> some View {
-        DisclosureGroup(row.messages.contains(where: ChatPresentation.isThinking) ? "Thinking" : "Tools · \(row.messages.count)") {
-            ForEach(row.messages) { item in
-                if item["metadata"]["execution"] != .null {
-                    MiniTerminal(execution: item["metadata"]["execution"])
-                } else {
-                VStack(alignment: .leading, spacing: 5) {
-                    if !item["metadata"]["thoughtSummary"].string.isEmpty { Text(item["metadata"]["thoughtSummary"].string) }
-                    if !item["content"].string.isEmpty { Text(item["content"].string) }
-                    let execution = item["metadata"]["execution"]
-                    if !execution["title"].string.isEmpty { Text(execution["title"].string) }
-                    if !execution["status"].string.isEmpty { Text(execution["status"].string).font(.caption2) }
-                    if !execution["output"].string.isEmpty { Text(execution["output"].string) }
-                }.font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
-                }
-            }
-        }.font(.caption).foregroundStyle(VesperTheme.muted)
     }
     private var composer: some View {
         VStack(spacing: 4) {
@@ -347,6 +327,7 @@ enum ChatPresentation {
         let id: String
         let activity: Bool
         var messages: [JSONValue]
+        var activities: [JSONValue] = []
     }
     static func isUser(_ message: JSONValue) -> Bool {
         let role = message["role"].string.lowercased()
@@ -370,6 +351,29 @@ enum ChatPresentation {
             } else { result.append(Row(id: message.id, activity: activity, messages: [message])) }
         }
         return result
+    }
+    static func displayRows(_ messages: [JSONValue]) -> [Row] {
+        let replies = messages.indices.filter { !isUser(messages[$0]) && !isActivity(messages[$0]) }
+        var attached: [Int: [JSONValue]] = [:]
+        var orphans: [Int] = []
+        for index in messages.indices where isActivity(messages[index]) {
+            let turn = messages[index]["metadata"]["turnId"].string
+            let exact = turn.isEmpty ? nil : replies.first { messages[$0]["metadata"]["turnId"].string == turn }
+            // For legacy records without turn IDs, stay within this user's turn.
+            let lower = messages.indices.last { $0 < index && isUser(messages[$0]) } ?? -1
+            let upper = messages.indices.first { $0 > index && isUser(messages[$0]) } ?? messages.count
+            let nearby = replies.filter { $0 > lower && $0 < upper && (turn.isEmpty || messages[$0]["metadata"]["turnId"].string.isEmpty) }
+            if let target = exact ?? nearby.first(where: { $0 > index }) ?? nearby.last {
+                attached[target, default: []].append(messages[index])
+            } else { orphans.append(index) }
+        }
+        return messages.indices.compactMap { index in
+            if isActivity(messages[index]) {
+                guard orphans.contains(index) else { return nil }
+                return Row(id: messages[index].id, activity: true, messages: [messages[index]], activities: [messages[index]])
+            }
+            return Row(id: messages[index].id, activity: false, messages: [messages[index]], activities: attached[index] ?? [])
+        }
     }
     static func time(_ raw: String, full: Bool = false) -> String {
         let parser = ISO8601DateFormatter()
@@ -441,13 +445,16 @@ private struct MiniTerminal: View {
 
 private struct AssistantMessageHeading: View {
     let message: JSONValue
+    var activities: [JSONValue] = []
+    var liveEvents: [String] = []
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
-                    Text(ChatPresentation.time(message["createdAt"].string, full: true))
+                    let time = ChatPresentation.time(message["createdAt"].string, full: true)
+                    if !time.isEmpty { Text(time) } else if message["status"].string != "streaming" { Text("Thinking") }
                     if message["status"].string == "streaming" { Text("Thinking…") }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
@@ -455,8 +462,19 @@ private struct AssistantMessageHeading: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Thinking").font(.caption).italic()
-                    Text(message["metadata"]["thoughtSummary"].string.isEmpty ? "No saved thinking summary for this message." : message["metadata"]["thoughtSummary"].string)
-                        .font(.system(size: 13)).textSelection(.enabled)
+                    if !message["metadata"]["thoughtSummary"].string.isEmpty {
+                        Text(message["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
+                    }
+                    ForEach(activities) { item in
+                        if item["metadata"]["execution"] != .null { MiniTerminal(execution: item["metadata"]["execution"]) }
+                        else {
+                            Text(item["metadata"]["thoughtSummary"].string.isEmpty ? item["content"].string : item["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
+                        }
+                    }
+                    ForEach(Array(liveEvents.enumerated()), id: \.offset) { _, event in Text(event).font(.system(size: 12, design: .monospaced)) }
+                    if activities.isEmpty && liveEvents.isEmpty && message["metadata"]["thoughtSummary"].string.isEmpty {
+                        Text("No saved details for this message.").font(.caption)
+                    }
                 }.foregroundStyle(VesperTheme.muted).padding(.vertical, 4)
             }
         }

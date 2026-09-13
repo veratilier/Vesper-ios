@@ -42,9 +42,15 @@ struct RootView: View {
     var body: some View {
         ZStack(alignment: .leading) {
         NavigationStack {
-            ZStack { Background(); content }
-                .safeAreaInset(edge: .bottom, spacing: 0) { if destination != .chat { tabBar } }
+            ZStack {
+                Background()
+                if destination == .home {
+                    VStack(spacing: 0) { homeHeader; content; tabBar }
+                } else { content }
+            }
+                .safeAreaInset(edge: .bottom, spacing: 0) { if destination != .chat && destination != .home { tabBar } }
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar(destination == .home ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
                     ToolbarItem(placement: .principal) { Text(destination == .home ? "Vesper" : destination.rawValue).font(destination == .home ? VesperTheme.title(28) : .headline) }
@@ -102,12 +108,21 @@ struct RootView: View {
         case .settings: SettingsView()
         }
     }
+    private var homeHeader: some View {
+        HStack {
+            Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal").font(.system(size: 20)).frame(width: 44, height: 44) }.accessibilityLabel("Open sidebar")
+            Spacer()
+            Text("Vesper").font(VesperTheme.title(27))
+            Spacer()
+            Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.system(size: 25)).frame(width: 44, height: 44) }.accessibilityLabel("Settings")
+        }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
+    }
     private var tabBar: some View {
         HStack {
             ForEach([Destination.home, .chat, .music, .settings]) { item in
                 Button { destination = item } label: {
-                    VStack(spacing: 5) { Image(systemName: item.icon).font(.title3); Text(item.rawValue).font(.caption) }
-                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                    VStack(spacing: 4) { Image(systemName: item.icon).font(.system(size: destination == .home ? 19 : 22)); Text(item.rawValue).font(destination == .home ? .system(size: 11) : .caption) }
+                        .frame(maxWidth: .infinity).padding(.vertical, destination == .home ? 8 : 12)
                         .background(destination == item ? Color.gray.opacity(0.15) : .clear, in: Capsule())
                 }.accessibilityAddTraits(destination == item ? .isSelected : [])
             }

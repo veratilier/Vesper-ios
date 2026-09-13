@@ -2,6 +2,90 @@ import SwiftUI
 import UIKit
 import PhotosUI
 import UniformTypeIdentifiers
+import QuickLook
+
+private struct AttachmentRowAlignment: ViewModifier {
+    let single: Bool
+    let user: Bool
+    func body(content: Content) -> some View {
+        if single { content.containerRelativeFrame(.horizontal, alignment: user ? .trailing : .leading) }
+        else { content }
+    }
+}
+
+private struct ChatAttachmentPreviewButton<Label: View>: View {
+    let url: URL
+    let name: String
+    @ViewBuilder var label: () -> Label
+    @State private var showing = false
+    var body: some View {
+        Button { showing = true } label: { label() }.buttonStyle(.plain)
+            .sheet(isPresented: $showing) { ChatAttachmentPreview(url: url, name: name) }
+    }
+}
+
+private struct ChatAttachmentPreview: View {
+    let url: URL
+    let name: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var localURL: URL?
+    @State private var text: String?
+    @State private var error = ""
+    @State private var directory: URL?
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let text {
+                    ScrollView { Text(text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding() }
+                } else if let localURL { AttachmentQuickLook(url: localURL) }
+                else if !error.isEmpty { VStack(spacing: 16) { Text(error); Button("Retry") { Task { await load() } } }.padding() }
+                else { ProgressView("Loading preview…") }
+            }
+            .navigationTitle(name.isEmpty ? "File preview" : name).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) { if let localURL { ShareLink(item: localURL) { Label("Save or share", systemImage: "square.and.arrow.up") } } }
+            .task { await load() }
+            .onDisappear { if let directory { try? FileManager.default.removeItem(at: directory) } }
+        }
+    }
+    @MainActor private func load() async {
+        error = ""
+        do {
+            let (temporary, response) = try await URLSession.shared.download(from: url)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+            try Task.checkCancellation()
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            directory = folder
+            let filename = (name as NSString).lastPathComponent
+            let target = folder.appendingPathComponent(filename.isEmpty || filename == "." || filename == ".." ? "attachment" : filename)
+            try FileManager.default.moveItem(at: temporary, to: target)
+            if ["md", "markdown", "txt", "csv", "json", "log"].contains(target.pathExtension.lowercased()) {
+                let size = (try target.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
+                if size <= 2_000_000 { text = try? String(contentsOf: target, encoding: .utf8) }
+            }
+            localURL = target
+        } catch is CancellationError { }
+        catch { self.error = "Could not preview this file: " + error.localizedDescription }
+    }
+}
+
+private struct AttachmentQuickLook: UIViewControllerRepresentable {
+    let url: URL
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController(); controller.dataSource = context.coordinator; return controller
+    }
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) { context.coordinator.url = url; controller.reloadData() }
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        var url: URL
+        init(url: URL) { self.url = url }
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { url as NSURL }
+    }
+}
 
 struct ChatView: View {
     var onMenu: () -> Void = {}
@@ -233,7 +317,7 @@ struct ChatView: View {
                 if !message["metadata"]["attachments"].array.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { Link(destination: url) { HStack(spacing: 12) {
+                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { HStack(spacing: 12) {
                             Image(systemName: "doc.text").font(.title2)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(attachment["name"].string.isEmpty ? "Download file" : attachment["name"].string).font(.subheadline).lineLimit(2)
@@ -241,7 +325,7 @@ struct ChatView: View {
                             }
                             Image(systemName: "arrow.down.to.line").font(.subheadline)
                         }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-                    } } }
+                    } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
                 if !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)

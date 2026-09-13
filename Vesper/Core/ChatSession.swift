@@ -258,7 +258,7 @@ import AVFoundation
                 let catalog = try await api.request("/api/codex/tools")
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = (UserDefaults.standard.string(forKey: "nativeInstructions") ?? "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese.") + "\nVesper Desire is independent. Use only the built-in desire_* tools; never the official Rowan Desire connector or desire.r-vera.com."
-                let result = try await rpc("thread/start", .object(["dynamicTools": .array(catalog["tools"].array.filter { !["request_native_call", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.voiceTool]), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool]), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
                 threadID = id
@@ -314,6 +314,10 @@ import AVFoundation
         do { _ = try await rpc("turn/interrupt", .object(["threadId": .string(threadID), "turnId": .string(turnID)])) }
         catch { self.error = error.localizedDescription }
     }
+    private static let healthTool: JSONValue = .object([
+        "name": .string("read_native_health"), "description": .string("Read fresh, authorized HealthKit summaries from Vera's current iPhone: steps, sleep, heart rate and wrist temperature. Missing data does not prove permission was denied. Requires the native app; do not claim access to other health data."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object([:]), "additionalProperties": .bool(false)])
+    ])
     private static let voiceTool: JSONValue = .object([
         "name": .string("send_native_voice"), "description": .string("Send Vera an audio message synthesized using her configured ElevenLabs/MiniMax voice. Include the exact spoken text. Success means the audio message was saved, not listened to."),
         "inputSchema": .object(["type": .string("object"), "properties": .object(["text": .object(["type": .string("string")])]), "required": .array([.string("text")]), "additionalProperties": .bool(false)])
@@ -438,6 +442,13 @@ import AVFoundation
         var args = p["arguments"]
         if case .string(let raw) = args { args = (try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))) ?? .object([:]) }
         do {
+            if name == "read_native_health" {
+                let reader = HealthReader(); await reader.refresh()
+                let result = reader.snapshot
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(reader.available), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                events.append("read_native_health · completed")
+                return
+            }
             if name == "send_native_voice" {
                 guard let store = appStore else { throw ServiceError(message: "Device is not connected") }
                 let text = args["text"].string.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -71,7 +71,7 @@ struct HealthView: View {
     var body: some View {
         Page(title: "Health", subtitle: "A little care for your day.") {
             GlassCard { VStack(alignment: .leading, spacing: 14) {
-                Text("Choose which Health data Vesper may read. These readings stay on this device; they are not sent to Rowan or the server.").font(.subheadline)
+                Text("Choose which Health data Vesper may read. Rowan can read these authorized summaries through the native Health tool in a new chat. Requested summaries are sent to the Vesper chat service and become part of the conversation.").font(.subheadline)
                 Button { Task { await reader.connect() } } label: { Text("Choose Health permissions").foregroundStyle(.white).padding(14).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(reader.busy || !reader.available)
                 if !reader.available { Text("HealthKit is not available on this device.") }
                 Text("No readable data can mean no recorded samples or no read permission. Vesper cannot tell which; change access in the Health app.").font(.caption).foregroundStyle(VesperTheme.muted)

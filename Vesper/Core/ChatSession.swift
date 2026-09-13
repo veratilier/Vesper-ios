@@ -266,6 +266,28 @@ import SwiftUI
         else if method == "item/reasoning/summaryTextDelta" {
             thinkingSummary += p["delta"].string
         }
+        else if method == "item/commandExecution/outputDelta" || method == "item/fileChange/outputDelta" {
+            let id = p["itemId"].string
+            if let index = messages.firstIndex(where: { $0.id == "execution-" + id }) {
+                let old = messages[index]["metadata"]["execution"]["output"].string
+                messages[index]["metadata"]["execution"]["output"] = .string(old + p["delta"].string)
+            }
+        }
+        else if (method == "item/started" || method == "item/completed"), ["commandExecution", "fileChange", "shellCall"].contains(p["item"]["type"].string) {
+            let item = p["item"]; let id = item["id"].string
+            guard !id.isEmpty else { return }
+            let index = messages.firstIndex(where: { $0.id == "execution-" + id })
+            var execution = index.map { messages[$0]["metadata"]["execution"] } ?? .object([:])
+            execution["type"] = item["type"]
+            execution["title"] = .string(item["command"].string.isEmpty ? (item["type"].string == "fileChange" ? "File changes" : "Terminal") : item["command"].string)
+            execution["status"] = .string(item["status"].string.isEmpty ? (method == "item/started" ? "running" : "completed") : item["status"].string)
+            for key in ["command", "cwd", "exitCode", "durationMs"] { if item[key] != .null { execution[key] = item[key] } }
+            if item["aggregatedOutput"] != .null { execution["output"] = item["aggregatedOutput"] }
+            if item["changes"] != .null { execution["files"] = item["changes"] }
+            let message: JSONValue = .object(["id": .string("execution-" + id), "conversationId": .string(conversationID), "role": .string("tool"), "content": .string(""), "createdAt": .string(index.map { messages[$0]["createdAt"].string } ?? isoNow()), "source": .string("codex"), "metadata": .object(["blockType": item["type"], "execution": execution])])
+            if let index { messages[index] = message } else { messages.append(message) }
+            if method == "item/completed" { do { try await persist(message) } catch { self.error = "Terminal output received, but history could not be saved." } }
+        }
         else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
             guard !itemID.isEmpty else { return }

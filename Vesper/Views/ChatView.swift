@@ -11,6 +11,10 @@ struct ChatView: View {
     @StateObject private var speech = SpeechInput()
     @StateObject private var location = ChatLocation()
     @State private var speechBase = ""
+    @State private var avatarRole = "user"
+    @State private var avatarPicker = false
+    @State private var avatarPhoto: PhotosPickerItem?
+    @State private var savingAvatar = false
     @State private var draft = ""
     @State private var history = false
     @State private var historyTab = 0
@@ -62,6 +66,28 @@ struct ChatView: View {
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
         .onChange(of: speech.error) { _, error in if let error { chat.error = error } }
         .onDisappear { speech.stop() }
+        .photosPicker(isPresented: $avatarPicker, selection: $avatarPhoto, matching: .images)
+        .onChange(of: avatarPhoto) { _, pick in
+            guard let pick else { return }
+            let role = avatarRole
+            savingAvatar = true
+            Task {
+                defer { savingAvatar = false; avatarPhoto = nil }
+                do {
+                    guard let data = try await pick.loadTransferable(type: Data.self), let image = UIImage(data: data) else { throw ServiceError(message: "Could not read this photo.") }
+                    let scale = min(1, 640 / max(image.size.width, image.size.height))
+                    let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+                    let resized = UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+                    guard let jpeg = resized.jpegData(compressionQuality: 0.85) else { throw ServiceError(message: "Could not prepare this photo.") }
+                    let saved = await store.mutate("profile") { current in
+                        var profile = current
+                        profile["\(role)Avatar"] = .string("data:image/jpeg;base64," + jpeg.base64EncodedString())
+                        return profile
+                    }
+                    if !saved { chat.error = store.error ?? "Could not save this avatar." }
+                } catch { chat.error = error.localizedDescription }
+            }
+        }
         .photosPicker(isPresented: $photoPicker, selection: $selectedPhotos, maxSelectionCount: max(1, 5 - images.count), matching: .images)
         .onChange(of: selectedPhotos) { _, picks in
             guard !picks.isEmpty else { return }; loadingPhotos = true
@@ -137,8 +163,8 @@ struct ChatView: View {
         HStack(spacing: 5) {
             Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
             Spacer()
-            profileAvatar("user", fallbackName: "Vera")
-            profileAvatar("agent", fallbackName: "Rowan")
+            Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
+            Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
             Button { if draft.isEmpty && images.isEmpty && files.isEmpty { newChat() } else { confirmNew = true } } label: { Image(systemName: "plus") }.accessibilityLabel("New chat").disabled(chat.busy || chat.loadingModels)
             Button { openCall() } label: { Image(systemName: "phone") }.accessibilityLabel("Call").disabled(chat.busy)
@@ -207,6 +233,9 @@ struct ChatView: View {
     private func activityRow(_ row: ChatPresentation.Row) -> some View {
         DisclosureGroup(row.messages.contains(where: ChatPresentation.isThinking) ? "Thinking" : "Tools · \(row.messages.count)") {
             ForEach(row.messages) { item in
+                if item["metadata"]["execution"] != .null {
+                    MiniTerminal(execution: item["metadata"]["execution"])
+                } else {
                 VStack(alignment: .leading, spacing: 5) {
                     if !item["metadata"]["thoughtSummary"].string.isEmpty { Text(item["metadata"]["thoughtSummary"].string) }
                     if !item["content"].string.isEmpty { Text(item["content"].string) }
@@ -215,6 +244,7 @@ struct ChatView: View {
                     if !execution["status"].string.isEmpty { Text(execution["status"].string).font(.caption2) }
                     if !execution["output"].string.isEmpty { Text(execution["output"].string) }
                 }.font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+                }
             }
         }.font(.caption).foregroundStyle(VesperTheme.muted)
     }
@@ -340,5 +370,61 @@ enum ChatPresentation {
         let formatter = DateFormatter()
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm"
         return formatter.string(from: date)
+    }
+}
+
+private struct MiniTerminal: View {
+    let execution: JSONValue
+    @State private var expanded = false
+    @State private var details = false
+    private var title: String { execution["title"].string.isEmpty ? "Terminal" : execution["title"].string }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button { expanded.toggle() } label: { Label(title, systemImage: "terminal").lineLimit(1) }
+                Spacer()
+                Text(execution["status"].string).font(.caption2)
+                Button { details = true } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.accessibilityLabel("Expand terminal")
+            }
+            if expanded { output.frame(maxHeight: 220) }
+        }.font(.system(size: 12, design: .monospaced)).foregroundStyle(Color.white.opacity(0.9))
+        .padding(12).background(Color(red: 0.12, green: 0.14, blue: 0.18), in: RoundedRectangle(cornerRadius: 12))
+        .buttonStyle(.plain)
+        .sheet(isPresented: $details) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    ForEach([Color.red, Color.yellow, Color.green], id: \.self) { color in Circle().fill(color).frame(width: 10, height: 10) }
+                    Text(title).lineLimit(1); Spacer()
+                    Button("Done") { details = false }
+                }
+                output
+            }.padding().font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
+            .background(Color(red: 0.12, green: 0.14, blue: 0.18)).presentationDetents([.large])
+        }
+    }
+    private var output: some View {
+        ScrollView([.vertical, .horizontal]) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(execution["status"].string)
+                if !execution["cwd"].string.isEmpty { Text(execution["cwd"].string) }
+                if execution["exitCode"] != .null { Text("Exit \(Int(execution["exitCode"].number))") }
+                if !execution["command"].string.isEmpty { Text("$ " + execution["command"].string) }
+                ForEach(Array(execution["files"].array.enumerated()), id: \.offset) { _, file in
+                    Text(file["path"].string).foregroundStyle(.cyan)
+                    code(file["diff"].string.isEmpty ? "No diff returned by the server." : file["diff"].string)
+                    if file["truncated"].bool { Text("Saved diff is partial.").foregroundStyle(.yellow) }
+                }
+                if !execution["output"].string.isEmpty { code(execution["output"].string) }
+                if execution["output"].string.isEmpty && execution["files"].array.isEmpty { Text("No output received yet.") }
+                if execution["truncated"].bool || execution["filesTruncated"].bool { Text("The saved output is partial.").foregroundStyle(.yellow) }
+            }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    private func code(_ value: String) -> some View {
+        LazyVStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(value.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                Text(line.isEmpty ? " " : line).foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : line.hasPrefix("@@") ? Color.cyan : Color.white.opacity(0.9))
+            }
+        }
     }
 }

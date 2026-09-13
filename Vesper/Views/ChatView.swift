@@ -137,13 +137,43 @@ struct ChatView: View {
         HStack(spacing: 5) {
             Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
             Spacer()
-            Image(systemName: "person.crop.circle").foregroundStyle(VesperTheme.muted)
-            Text("Rowan").font(VesperTheme.title(25))
+            profileAvatar("user", fallbackName: "Vera")
+            profileAvatar("agent", fallbackName: "Rowan")
             Spacer()
             Button { if draft.isEmpty && images.isEmpty && files.isEmpty { newChat() } else { confirmNew = true } } label: { Image(systemName: "plus") }.accessibilityLabel("New chat").disabled(chat.busy || chat.loadingModels)
             Button { openCall() } label: { Image(systemName: "phone") }.accessibilityLabel("Call").disabled(chat.busy)
             Button { focused = false; speech.stop(); history = true; Task { await chat.loadConversations() } } label: { Image(systemName: "archivebox") }.accessibilityLabel("Conversations and favorites")
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
+    }
+    private func profileAvatar(_ role: String, fallbackName: String) -> some View {
+        let profile = store.document("profile")
+        let source = profile["\(role)Avatar"].string
+        let name = profile["\(role)Name"].string
+        return Group {
+            if source.hasPrefix("data:image/"),
+               let comma = source.firstIndex(of: ","),
+               let data = Data(base64Encoded: String(source[source.index(after: comma)...])),
+               let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if !source.isEmpty,
+                      let url = URL(string: source, relativeTo: URL(string: store.baseURL))?.absoluteURL,
+                      url.scheme == "https" {
+                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: {
+                    avatarPlaceholder(role)
+                }
+            } else {
+                avatarPlaceholder(role)
+            }
+        }
+        .frame(width: 40, height: 40).clipShape(Circle())
+        .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 1))
+        .accessibilityLabel("\(name.isEmpty ? fallbackName : name) avatar")
+    }
+    private func avatarPlaceholder(_ role: String) -> some View {
+        ZStack {
+            Circle().fill(VesperTheme.muted.opacity(role == "user" ? 0.12 : 0.25))
+            Image(systemName: "person.fill").font(.system(size: 19)).foregroundStyle(VesperTheme.muted)
+        }
     }
     private func messageRow(_ message: JSONValue) -> some View {
         let user = message["role"].string == "user"

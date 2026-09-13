@@ -158,12 +158,12 @@ struct CallCameraPreview: UIViewRepresentable {
     private var generation = UUID()
     var finished: (() -> Void)?
     override init() { super.init(); synthesizer.delegate = self }
-    func play(_ text: String, store: AppStore) async {
+    func play(_ text: String, store: AppStore, connectionOverride: JSONValue? = nil) async {
         stop(); error = nil; let id = UUID(); generation = id; speaking = true
         do {
             try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try AVAudioSession.sharedInstance().setActive(true)
-            let connection = store.document("connections")["Agent 声音"]
+            let connection = connectionOverride ?? VoiceConfiguration.connection(store)
             if !connection["apiKey"].string.isEmpty {
                 var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
                 request.httpMethod = "POST"; request.timeoutInterval = 30
@@ -215,7 +215,7 @@ struct NativeCallView: View {
                 Text(voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active ? "Paused" : "Rowan").font(VesperTheme.title(32))
                 ScrollView { Text(speech.listening ? speech.text : caption).frame(maxWidth: .infinity).textSelection(.enabled) }.frame(maxHeight: 160)
                 if video { Text("A camera frame is shared with each spoken message.").font(.caption).foregroundStyle(.secondary) }
-                if store.document("connections")["Agent 声音"]["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
+                if VoiceConfiguration.connection(store)["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
                 if let error = notice ?? speech.error ?? voice.error { Text(error).font(.caption).foregroundStyle(.red) }
                 Spacer(minLength: 0)
                 if !active { Button("Start call") { player.pause(); active = true; Task { await speech.start() } }.buttonStyle(.borderedProminent).disabled(chat.busy) }

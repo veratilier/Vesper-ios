@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import AVKit
+import PDFKit
 import UniformTypeIdentifiers
 
 struct DesireView: View {
@@ -150,6 +151,9 @@ struct PandoraView: View {
 struct ReadingRoomView: View {
     @EnvironmentObject private var store: AppStore
     @State private var adding = false
+    @State private var importing = false
+    @State private var importStatus = ""
+    @State private var fileName = ""
     @State private var title = ""
     @State private var text = ""
     var body: some View {
@@ -161,8 +165,32 @@ struct ReadingRoomView: View {
         }.sheet(isPresented: $adding) {
             EditorSheet(title: "Add a book", busy: store.saving, save: {
                 guard !title.isEmpty, !text.isEmpty, text.count <= 500000 else { store.error = "Enter a title and text under 500,000 characters."; return }
-                Task { if await store.upsert("readingRoom", item: .object(["id": .string(UUID().uuidString), "title": .string(title), "text": .string(text), "page": .number(0), "notes": .array([])])) { adding = false; title = ""; text = "" } }
-            }) { FormField(label: "Title", text: $title); FormField(label: "Book text", text: $text, multiline: true) }
+                Task { if await store.upsert("readingRoom", item: .object(["id": .string(UUID().uuidString), "title": .string(title), "text": .string(text), "page": .number(0), "notes": .array([])])) { adding = false; title = ""; text = ""; fileName = ""; importStatus = "" } }
+            }) { Button { importing = true } label: { Label("Import book file", systemImage: "doc.badge.plus").frame(minHeight: 44) }
+                Text("TXT, Markdown or text-based PDF").font(.caption).foregroundStyle(VesperTheme.muted)
+                if !fileName.isEmpty { Text(fileName).font(.subheadline); Text("\(text.count) characters ready to import").font(.caption) }
+                if !importStatus.isEmpty { Text(importStatus).font(.caption).foregroundStyle(.red) }
+                FormField(label: "Title", text: $title)
+                DisclosureGroup("Or paste text") { FormField(label: "Book text", text: $text, multiline: true) } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .pdf, UTType(filenameExtension: "md") ?? .plainText]) { result in
+            do {
+                let url = try result.get()
+                let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= 20 * 1024 * 1024 else { throw ServiceError(message: "Choose a file under 20 MB.") }
+                let imported: String
+                if url.pathExtension.lowercased() == "pdf" {
+                    guard let document = PDFDocument(url: url), !document.isLocked, let value = document.string, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ServiceError(message: "This PDF has no readable text. Scanned or locked PDFs need a text version.") }
+                    imported = value
+                } else {
+                    let data = try Data(contentsOf: url)
+                    guard let value = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) else { throw ServiceError(message: "Save the text file as UTF-8 and import again.") }
+                    imported = value
+                }
+                guard !imported.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, imported.count <= 500000 else { throw ServiceError(message: "Import a nonempty book under 500,000 characters; split larger books into volumes.") }
+                text = imported; title = url.deletingPathExtension().lastPathComponent; fileName = url.lastPathComponent; importStatus = ""
+            } catch { importStatus = error.localizedDescription }
+        }
         }
     }
 }

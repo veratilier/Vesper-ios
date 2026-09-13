@@ -34,7 +34,7 @@ struct ChatView: View {
     @State private var files: [ChatFile] = []
     @State private var loadingPhotos = false
     @FocusState private var focused: Bool
-    var body: some View {
+    private var chatContent: some View {
         VStack(spacing: 0) {
             header
             ScrollViewReader { proxy in
@@ -61,6 +61,9 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) { composer; if drawer { attachmentDrawer.transition(.move(edge: .bottom).combined(with: .opacity)) } }
         }
+    }
+    private var photoContent: some View {
+        chatContent
         .task { chat.configure(store) }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
@@ -101,6 +104,9 @@ struct ChatView: View {
                 selectedPhotos = []; loadingPhotos = false
             }
         }
+    }
+    private var attachmentContent: some View {
+        photoContent
         .fullScreenCover(isPresented: $cameraPicker) { ChatCameraPicker { data in if let data, images.count < 5 { images.append(data) }; cameraPicker = false }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $call) { NativeCallView() }
         .fileImporter(isPresented: $filePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -123,6 +129,9 @@ struct ChatView: View {
         .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete", role: .destructive) { if let message = deleting { Task { await chat.deleteMessage(message) } }; deleting = nil }
         }
+    }
+    var body: some View {
+        attachmentContent
         .sheet(isPresented: $modelPicker) {
             NavigationStack {
                 List {

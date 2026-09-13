@@ -51,7 +51,7 @@ struct RootView: View {
                 } else { content }
             }
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar(destination == .home ? .hidden : .visible, for: .navigationBar)
+                .toolbar(destination == .home || destination == .chat ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
                     ToolbarItem(placement: .principal) { Text(destination == .home ? "Vesper" : destination.rawValue).font(destination == .home ? VesperTheme.title(28) : .headline) }
@@ -101,7 +101,7 @@ struct RootView: View {
     @ViewBuilder private var content: some View {
         switch destination {
         case .home: HomeView(navigate: { destination = $0 })
-        case .chat: ChatView()
+        case .chat: ChatView(onMenu: { withAnimation { sidebar = true } })
         case .desire: DesireView()
         case .journal: JournalView()
         case .notes: CollectionView(kind: .notes)

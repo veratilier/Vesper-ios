@@ -40,6 +40,9 @@ struct APIClient {
         return url
     }
     func uploadImage(_ data: Data, name: String) async throws -> JSONValue {
+        try await uploadFile(data, name: name, mime: "image/jpeg")
+    }
+    func uploadFile(_ data: Data, name: String, mime: String) async throws -> JSONValue {
         guard !token.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         guard data.count <= 32 * 1024 * 1024 else { throw ServiceError(message: "Choose an image under 32 MB.") }
         let boundary = "Vesper-" + UUID().uuidString
@@ -47,7 +50,8 @@ struct APIClient {
         request.httpMethod = "POST"; request.timeoutInterval = 60
         request.setValue(token, forHTTPHeaderField: "x-vesper-device-token")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(name)\"\r\nContent-Type: image/jpeg\r\n\r\n".utf8)
+        let safeName = name.replacingOccurrences(of: "\"", with: "_").replacingOccurrences(of: "\r", with: "_").replacingOccurrences(of: "\n", with: "_")
+        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\nContent-Type: \(mime)\r\n\r\n".utf8)
         body.append(data); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         let (result, response) = try await URLSession.shared.upload(for: request, from: body)
         let value = try JSONDecoder().decode(JSONValue.self, from: result)
@@ -66,6 +70,7 @@ struct APIClient {
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw ServiceError(message: value["error"].string.isEmpty ? "The server could not complete this request." : value["error"].string)
         }
+        if method == "DELETE", value == .null { return .object([:]) }
         guard value != .null else { throw ServiceError(message: "The server returned an unreadable response.") }
         return value
     }

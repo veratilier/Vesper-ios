@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 
 @MainActor final class ChatSession: ObservableObject {
+    @Published var thinkingSummary = ""
     @Published var messages: [JSONValue] = []
     @Published var conversations: [JSONValue] = []
     @Published var models: [JSONValue] = []
@@ -39,7 +40,7 @@ import SwiftUI
     }
     func open(_ conversation: JSONValue) async {
         guard !busy, let api else { return }
-        disconnect(); conversationID = conversation.id; threadID = nil; messages = []; events = []
+        disconnect(); conversationID = conversation.id; threadID = nil; messages = []; events = []; thinkingSummary = ""
         do {
             let r = try await api.request("/conversations/\(conversationID)", history: true)
             let t = r["conversation"]["codexThreadId"].string
@@ -48,8 +49,25 @@ import SwiftUI
             status = "History loaded"
         } catch { self.error = error.localizedDescription }
     }
+    func createConversation() async -> Bool {
+        guard !busy, !loadingModels, let api else { return false }
+        let id = UUID().uuidString
+        busy = true
+        do {
+            _ = try await api.request("/conversations/\(id)", method: "POST", body: .object(["title": .string("New conversation"), "source": .string("codex")]), history: true)
+            busy = false; newConversation(); conversationID = id
+            await loadConversations(); return true
+        } catch { busy = false; self.error = error.localizedDescription; return false }
+    }
+    func deleteMessage(_ message: JSONValue) async {
+        guard !busy, let api else { return }
+        do {
+            _ = try await api.request("/conversations/\(conversationID)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(threadID ?? "") : message["metadata"]["threadId"]]), history: true)
+            messages.removeAll { $0.id == message.id }
+        } catch { self.error = error.localizedDescription }
+    }
     func newConversation() {
-        guard !busy else { return }; disconnect(); conversationID = UUID().uuidString; threadID = nil; turnID = nil; messages = []; events = []; status = "New conversation"
+        guard !busy else { return }; disconnect(); conversationID = UUID().uuidString; threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
     }
     func disconnect() {
         connectionTask?.cancel(); connectionTask = nil
@@ -149,13 +167,20 @@ import SwiftUI
             if models.isEmpty { modelError = "The server returned no available models." }
         } catch { modelError = error.localizedDescription; if !initialized { disconnect() } }
     }
-    func send(_ text: String, images: [Data] = []) async -> Bool {
-        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) else { return false }
-        busy = true; status = "Connecting…"
+    func send(_ text: String, images: [Data] = [], files: [ChatFile] = []) async -> Bool {
+        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty) else { return false }
+        busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
         let messageID = UUID().uuidString
         do {
             var attachments: [JSONValue] = []
             for image in images { attachments.append(try await api.uploadImage(image, name: UUID().uuidString + ".jpg")) }
+            var fileContext = ""
+            for file in files {
+                let attachment = try await api.uploadFile(file.data, name: file.name, mime: file.mime)
+                attachments.append(attachment)
+                fileContext += "\nAttachment: \(file.name) (\(file.mime))\nDownload: \(attachment["url"].string)"
+                if file.mime.hasPrefix("text/") || ["application/json", "application/xml"].contains(file.mime), let preview = String(data: file.data, encoding: .utf8) { fileContext += "\nFile preview:\n" + String(preview.prefix(120000)) }
+            }
             try await connect()
             if let threadID {
                 _ = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
@@ -175,7 +200,7 @@ import SwiftUI
             messages.append(user)
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
-            var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(text.isEmpty ? "Please inspect these photos." : text)])]
+            var input: [JSONValue] = [.object(["type": .string("text"), "text": .string((text.isEmpty ? "Please inspect the attachments." : text) + fileContext)])]
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             params["input"] = .array(input)
             if !model.isEmpty { params["model"] = .string(model) }
@@ -235,6 +260,9 @@ import SwiftUI
             return
         }
         if method == "account/rateLimits/updated" { usage = p; usageError = nil }
+        else if method == "item/reasoning/summaryTextDelta" {
+            thinkingSummary += p["delta"].string
+        }
         else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
             guard !itemID.isEmpty else { return }
@@ -251,6 +279,10 @@ import SwiftUI
                 messages.append(message); do { try await persist(message) } catch { self.error = "Reply received, but history could not be saved." }
             }
         } else if method == "turn/completed" {
+            if !thinkingSummary.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
+                messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
+                do { try await persist(messages[index]); thinkingSummary = "" } catch { self.error = "Reply received, but the thinking summary could not be saved." }
+            }
             busy = false; status = ""; turnID = nil
             if p["turn"]["error"] != .null { error = p["turn"]["error"]["message"].string }
         } else if method == "turn/started" { busy = true; turnID = p["turn"]["id"].string }

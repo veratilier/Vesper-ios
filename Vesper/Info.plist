@@ -48,5 +48,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo or share camera frames during a call you start.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Use voice input and calls when you tap the microphone.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Convert your speech into messages for Rowan.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Add your current location to a message you choose to send.</string>
 </dict>
 </plist>

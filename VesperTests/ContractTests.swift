@@ -119,4 +119,13 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(ChatFileDelivery.message(result, conversationID: "c", threadID: "t", turnID: "turn", callID: "call", createdAt: "later").id, message.id)
     }
 
+    func testAttachmentOnlyDeliveryHasNonemptyHistoryContent() {
+        for caption in [JSONValue.null, .string(""), .string(" \n\t")] {
+            let result: JSONValue = .object(["message": caption, "attachments": .array([.object(["name": .string("note.md")])])])
+            let message = ChatFileDelivery.message(result, conversationID: "c", threadID: "t", turnID: "turn", callID: "call", createdAt: "now")
+            XCTAssertEqual(message["content"].string, "文件")
+            XCTAssertEqual(message["metadata"]["attachments"], result["attachments"])
+        }
+    }
+
 }

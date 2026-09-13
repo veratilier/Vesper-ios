@@ -441,6 +441,7 @@ enum UserHistoryRecovery {
 enum ChatFileDelivery {
     static func message(_ result: JSONValue, conversationID: String, threadID: String, turnID: String, callID: String, createdAt: String) -> JSONValue {
         let id = "files:\(threadID):\(callID)"
-        return .object(["id": .string(id), "conversationId": .string(conversationID), "role": .string("agent"), "content": .string(result["message"].string), "status": .string("delivered"), "createdAt": .string(createdAt), "source": .string("codex"), "metadata": .object(["attachments": result["attachments"], "itemId": .string(id), "threadId": .string(threadID), "turnId": .string(turnID), "blockType": .string("agentMessage"), "showTurnStatus": .bool(false)])])
+        let caption = result["message"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .object(["id": .string(id), "conversationId": .string(conversationID), "role": .string("agent"), "content": .string(caption.isEmpty ? "文件" : caption), "status": .string("delivered"), "createdAt": .string(createdAt), "source": .string("codex"), "metadata": .object(["attachments": result["attachments"], "itemId": .string(id), "threadId": .string(threadID), "turnId": .string(turnID), "blockType": .string("agentMessage"), "showTurnStatus": .bool(false)])])
     }
 }

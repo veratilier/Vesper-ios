@@ -56,5 +56,7 @@
 	<string>Convert your speech into messages for Rowan.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Add your current location to a message you choose to send.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Read the sleep, heart rate, steps and wrist temperature you choose to share, for your private on-device Health page.</string>
 </dict>
 </plist>

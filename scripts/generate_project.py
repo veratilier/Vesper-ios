@@ -40,13 +40,31 @@ def configs(name,base):
  return put(name+'configs',isa='XCConfigurationList',buildConfigurations=refs,defaultConfigurationIsVisible=0,defaultConfigurationName='Release')
 common={'IPHONEOS_DEPLOYMENT_TARGET':'17.0','SDKROOT':'iphoneos','SWIFT_VERSION':'5.0','CLANG_ENABLE_MODULES':'YES','CLANG_ENABLE_OBJC_ARC':'YES','TARGETED_DEVICE_FAMILY':'1,2'}
 project_config=configs('project',common)
-app_config=configs('app',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'Vesper/Info.plist','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SUPPORTS_MACCATALYST':'NO','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks']})
+app_config=configs('app',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'Vesper/Info.plist','CODE_SIGN_ENTITLEMENTS':'Vesper/Vesper.entitlements','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SUPPORTS_MACCATALYST':'NO','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks']})
 app_target=put('app-target',isa='PBXNativeTarget',buildConfigurationList=app_config,buildPhases=[sources_phase,frameworks_phase,resources_phase],buildRules=[],dependencies=[],name='Vesper',productName='Vesper',productReference=app,productType='com.apple.product-type.application')
 proxy=put('test-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'),proxyType=1,remoteGlobalIDString=app_target,remoteInfo='Vesper')
 dep=put('test-dep',isa='PBXTargetDependency',target=app_target,targetProxy=proxy)
 test_config=configs('test',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.tests','PRODUCT_NAME':'$(TARGET_NAME)','GENERATE_INFOPLIST_FILE':'YES','TEST_HOST':'$(BUILT_PRODUCTS_DIR)/Vesper.app/Vesper','BUNDLE_LOADER':'$(TEST_HOST)','CODE_SIGN_STYLE':'Automatic'})
 test_target=put('test-target',isa='PBXNativeTarget',buildConfigurationList=test_config,buildPhases=[tests_phase],buildRules=[],dependencies=[dep],name='VesperTests',productName='VesperTests',productReference=test_product,productType='com.apple.product-type.bundle.unit-test')
-project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target])
+# Widget extension has its own resources and requires no App Group or server token.
+widget_ref=ref('VesperWidgets/VesperWidgets.swift','sourcecode.swift')
+widget_assets=ref('VesperWidgets/Assets.xcassets','folder.assetcatalog')
+widget_info=ref('VesperWidgets/Info.plist','text.plist.xml')
+widget_product=put('widget-product',isa='PBXFileReference',explicitFileType='wrapper.app-extension',path='VesperWidgets.appex',sourceTree='BUILT_PRODUCTS_DIR',includeInIndex=0)
+widget_group=put('widget-group',isa='PBXGroup',children=[widget_ref,widget_assets,widget_info],name='Widgets',sourceTree='<group>')
+objects[main]['children'].append(widget_group)
+objects[products]['children'].append(widget_product)
+widget_sources=phase('widget-sources','PBXSourcesBuildPhase',[put('widget-source-build',isa='PBXBuildFile',fileRef=widget_ref)])
+widget_resources=phase('widget-resources','PBXResourcesBuildPhase',[put('widget-assets-build',isa='PBXBuildFile',fileRef=widget_assets)])
+widget_config=configs('widget',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.widgets','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'VesperWidgets/Info.plist','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SKIP_INSTALL':'YES','APPLICATION_EXTENSION_API_ONLY':'YES','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks','@executable_path/../../Frameworks']})
+widget_target=put('widget-target',isa='PBXNativeTarget',buildConfigurationList=widget_config,buildPhases=[widget_sources,widget_resources],buildRules=[],dependencies=[],name='VesperWidgets',productName='VesperWidgets',productReference=widget_product,productType='com.apple.product-type.app-extension')
+widget_proxy=put('widget-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'),proxyType=1,remoteGlobalIDString=widget_target,remoteInfo='VesperWidgets')
+widget_dep=put('widget-dependency',isa='PBXTargetDependency',target=widget_target,targetProxy=widget_proxy)
+embed_file=put('widget-embed-file',isa='PBXBuildFile',fileRef=widget_product,settings={'ATTRIBUTES':['RemoveHeadersOnCopy']})
+embed=put('widget-embed',isa='PBXCopyFilesBuildPhase',buildActionMask=2147483647,dstPath='',dstSubfolderSpec=13,files=[embed_file],name='Embed App Extensions',runOnlyForDeploymentPostprocessing=0)
+objects[app_target]['buildPhases'].append(embed)
+objects[app_target]['dependencies'].append(widget_dep)
+project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target,widget_target])
 def serialize(v,level=0):
  if isinstance(v,dict):return '{\n'+''.join('\t'*(level+1)+json.dumps(str(k))+' = '+serialize(x,level+1)+';\n' for k,x in v.items())+'\t'*level+'}'
  if isinstance(v,list):return '( '+', '.join(serialize(x,level) for x in v)+', )' if v else '()'

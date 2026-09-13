@@ -4,6 +4,27 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    func testDateCountersRepeatAndIncludeToday() throws {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        let now = try XCTUnwrap(f.date(from: "2026-09-14"))
+        var item: JSONValue = .object(["date": .string("2026-08-09")])
+        XCTAssertEqual(DateCounter.days(item, now: now), -36)
+        XCTAssertEqual(DateCounter.count(item, now: now), 36)
+        item["includeToday"] = .bool(true)
+        XCTAssertEqual(DateCounter.count(item, now: now), 37)
+        item["date"] = .string("2020-10-29"); item["repeatRule"] = .string("yearly"); item["includeToday"] = .bool(false)
+        XCTAssertEqual(DateCounter.days(item, now: now), 45)
+        item["date"] = .string("2020-09-14")
+        XCTAssertEqual(DateCounter.days(item, now: now), 0)
+        item["date"] = .string("not-a-date")
+        XCTAssertNil(DateCounter.days(item, now: now))
+    }
+    @MainActor func testEffortsFollowSelectedModelCatalog() {
+        let chat = ChatSession()
+        chat.models = [.object(["model": .string("a"), "defaultReasoningEffort": .string("medium"), "supportedReasoningEfforts": .array([.object(["reasoningEffort": .string("low")]), .object(["reasoningEffort": .string("medium")])])]), .object(["model": .string("b"), "supportedReasoningEfforts": .array([])])]
+        chat.selectModel("a"); XCTAssertEqual(chat.effort, "medium")
+        chat.selectModel("b"); XCTAssertEqual(chat.effort, ""); XCTAssertTrue(chat.supportedEfforts.isEmpty)
+    }
     func testLosslessUnknownFieldsSurviveEditing() throws {
         let data = Data(#"{"id":"n1","text":"旧便笺","futureMetadata":{"source":"agent","pinned":true},"values":[null,1,false]}"#.utf8)
         var value = try JSONDecoder().decode(JSONValue.self, from: data)

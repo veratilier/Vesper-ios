@@ -42,7 +42,7 @@ struct HomeView: View {
                             VStack(spacing: 12) { usageCard.frame(height: 80); notesCard(height: height - 92) }
                         }
                         HStack(alignment: .top, spacing: 12) {
-                            remindersCard(height: height - 14).frame(width: (width - 12) * 0.40)
+                            remindersCard(height: height).frame(width: (width - 12) * 0.40)
                             musicCard(height: height)
                         }
                     }

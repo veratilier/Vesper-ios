@@ -53,6 +53,7 @@ struct ChatView: View {
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(.horizontal, 20).padding(.vertical, 14)
                 }.scrollDismissesKeyboard(.interactively)
+                .task { await Task.yield(); proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: chat.messages.count) { _, _ in withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
         }
@@ -62,7 +63,7 @@ struct ChatView: View {
     }
     private var photoContent: some View {
         chatContent
-        .task { chat.configure(store) }
+        .task { chat.configure(store); await chat.openLatestConversation() }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
         .onChange(of: speech.error) { _, error in if let error { chat.error = error } }
@@ -128,21 +129,32 @@ struct ChatView: View {
             Button("Delete", role: .destructive) { if let message = deleting { Task { await chat.deleteMessage(message) } }; deleting = nil }
         }
     }
-    var body: some View {
-        attachmentContent
-        .sheet(isPresented: $modelPicker) {
+    private var modelSheet: some View {
             NavigationStack {
                 List {
-                    Button { chat.model = ""; modelPicker = false } label: {
+                    Button { chat.selectModel("") } label: {
                         HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
                     }
                     ForEach(chat.models) { model in
-                        Button { chat.model = model["model"].string; modelPicker = false } label: {
+                        Button { chat.selectModel(model["model"].string) } label: {
                             HStack {
                                 Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string)
                                 Spacer()
                                 if chat.model == model["model"].string { Image(systemName: "checkmark") }
                             }
+                        }
+                    }
+                    Section("Reasoning effort") {
+                        if chat.model.isEmpty {
+                            Text("Choose a model to see its supported effort levels.").font(.caption).foregroundStyle(VesperTheme.muted)
+                        } else {
+                            Picker("Strength", selection: $chat.effort) {
+                                Text("Default").tag("")
+                                ForEach(chat.supportedEfforts, id: \.self) { value in
+                                    Text(value == "xhigh" ? "Extra high" : value.capitalized).tag(value)
+                                }
+                            }.pickerStyle(.inline)
+                            if chat.supportedEfforts.isEmpty { Text("This model does not offer adjustable reasoning effort.").font(.caption) }
                         }
                     }
                     if chat.loadingModels { ProgressView("Loading models…") }
@@ -154,7 +166,10 @@ struct ChatView: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { modelPicker = false } } }
                     .task { chat.configure(store); await chat.loadModels() }
             }.presentationDetents([.medium, .large])
-        }
+    }
+    var body: some View {
+        attachmentContent
+        .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
             NavigationStack {
                 ScrollView { VStack(alignment: .leading, spacing: 20) {
@@ -245,7 +260,7 @@ struct ChatView: View {
             TextField(speech.listening ? "Listening…" : "Write to Rowan…", text: $draft, axis: .vertical).lineLimit(1...5).focused($focused).font(.system(size: 16))
             HStack(spacing: 4) {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
-                Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text(chat.model.isEmpty ? "Default" : chat.model).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
+                Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
                 Button { focused = false; drawer = false; if speech.listening { speech.stop() } else { player.pause(); speechBase = draft; Task { await speech.start() } } } label: { Image(systemName: speech.listening ? "mic.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Voice input").disabled(chat.busy)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
@@ -458,6 +473,8 @@ private struct AssistantMessageHeading: View {
                     if message["status"].string == "streaming" { Text("Thinking…") }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {

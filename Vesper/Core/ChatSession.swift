@@ -13,6 +13,30 @@ import SwiftUI
     @Published var usageError: String?
     private var connectionTask: Task<Void, Error>?
     @Published var model = ""
+    @Published var effort = ""
+    private var restoringLatest = false
+    var supportedEfforts: [String] {
+        models.first(where: { $0["model"].string == model })?["supportedReasoningEfforts"].array.compactMap {
+            let value = $0["reasoningEffort"].string
+            return value.isEmpty ? nil : value
+        } ?? []
+    }
+    func selectModel(_ value: String) {
+        model = value
+        let defaultEffort = models.first(where: { $0["model"].string == value })?["defaultReasoningEffort"].string ?? ""
+        effort = supportedEfforts.contains(defaultEffort) ? defaultEffort : ""
+    }
+    func openLatestConversation() async {
+        guard !busy, !restoringLatest else { return }
+        restoringLatest = true
+        defer { restoringLatest = false }
+        await loadConversations()
+        guard !Task.isCancelled, !busy, let latest = conversations.sorted(by: {
+            ($0["updatedAt"].string.isEmpty ? $0["createdAt"].string : $0["updatedAt"].string) >
+            ($1["updatedAt"].string.isEmpty ? $1["createdAt"].string : $1["updatedAt"].string)
+        }).first else { return }
+        if latest.id != conversationID || messages.isEmpty { await open(latest) }
+    }
     @Published var busy = false
     @Published var status = ""
     @Published var error: String?
@@ -179,6 +203,7 @@ import SwiftUI
                 guard !name.isEmpty, identifiers.insert(name).inserted else { return nil }
                 var normalized = item; normalized["id"] = .string(name); return normalized
             }
+            if !effort.isEmpty && !supportedEfforts.contains(effort) { effort = "" }
             if models.isEmpty { modelError = "The server returned no available models." }
         } catch { modelError = error.localizedDescription; if !initialized { disconnect() } }
     }
@@ -222,6 +247,10 @@ import SwiftUI
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             params["input"] = .array(input)
             if !model.isEmpty { params["model"] = .string(model) }
+            if !effort.isEmpty {
+                guard supportedEfforts.contains(effort) else { throw ServiceError(message: "Select an available reasoning effort for this model.") }
+                params["effort"] = .string(effort)
+            }
             try Task.checkCancellation()
             let result = try await rpc("turn/start", params)
             turnID = result["turn"]["id"].string

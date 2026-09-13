@@ -13,12 +13,12 @@ struct DesireView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
+                    Text("此刻的潮汐").font(.system(size: 24, design: .serif))
                     Spacer()
-                    Text("Desire").font(VesperTheme.title(54))
-                    Spacer()
-                    Button { showHistory = true } label: { Image(systemName: "clock.arrow.circlepath").font(.system(size: 23)) }.accessibilityLabel("Desire history")
-                }.padding(.top, 8)
-                Text("此刻的潮汐").font(.system(size: 24, design: .serif)).padding(.top, 12)
+                    Button { showHistory = true } label: {
+                        Image(systemName: "clock.arrow.circlepath").font(.system(size: 21)).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.accessibilityLabel("Desire history")
+                }
                 Rectangle().fill(VesperTheme.muted.opacity(0.4)).frame(width: 28, height: 1)
                 DesireTide(values: fields.map { key, _ in
                     if case .number(let value) = state[key] { return value }; return nil

@@ -1,0 +1,423 @@
+// !$*UTF8*$!
+{
+	"archiveVersion" = 1;
+	"classes" = {
+	};
+	"objectVersion" = 56;
+	"objects" = {
+		"4052B7873752EAA1D20C2691" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Core/APIClient.swift";
+			"sourceTree" = "<group>";
+		};
+		"A51D76C642BC341C6C85C167" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "4052B7873752EAA1D20C2691";
+		};
+		"8D0A868C58E11EB887BC3FE8" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Core/AppStore.swift";
+			"sourceTree" = "<group>";
+		};
+		"C6B83ED962F5A9D9237283AF" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "8D0A868C58E11EB887BC3FE8";
+		};
+		"FF5F6EFEBC800F2EFB650A16" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Core/ChatSession.swift";
+			"sourceTree" = "<group>";
+		};
+		"256C70A934891810F7F1F382" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "FF5F6EFEBC800F2EFB650A16";
+		};
+		"20E17B7D4A29545D3DC1D5EB" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Core/JSONValue.swift";
+			"sourceTree" = "<group>";
+		};
+		"3804A4D8FEBFDE392C0C067A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "20E17B7D4A29545D3DC1D5EB";
+		};
+		"EFF2563A774A36F9AA8EC29E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Core/MusicPlayer.swift";
+			"sourceTree" = "<group>";
+		};
+		"A8B61A66A913DDA2E9E2E56D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "EFF2563A774A36F9AA8EC29E";
+		};
+		"3821606D9001AF2E65E9C711" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/VesperApp.swift";
+			"sourceTree" = "<group>";
+		};
+		"B395A8A1CF0335DCE405E7C5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "3821606D9001AF2E65E9C711";
+		};
+		"74824778C3B2D4F97CFF2F33" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/ChatView.swift";
+			"sourceTree" = "<group>";
+		};
+		"BAB78907F59C0ACE651AAD51" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "74824778C3B2D4F97CFF2F33";
+		};
+		"0CC7E1B6ECAED67E941FF785" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/Collections.swift";
+			"sourceTree" = "<group>";
+		};
+		"9EFCE9F3D5660F30038C1F45" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0CC7E1B6ECAED67E941FF785";
+		};
+		"E18849505CD4268D3A524284" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/HomeView.swift";
+			"sourceTree" = "<group>";
+		};
+		"ECEE39958E2143314FEB5A24" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "E18849505CD4268D3A524284";
+		};
+		"11C734906ACC545B11607682" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/LibraryViews.swift";
+			"sourceTree" = "<group>";
+		};
+		"09E93486D239728E7F9543DA" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "11C734906ACC545B11607682";
+		};
+		"7F3EB8227DFC433F8B4762F0" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/MusicView.swift";
+			"sourceTree" = "<group>";
+		};
+		"62113E94319FCBA89E6D94D3" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "7F3EB8227DFC433F8B4762F0";
+		};
+		"37394390169107932A0618F9" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/SettingsView.swift";
+			"sourceTree" = "<group>";
+		};
+		"6315377C2F6ED0DF771F6AFA" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "37394390169107932A0618F9";
+		};
+		"81F2F611DED319CEF057B5BC" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Vesper/Views/Theme.swift";
+			"sourceTree" = "<group>";
+		};
+		"A87BE86475FE2E2FD7BCE731" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "81F2F611DED319CEF057B5BC";
+		};
+		"BCE808DA022E7F7520C3024E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "folder.assetcatalog";
+			"path" = "Vesper/Resources/Assets.xcassets";
+			"sourceTree" = "<group>";
+		};
+		"6B020278789E6879DC86AF9C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "BCE808DA022E7F7520C3024E";
+		};
+		"66FA1D8DBE1B558D6A610FF5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "file";
+			"path" = "Vesper/Resources/Ballet.ttf";
+			"sourceTree" = "<group>";
+		};
+		"18F53ABA7EA8DDEC71DF47A6" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "66FA1D8DBE1B558D6A610FF5";
+		};
+		"ECCB206B01CA3F0409439472" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "Vesper/Resources/Ballet-OFL.txt";
+			"sourceTree" = "<group>";
+		};
+		"3E2896F66A51B95A652DEA2A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "ECCB206B01CA3F0409439472";
+		};
+		"945EC64C21749B28C25BF47A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"path" = "Vesper/Info.plist";
+			"sourceTree" = "<group>";
+		};
+		"A172CEDCAE47474B615C54D5" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.application";
+			"path" = "Vesper.app";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+			"includeInIndex" = 0;
+		};
+		"F739566ED5280322FF98A798" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.cfbundle";
+			"path" = "VesperTests.xctest";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+			"includeInIndex" = 0;
+		};
+		"D379FD00D434A83A680CBF5A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "VesperTests/ContractTests.swift";
+			"sourceTree" = "<group>";
+		};
+		"F488DD7A55F888AFE972D678" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D379FD00D434A83A680CBF5A";
+		};
+		"0A3E27B8CA818264D75C8D81" = {
+			"isa" = "PBXGroup";
+			"children" = ( "A172CEDCAE47474B615C54D5", "F739566ED5280322FF98A798", );
+			"name" = "Products";
+			"sourceTree" = "<group>";
+		};
+		"878A52FC5FF6A57D50B7B870" = {
+			"isa" = "PBXGroup";
+			"children" = ( "4052B7873752EAA1D20C2691", "8D0A868C58E11EB887BC3FE8", "FF5F6EFEBC800F2EFB650A16", "20E17B7D4A29545D3DC1D5EB", "EFF2563A774A36F9AA8EC29E", "3821606D9001AF2E65E9C711", "74824778C3B2D4F97CFF2F33", "0CC7E1B6ECAED67E941FF785", "E18849505CD4268D3A524284", "11C734906ACC545B11607682", "7F3EB8227DFC433F8B4762F0", "37394390169107932A0618F9", "81F2F611DED319CEF057B5BC", );
+			"name" = "Sources";
+			"sourceTree" = "<group>";
+		};
+		"41D311A605520FC7B8B9A980" = {
+			"isa" = "PBXGroup";
+			"children" = ( "BCE808DA022E7F7520C3024E", "66FA1D8DBE1B558D6A610FF5", "ECCB206B01CA3F0409439472", "945EC64C21749B28C25BF47A", );
+			"name" = "Resources";
+			"sourceTree" = "<group>";
+		};
+		"C4DF94A42CA730B26E01C133" = {
+			"isa" = "PBXGroup";
+			"children" = ( "D379FD00D434A83A680CBF5A", );
+			"name" = "Tests";
+			"sourceTree" = "<group>";
+		};
+		"0D6E4079E36703EBD37C0072" = {
+			"isa" = "PBXGroup";
+			"children" = ( "878A52FC5FF6A57D50B7B870", "41D311A605520FC7B8B9A980", "C4DF94A42CA730B26E01C133", "0A3E27B8CA818264D75C8D81", );
+			"sourceTree" = "<group>";
+		};
+		"D626F04DF571B9BB2451CBFE" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ( "A51D76C642BC341C6C85C167", "C6B83ED962F5A9D9237283AF", "256C70A934891810F7F1F382", "3804A4D8FEBFDE392C0C067A", "A8B61A66A913DDA2E9E2E56D", "B395A8A1CF0335DCE405E7C5", "BAB78907F59C0ACE651AAD51", "9EFCE9F3D5660F30038C1F45", "ECEE39958E2143314FEB5A24", "09E93486D239728E7F9543DA", "62113E94319FCBA89E6D94D3", "6315377C2F6ED0DF771F6AFA", "A87BE86475FE2E2FD7BCE731", );
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"5C2473E515024614E403B8B9" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ( "6B020278789E6879DC86AF9C", "18F53ABA7EA8DDEC71DF47A6", "3E2896F66A51B95A652DEA2A", );
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"951DDECB505D289B8BC956E6" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ();
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"D0D376A2EDA86752283C593C" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ( "F488DD7A55F888AFE972D678", );
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"73EBF6644258C120893E685D" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
+				"SDKROOT" = "iphoneos";
+				"SWIFT_VERSION" = "5.0";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"CLANG_ENABLE_OBJC_ARC" = "YES";
+				"TARGETED_DEVICE_FAMILY" = "1,2";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG $(inherited)";
+				"ENABLE_TESTABILITY" = "YES";
+			};
+			"name" = "Debug";
+		};
+		"0B0C687DF8B6B8DC790B519C" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
+				"SDKROOT" = "iphoneos";
+				"SWIFT_VERSION" = "5.0";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"CLANG_ENABLE_OBJC_ARC" = "YES";
+				"TARGETED_DEVICE_FAMILY" = "1,2";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+			};
+			"name" = "Release";
+		};
+		"76F8DEC3DFE0BDB465198890" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ( "73EBF6644258C120893E685D", "0B0C687DF8B6B8DC790B519C", );
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"B00CCDD09424E369308D67FA" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"PRODUCT_BUNDLE_IDENTIFIER" = "com.vera.vesper.native";
+				"PRODUCT_NAME" = "$(TARGET_NAME)";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"INFOPLIST_FILE" = "Vesper/Info.plist";
+				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
+				"CURRENT_PROJECT_VERSION" = "1";
+				"MARKETING_VERSION" = "0.1.0";
+				"SUPPORTED_PLATFORMS" = "iphoneos iphonesimulator";
+				"SUPPORTS_MACCATALYST" = "NO";
+				"LD_RUNPATH_SEARCH_PATHS" = ( "$(inherited)", "@executable_path/Frameworks", );
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG $(inherited)";
+				"ENABLE_TESTABILITY" = "YES";
+			};
+			"name" = "Debug";
+		};
+		"1B104479E55E37CF8A63CBDF" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"PRODUCT_BUNDLE_IDENTIFIER" = "com.vera.vesper.native";
+				"PRODUCT_NAME" = "$(TARGET_NAME)";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"INFOPLIST_FILE" = "Vesper/Info.plist";
+				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
+				"CURRENT_PROJECT_VERSION" = "1";
+				"MARKETING_VERSION" = "0.1.0";
+				"SUPPORTED_PLATFORMS" = "iphoneos iphonesimulator";
+				"SUPPORTS_MACCATALYST" = "NO";
+				"LD_RUNPATH_SEARCH_PATHS" = ( "$(inherited)", "@executable_path/Frameworks", );
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+			};
+			"name" = "Release";
+		};
+		"06CB67C35A91E16DBD17B949" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ( "B00CCDD09424E369308D67FA", "1B104479E55E37CF8A63CBDF", );
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"C1E9827DB735CA9BAA54A540" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "06CB67C35A91E16DBD17B949";
+			"buildPhases" = ( "D626F04DF571B9BB2451CBFE", "951DDECB505D289B8BC956E6", "5C2473E515024614E403B8B9", );
+			"buildRules" = ();
+			"dependencies" = ();
+			"name" = "Vesper";
+			"productName" = "Vesper";
+			"productReference" = "A172CEDCAE47474B615C54D5";
+			"productType" = "com.apple.product-type.application";
+		};
+		"DAB01D73CBBCF1FEDE84E2D6" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "244210E48437B6556980A702";
+			"proxyType" = 1;
+			"remoteGlobalIDString" = "C1E9827DB735CA9BAA54A540";
+			"remoteInfo" = "Vesper";
+		};
+		"72E38AE4860B1840B05EE635" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "C1E9827DB735CA9BAA54A540";
+			"targetProxy" = "DAB01D73CBBCF1FEDE84E2D6";
+		};
+		"DD3F495F7D6A5AA1C1769021" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"PRODUCT_BUNDLE_IDENTIFIER" = "com.vera.vesper.native.tests";
+				"PRODUCT_NAME" = "$(TARGET_NAME)";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"TEST_HOST" = "$(BUILT_PRODUCTS_DIR)/Vesper.app/Vesper";
+				"BUNDLE_LOADER" = "$(TEST_HOST)";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG $(inherited)";
+				"ENABLE_TESTABILITY" = "YES";
+			};
+			"name" = "Debug";
+		};
+		"E670BC2FFE794172EBC92AE3" = {
+			"isa" = "XCBuildConfiguration";
+			"buildSettings" = {
+				"PRODUCT_BUNDLE_IDENTIFIER" = "com.vera.vesper.native.tests";
+				"PRODUCT_NAME" = "$(TARGET_NAME)";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"TEST_HOST" = "$(BUILT_PRODUCTS_DIR)/Vesper.app/Vesper";
+				"BUNDLE_LOADER" = "$(TEST_HOST)";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+			};
+			"name" = "Release";
+		};
+		"5FA394EFD07597E96CACD8E1" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ( "DD3F495F7D6A5AA1C1769021", "E670BC2FFE794172EBC92AE3", );
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"9805CBD60EB4F66728D5D195" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "5FA394EFD07597E96CACD8E1";
+			"buildPhases" = ( "D0D376A2EDA86752283C593C", );
+			"buildRules" = ();
+			"dependencies" = ( "72E38AE4860B1840B05EE635", );
+			"name" = "VesperTests";
+			"productName" = "VesperTests";
+			"productReference" = "F739566ED5280322FF98A798";
+			"productType" = "com.apple.product-type.bundle.unit-test";
+		};
+		"244210E48437B6556980A702" = {
+			"isa" = "PBXProject";
+			"attributes" = {
+				"BuildIndependentTargetsInParallel" = "YES";
+				"LastUpgradeCheck" = "1600";
+				"TargetAttributes" = {
+					"C1E9827DB735CA9BAA54A540" = {
+						"CreatedOnToolsVersion" = "16.0";
+					};
+					"9805CBD60EB4F66728D5D195" = {
+						"CreatedOnToolsVersion" = "16.0";
+						"TestTargetID" = "C1E9827DB735CA9BAA54A540";
+					};
+				};
+			};
+			"buildConfigurationList" = "76F8DEC3DFE0BDB465198890";
+			"compatibilityVersion" = "Xcode 14.0";
+			"developmentRegion" = "en";
+			"hasScannedForEncodings" = 0;
+			"knownRegions" = ( "en", "Base", );
+			"mainGroup" = "0D6E4079E36703EBD37C0072";
+			"productRefGroup" = "0A3E27B8CA818264D75C8D81";
+			"projectDirPath" = "";
+			"projectRoot" = "";
+			"targets" = ( "C1E9827DB735CA9BAA54A540", "9805CBD60EB4F66728D5D195", );
+		};
+	};
+	"rootObject" = "244210E48437B6556980A702";
+}

@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Generate a deterministic, dependency-free Xcode project (run after adding sources)."""
+from pathlib import Path
+import hashlib, json, plistlib
+root = Path(__file__).resolve().parents[1]
+objects = {}
+def uid(s): return hashlib.sha256(s.encode()).hexdigest()[:24].upper()
+def put(identity, **v):
+ key=uid(identity);objects[key]=v;return key
+def ref(path, kind): return put('file:'+path, isa='PBXFileReference', lastKnownFileType=kind, path=path, sourceTree='<group>')
+source_refs=[];source_build=[];resource_refs=[];resource_build=[]
+for p in sorted((root/'Vesper').rglob('*.swift')):
+ path=str(p.relative_to(root));f=ref(path,'sourcecode.swift');source_refs.append(f);source_build.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
+for path,kind in [('Vesper/Resources/Assets.xcassets','folder.assetcatalog'),('Vesper/Resources/Ballet.ttf','file'),('Vesper/Resources/Ballet-OFL.txt','text')]:
+ if (root/path).exists():
+  f=ref(path,kind);resource_refs.append(f);resource_build.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
+info=ref('Vesper/Info.plist','text.plist.xml')
+app=put('app',isa='PBXFileReference',explicitFileType='wrapper.application',path='Vesper.app',sourceTree='BUILT_PRODUCTS_DIR',includeInIndex=0)
+test_product=put('test-product',isa='PBXFileReference',explicitFileType='wrapper.cfbundle',path='VesperTests.xctest',sourceTree='BUILT_PRODUCTS_DIR',includeInIndex=0)
+testrefs=[];testbuild=[]
+for p in sorted((root/'VesperTests').glob('*.swift')):
+ path=str(p.relative_to(root));f=ref(path,'sourcecode.swift');testrefs.append(f);testbuild.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
+products=put('products',isa='PBXGroup',children=[app,test_product],name='Products',sourceTree='<group>')
+sources=put('sources',isa='PBXGroup',children=source_refs,name='Sources',sourceTree='<group>')
+resources=put('resources',isa='PBXGroup',children=resource_refs+[info],name='Resources',sourceTree='<group>')
+tests=put('tests-group',isa='PBXGroup',children=testrefs,name='Tests',sourceTree='<group>')
+main=put('main',isa='PBXGroup',children=[sources,resources,tests,products],sourceTree='<group>')
+def phase(name,isa,files):return put(name,isa=isa,buildActionMask=2147483647,files=files,runOnlyForDeploymentPostprocessing=0)
+sources_phase=phase('sources-phase','PBXSourcesBuildPhase',source_build)
+resources_phase=phase('resources-phase','PBXResourcesBuildPhase',resource_build)
+frameworks_phase=phase('frameworks-phase','PBXFrameworksBuildPhase',[])
+tests_phase=phase('tests-phase','PBXSourcesBuildPhase',testbuild)
+def configs(name,base):
+ refs=[]
+ for mode in ['Debug','Release']:
+  settings=dict(base)
+  settings['SWIFT_OPTIMIZATION_LEVEL']='-Onone' if mode=='Debug' else '-O'
+  if mode=='Debug':settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS']='DEBUG $(inherited)';settings['ENABLE_TESTABILITY']='YES'
+  refs.append(put(name+mode,isa='XCBuildConfiguration',buildSettings=settings,name=mode))
+ return put(name+'configs',isa='XCConfigurationList',buildConfigurations=refs,defaultConfigurationIsVisible=0,defaultConfigurationName='Release')
+common={'IPHONEOS_DEPLOYMENT_TARGET':'17.0','SDKROOT':'iphoneos','SWIFT_VERSION':'5.0','CLANG_ENABLE_MODULES':'YES','CLANG_ENABLE_OBJC_ARC':'YES','TARGETED_DEVICE_FAMILY':'1,2'}
+project_config=configs('project',common)
+app_config=configs('app',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'Vesper/Info.plist','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SUPPORTS_MACCATALYST':'NO','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks']})
+app_target=put('app-target',isa='PBXNativeTarget',buildConfigurationList=app_config,buildPhases=[sources_phase,frameworks_phase,resources_phase],buildRules=[],dependencies=[],name='Vesper',productName='Vesper',productReference=app,productType='com.apple.product-type.application')
+proxy=put('test-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'),proxyType=1,remoteGlobalIDString=app_target,remoteInfo='Vesper')
+dep=put('test-dep',isa='PBXTargetDependency',target=app_target,targetProxy=proxy)
+test_config=configs('test',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.tests','PRODUCT_NAME':'$(TARGET_NAME)','GENERATE_INFOPLIST_FILE':'YES','TEST_HOST':'$(BUILT_PRODUCTS_DIR)/Vesper.app/Vesper','BUNDLE_LOADER':'$(TEST_HOST)','CODE_SIGN_STYLE':'Automatic'})
+test_target=put('test-target',isa='PBXNativeTarget',buildConfigurationList=test_config,buildPhases=[tests_phase],buildRules=[],dependencies=[dep],name='VesperTests',productName='VesperTests',productReference=test_product,productType='com.apple.product-type.bundle.unit-test')
+project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target])
+def serialize(v,level=0):
+ if isinstance(v,dict):return '{\n'+''.join('\t'*(level+1)+json.dumps(str(k))+' = '+serialize(x,level+1)+';\n' for k,x in v.items())+'\t'*level+'}'
+ if isinstance(v,list):return '( '+', '.join(serialize(x,level) for x in v)+', )' if v else '()'
+ return str(v) if isinstance(v,int) else json.dumps(v)
+folder=root/'Vesper.xcodeproj';folder.mkdir(exist_ok=True)
+(folder/'project.pbxproj').write_text('// !$*UTF8*$!\n'+serialize({'archiveVersion':1,'classes':{},'objectVersion':56,'objects':objects,'rootObject':project})+'\n')
+shared=folder/'xcshareddata/xcschemes';shared.mkdir(parents=True,exist_ok=True)
+def buildref(target,name):return f'<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target}" BuildableName="{name}" BlueprintName="{name.split(".")[0]}" ReferencedContainer="container:Vesper.xcodeproj"/>'
+(shared/'Vesper.xcscheme').write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="1600" version="1.3">
+<BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">{buildref(app_target,'Vesper.app')}</BuildActionEntry></BuildActionEntries></BuildAction>
+<TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO">{buildref(test_target,'VesperTests.xctest')}</TestableReference></Testables></TestAction>
+<LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES"><BuildableProductRunnable runnableDebuggingMode="0">{buildref(app_target,'Vesper.app')}</BuildableProductRunnable></LaunchAction>
+<ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES"><BuildableProductRunnable runnableDebuggingMode="0">{buildref(app_target,'Vesper.app')}</BuildableProductRunnable></ProfileAction>
+<AnalyzeAction buildConfiguration="Debug"/><ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
+</Scheme>''')
+print(f'Generated project with {len(source_refs)} Swift sources and {len(testrefs)} test files')

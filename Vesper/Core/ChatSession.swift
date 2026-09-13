@@ -19,6 +19,7 @@ import SwiftUI
     @Published var approval: JSONValue?
     @Published var events: [String] = []
     private(set) var conversationID = UUID().uuidString
+    private var tombstones: [JSONValue] = []
     private var threadID: String?
     private var turnID: String?
     private var api: APIClient?
@@ -40,13 +41,26 @@ import SwiftUI
     }
     func open(_ conversation: JSONValue) async {
         guard !busy, let api else { return }
-        disconnect(); conversationID = conversation.id; threadID = nil; messages = []; events = []; thinkingSummary = ""
+        disconnect(); conversationID = conversation.id; threadID = nil; messages = []; events = []; thinkingSummary = ""; tombstones = []
+        busy = true
+        defer { busy = false }
         do {
             let r = try await api.request("/conversations/\(conversationID)", history: true)
             let t = r["conversation"]["codexThreadId"].string
             threadID = t.isEmpty ? nil : t
+            tombstones = r["tombstones"].array
             messages = r["messages"].array
             status = "History loaded"
+            if let threadID {
+                do {
+                    try await connect()
+                    let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
+                    messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+                    status = "History loaded"
+                } catch {
+                    self.error = "Saved history is visible, but the full conversation could not be loaded: " + error.localizedDescription
+                }
+            }
         } catch { self.error = error.localizedDescription }
     }
     func createConversation() async -> Bool {
@@ -63,6 +77,7 @@ import SwiftUI
         guard !busy, let api else { return }
         do {
             _ = try await api.request("/conversations/\(conversationID)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(threadID ?? "") : message["metadata"]["threadId"]]), history: true)
+            tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
             messages.removeAll { $0.id == message.id }
         } catch { self.error = error.localizedDescription }
     }
@@ -185,7 +200,8 @@ import SwiftUI
             try await connect()
             try Task.checkCancellation()
             if let threadID {
-                _ = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
+                messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
             } else {
                 let catalog = try await api.request("/api/codex/tools")
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
@@ -332,5 +348,44 @@ import SwiftUI
             try? await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(false), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(error.localizedDescription)])])])]))
             events.append("\(name) · failed")
         }
+    }
+}
+
+/// Recover user-authored items from the same snapshot used by the web client.
+/// Do not replace saved bubbles, invent timestamps, or resurrect deleted items.
+enum UserHistoryRecovery {
+    static func timestamp(_ value: JSONValue) -> String {
+        if case .number(let number) = value {
+            return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: number > 10_000_000_000 ? number / 1000 : number))
+        }
+        return value.string
+    }
+    static func merge(_ saved: [JSONValue], snapshot: JSONValue, conversationID: String, tombstones: [JSONValue]) -> [JSONValue] {
+        let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
+        var entries: [(JSONValue, String, JSONValue)] = (thread["items"].array + thread["messages"].array).map { ($0, "", .null) }
+        for turn in thread["turns"].array {
+            entries += turn["items"].array.map { ($0, turn.id, turn["startedAt"] == .null ? turn["createdAt"] : turn["startedAt"]) }
+        }
+        var result = saved
+        for (item, turnID, turnTime) in entries {
+            guard item["role"].string == "user" || ["userMessage", "userInput"].contains(item["type"].string), !item.id.isEmpty else { continue }
+            let chunks = item["content"].array.map { $0["text"].string }.joined()
+            let text = (item["text"].string.isEmpty ? (item["content"].string.isEmpty ? chunks : item["content"].string) : item["text"].string).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, !text.lowercased().hasPrefix("[vesper response preference — not user content:"), !text.hasPrefix("旧记忆背景（只作为长期背景") else { continue }
+            if tombstones.contains(where: { $0["messageId"].string == item.id || $0["stableId"].string == item.id || $0["itemId"].string == item.id }) { continue }
+            if result.contains(where: { existing in
+                existing.id == item.id || existing["metadata"]["itemId"].string == item.id ||
+                (!turnID.isEmpty && existing["role"].string == "user" && existing["metadata"]["turnId"].string == turnID && (existing["content"].string == text || existing["metadata"]["modelInputText"].string == text))
+            }) { continue }
+            let itemTime = item["createdAt"] == .null ? item["startedAt"] : item["createdAt"]
+            let time = timestamp(itemTime == .null ? turnTime : itemTime)
+            let restored: JSONValue = .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(time), "status": .string("delivered"), "source": .string("codex"), "metadata": .object(["itemId": .string(item.id), "turnId": .string(turnID), "threadId": thread["id"], "blockType": item["type"]])])
+            if let index = result.firstIndex(where: { !turnID.isEmpty && $0["metadata"]["turnId"].string == turnID }) {
+                result.insert(restored, at: index)
+            } else if !time.isEmpty, let index = result.firstIndex(where: { !$0["createdAt"].string.isEmpty && $0["createdAt"].string > time }) {
+                result.insert(restored, at: index)
+            } else { result.append(restored) }
+        }
+        return result
     }
 }

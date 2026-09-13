@@ -38,6 +38,16 @@ final class ContractTests: XCTestCase {
         XCTAssertTrue(ChatPresentation.isUser(messages[1]))
         XCTAssertEqual(ChatPresentation.rows(messages).map(\.activity), [false, false, false])
     }
+    func testUserHistoryRecoveryPreservesRepliesAndHonorsDeletions() throws {
+        let snapshot = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"thread":{"id":"t","turns":[{"id":"turn1","items":[{"id":"u1","type":"userMessage","content":[{"type":"inputText","text":"hello"}]}]}]}}"#.utf8))
+        let reply: JSONValue = .object(["id": .string("a1"), "role": .string("agent"), "content": .string("hi"), "metadata": .object(["turnId": .string("turn1")])])
+        let restored = UserHistoryRecovery.merge([reply], snapshot: snapshot, conversationID: "c", tombstones: [])
+        XCTAssertEqual(restored.map(\.id), ["u1", "a1"])
+        XCTAssertEqual(restored[0]["content"].string, "hello")
+        XCTAssertEqual(restored[0]["createdAt"].string, "")
+        XCTAssertEqual(UserHistoryRecovery.merge(restored, snapshot: snapshot, conversationID: "c", tombstones: []), restored)
+        XCTAssertEqual(UserHistoryRecovery.merge([reply], snapshot: snapshot, conversationID: "c", tombstones: [.object(["itemId": .string("u1")])]), [reply])
+    }
     func testHistoryDatesHandleBothTimestampFormats() {
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25.235339Z").isEmpty)
         XCTAssertFalse(ChatPresentation.time("2026-09-12T23:49:25Z").isEmpty)

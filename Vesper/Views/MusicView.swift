@@ -28,17 +28,17 @@ struct MusicView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 12) {
                     HStack { Spacer(); Button { sheet = .library } label: { Label("My Music", systemImage: "books.vertical").font(.system(size: 14, weight: .medium)).padding(.horizontal, 16).frame(height: 42).background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25))) } }
                     together
                     Artwork(url: player.track["cover"].string)
-                        .frame(width: min(geometry.size.width - 72, 370), height: min(geometry.size.width - 72, 370))
+                        .frame(width: max(180, min(geometry.size.width - 88, 340)), height: max(180, min(geometry.size.width - 88, 340)))
                         .clipShape(Circle()).overlay(Circle().stroke(VesperTheme.accent.opacity(0.6), lineWidth: 5))
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 2)
                     trackCopy
                     progress
                     controls
-                }.padding(.horizontal, 26).padding(.top, 14).padding(.bottom, 24)
+                }.padding(.horizontal, 26).padding(.top, 4).padding(.bottom, 40)
                     .frame(maxWidth: 580).frame(maxWidth: .infinity)
             }
         }
@@ -57,7 +57,7 @@ struct MusicView: View {
                 var next = current; next["status"] = .string("invited"); next["inviteRequestedAt"] = .string(isoNow()); next["updatedAt"] = .string(isoNow()); return next
             } }
         } label: {
-            VStack(spacing: 10) {
+            VStack(spacing: 6) {
                 HStack(spacing: 4) { avatar("user"); avatar("agent") }
                 TimelineView(.periodic(from: .now, by: 60)) { timeline in Text(togetherLabel(timeline.date)).font(.system(size: 13)).foregroundStyle(VesperTheme.muted) }
             }.frame(maxWidth: .infinity).contentShape(Rectangle())

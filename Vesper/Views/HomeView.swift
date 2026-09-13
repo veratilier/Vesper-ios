@@ -49,15 +49,31 @@ struct HomeView: View {
                 }.padding(.horizontal, 16).padding(.bottom, 20).frame(maxWidth: 650).frame(maxWidth: .infinity)
             }.refreshable { await store.refresh(); await loadDesire(); await loadUsage(); await refreshWeather() }
         }.buttonStyle(.plain)
-        .task { player.updateLibrary(store.document("music").array); await loadDesire(); await refreshWeather() }
-        .onChange(of: weatherLocation.coordinate?.latitude) { _, _ in Task { await refreshWeather() } }
+        .task { player.updateLibrary(store.document("music").array); await loadDesire() }
+        .task(id: phase) {
+            guard phase == .active else { return }
+            // This task ends when Home disappears or the app leaves the foreground.
+            while !Task.isCancelled {
+                weatherLocation.locateIfAuthorized()
+                await refreshWeather()
+                do { try await Task.sleep(for: .seconds(15 * 60)) }
+                catch { return }
+            }
+        }
+        .onChange(of: weatherCoordinateKey) { _, _ in Task { await refreshWeather() } }
         .onChange(of: store.document("music")) { _, tracks in player.updateLibrary(tracks.array) }
         .onChange(of: store.token) { _, _ in Task { await loadDesire() } }
         .onChange(of: phase) { _, value in if value == .active { Task { await loadDesire() } } }
     }
+    private var weatherCoordinateKey: String {
+        if let coordinate = weatherLocation.coordinate { return "\(coordinate.latitude),\(coordinate.longitude)" }
+        let environment = store.document("environment")
+        guard case .number(let latitude) = environment["latitude"], case .number(let longitude) = environment["longitude"] else { return "" }
+        return "\(latitude),\(longitude)"
+    }
     private var weatherRow: some View {
         Button {
-            if case .number = store.document("environment")["latitude"] { Task { await refreshWeather() } }
+            if !weatherCoordinateKey.isEmpty { weatherLocation.locateIfAuthorized(); Task { await refreshWeather() } }
             else { weatherLocation.locate() }
         } label: {
             HStack(spacing: 7) {
@@ -69,7 +85,7 @@ struct HomeView: View {
                     Text(weatherLoading || weatherLocation.loading ? "Updating weather…" : weatherError || weatherLocation.error != nil ? "Weather unavailable · Retry" : "Local weather · Tap to enable")
                 }
                 Spacer()
-                Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                Image(systemName: weatherError ? "exclamationmark.arrow.triangle.2.circlepath" : "arrow.clockwise").font(.system(size: 10))
             }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
         }.disabled(weatherLoading).padding(.vertical, 2)
     }
@@ -105,13 +121,13 @@ struct HomeView: View {
         weatherLoading = true; defer { weatherLoading = false }
         do {
             guard let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(latitude)&longitude=\(longitude)&current=temperature_2m,weather_code&timezone=auto") else { return }
-            var request = URLRequest(url: url); request.timeoutInterval = 15
+            var request = URLRequest(url: url); request.timeoutInterval = 15; request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw ServiceError(message: "Weather unavailable") }
             let result = try JSONDecoder().decode(JSONValue.self, from: data)
             guard case .number = result["current"]["temperature_2m"] else { throw ServiceError(message: "Weather unavailable") }
             weather = .object(["temperature": result["current"]["temperature_2m"], "code": result["current"]["weather_code"], "updatedAt": .string(isoNow())]); weatherError = false
-        } catch { weatherError = true; weather = .null }
+        } catch { if !Task.isCancelled { weatherError = true } }
     }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {

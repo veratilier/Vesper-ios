@@ -62,6 +62,10 @@ struct ChatFile: Identifiable {
     @Published var loading = false
     private let manager = CLLocationManager()
     override init() { super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyHundredMeters }
+    func locateIfAuthorized() {
+        guard !loading else { return }
+        if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse { locate() }
+    }
     func locate() {
         loading = true; error = nil
         switch manager.authorizationStatus {

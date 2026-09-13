@@ -40,23 +40,17 @@ struct RootView: View {
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
+        ZStack(alignment: .leading) {
         NavigationStack {
             ZStack { Background(); content }
                 .safeAreaInset(edge: .bottom, spacing: 0) { if destination != .chat { tabBar } }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { Button { sidebar = true } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
+                    ToolbarItem(placement: .topBarLeading) { Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
                     ToolbarItem(placement: .principal) { Text(destination == .home ? "Vesper" : destination.rawValue).font(destination == .home ? VesperTheme.title(28) : .headline) }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.title2) }.accessibilityLabel("Settings")
                     }
-                }
-                .sheet(isPresented: $sidebar) {
-                    NavigationStack {
-                        List(Destination.allCases) { item in
-                            Button { destination = item; sidebar = false } label: { Label(item.rawValue, systemImage: item.icon).padding(.vertical, 4) }
-                        }.scrollContentBackground(.hidden).background { Background() }.navigationTitle("Vesper")
-                    }.presentationDetents([.large])
                 }
                 .alert("Vesper", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
                     Button("OK") { store.error = nil }
@@ -66,6 +60,31 @@ struct RootView: View {
                 .task { await store.refresh() }
                 .onChange(of: phase) { _, value in if value == .active { Task { await store.refresh() } } }
         }
+        .accessibilityHidden(sidebar)
+        if sidebar {
+            Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { withAnimation { sidebar = false } }.accessibilityLabel("Close sidebar").accessibilityAddTraits(.isButton)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Vesper").font(VesperTheme.title(32))
+                    Spacer()
+                    Button { withAnimation { sidebar = false } } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }.accessibilityLabel("Close sidebar")
+                }.padding(.horizontal, 20)
+                ScrollView {
+                    VStack(spacing: 3) {
+                        ForEach(Destination.allCases) { item in
+                            Button { withAnimation { destination = item; sidebar = false } } label: {
+                                Label(item.rawValue, systemImage: item.icon).font(.system(size: 15)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).frame(minHeight: 44)
+                                    .background(destination == item ? Color.gray.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 14))
+                            }.accessibilityAddTraits(destination == item ? .isSelected : [])
+                        }
+                    }.padding(.horizontal, 12)
+                }
+            }.padding(.top, 8).frame(width: 280).frame(maxHeight: .infinity)
+                .background(.regularMaterial).transition(.move(edge: .leading))
+                .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
+                .accessibilityAddTraits(.isModal)
+        }
+        }.animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
     @ViewBuilder private var content: some View {
         switch destination {

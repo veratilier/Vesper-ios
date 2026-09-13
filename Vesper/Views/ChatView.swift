@@ -20,9 +20,19 @@ struct ChatView: View {
             }.font(.caption).padding(.horizontal, 20).padding(.vertical, 12)
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
+                    LazyVStack(alignment: .leading, spacing: 16) {
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
-                        ForEach(chat.messages) { message in
+                        ForEach(ChatPresentation.rows(chat.messages)) { row in
+                            if row.activity {
+                                DisclosureGroup("Activity · \(row.messages.count)") {
+                                    ForEach(row.messages) { item in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(item["content"].string)
+                                            if !item["metadata"]["execution"].object.isEmpty { Text(item["metadata"]["execution"].pretty) }
+                                        }.font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(.vertical, 4)
+                                    }
+                                }.font(.caption).foregroundStyle(VesperTheme.muted)
+                            } else if let message = row.messages.first {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(message["role"].string == "user" ? "Vera" : "Rowan").font(.caption.weight(.medium)).foregroundStyle(VesperTheme.muted)
                                 if !message["metadata"]["attachments"].array.isEmpty {
@@ -34,9 +44,10 @@ struct ChatView: View {
                                 Text(message["content"].string).font(.system(size: 15)).lineSpacing(5).textSelection(.enabled)
                                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
                                 if message["status"].string != "streaming" {
-                                    HStack { Text(message["createdAt"].string).font(.caption2); Spacer(); Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message") }.foregroundStyle(VesperTheme.muted)
+                                    HStack { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2); Spacer(); Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message") }.foregroundStyle(VesperTheme.muted)
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading).id(message.id)
+                            }
                         }
                         if !chat.events.isEmpty {
                             DisclosureGroup("Activity · \(chat.events.count)") { ForEach(Array(chat.events.enumerated()), id: \.offset) { _, event in Text(event).font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3) } }.font(.caption).foregroundStyle(VesperTheme.muted)
@@ -50,21 +61,29 @@ struct ChatView: View {
         }
         // Native keyboard avoidance: no WebView, keyboard toolbar, artificial keyboard height or bottom spacer.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 10) {
+            VStack(spacing: 4) {
                 if !images.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(images.enumerated()), id: \.offset) { index, data in
                         if let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill().frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 10)).overlay(alignment: .topTrailing) { Button { images.remove(at: index) } label: { Image(systemName: "xmark.circle.fill").background(.white, in: Circle()) }.accessibilityLabel("Remove photo").disabled(chat.busy) } }
                     } } }
                 }
-                TextField("Write to Rowan…", text: $draft, axis: .vertical).lineLimit(1...6).focused($focused).font(.system(size: 16))
+                TextField("Write to Rowan…", text: $draft, axis: .vertical).lineLimit(1...5).focused($focused).font(.system(size: 16))
                 HStack {
-                    PhotosPicker(selection: $selectedPhotos, maxSelectionCount: 5, matching: .images) { Image(systemName: "plus").font(.title3) }.disabled(chat.busy || loadingPhotos).accessibilityLabel("Attach photos")
-                    Picker("Model", selection: $chat.model) { Text("Default model").tag(""); ForEach(chat.models) { model in Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string).tag(model["model"].string) } }.font(.caption).disabled(chat.busy)
+                    PhotosPicker(selection: $selectedPhotos, maxSelectionCount: 5, matching: .images) { Image(systemName: "plus").font(.system(size: 18)).frame(width: 44, height: 44) }.disabled(chat.busy || loadingPhotos).accessibilityLabel("Attach photos")
+                    Menu {
+                        Picker("Model", selection: $chat.model) {
+                            Text("Default model").tag("")
+                            ForEach(chat.models) { model in Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string).tag(model["model"].string) }
+                        }
+                    } label: {
+                        HStack(spacing: 4) { Text(chat.model.isEmpty ? "Default" : chat.model).lineLimit(1).truncationMode(.middle); Image(systemName: "chevron.down").font(.system(size: 9)) }
+                            .font(.system(size: 12)).frame(maxWidth: 160, minHeight: 44, alignment: .leading)
+                    }.disabled(chat.busy).accessibilityLabel("Select model")
                     Spacer()
-                    if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.title) }.accessibilityLabel("Stop reply") }
-                    else { Button { let sending = draft; let outgoing = images; Task { if await chat.send(sending, images: outgoing) { if draft == sending { draft = "" }; images = []; selectedPhotos = [] } } } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty) || loadingPhotos).accessibilityLabel("Send message") }
+                    if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 25)).frame(width: 44, height: 44) }.accessibilityLabel("Stop reply") }
+                    else { Button { let sending = draft; let outgoing = images; Task { if await chat.send(sending, images: outgoing) { if draft == sending { draft = "" }; images = []; selectedPhotos = [] } } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 25)).frame(width: 44, height: 44) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty) || loadingPhotos).accessibilityLabel("Send message") }
                 }
-            }.padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26)).overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.8), lineWidth: 1.5)).padding(.horizontal, 16).padding(.vertical, 8)
+            }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26)).overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.8), lineWidth: 1.5)).padding(.horizontal, 16).padding(.vertical, 8)
         }
         .task { chat.configure(store) }
         .onChange(of: selectedPhotos) { _, picks in
@@ -84,7 +103,7 @@ struct ChatView: View {
         }
         .onDisappear { if !chat.busy { chat.disconnect() } }
         .sheet(isPresented: $history) {
-            NavigationStack { List(chat.conversations) { item in Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(item["updatedAt"].string).font(.caption).foregroundStyle(.secondary) } }.disabled(chat.busy) }.navigationTitle("Conversations") }
+            NavigationStack { List(chat.conversations) { item in Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(.secondary) } }.disabled(chat.busy) }.navigationTitle("Conversations") }
         }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
             NavigationStack {
@@ -96,5 +115,40 @@ struct ChatView: View {
             }.interactiveDismissDisabled()
         }
         .alert("Chat", isPresented: Binding(get: { chat.error != nil }, set: { if !$0 { chat.error = nil } })) { Button("OK") { chat.error = nil } } message: { Text(chat.error ?? "") }
+    }
+}
+
+// Keep persisted records intact; classify only their presentation, never by message text.
+enum ChatPresentation {
+    struct Row: Identifiable {
+        let id: String
+        let activity: Bool
+        var messages: [JSONValue]
+    }
+    static func isActivity(_ message: JSONValue) -> Bool {
+        if message["role"].string == "user" { return false }
+        if ["system", "tool", "function"].contains(message["role"].string) { return true }
+        let block = message["metadata"]["blockType"].string
+        return !block.isEmpty && !["agentMessage", "assistantMessage", "outputMessage", "text", "message", "musicCard", "sticker"].contains(block)
+    }
+    static func rows(_ messages: [JSONValue]) -> [Row] {
+        var result: [Row] = []
+        for message in messages {
+            let activity = isActivity(message)
+            if activity, let last = result.last, last.activity {
+                result[result.count - 1].messages.append(message)
+            } else { result.append(Row(id: message.id, activity: activity, messages: [message])) }
+        }
+        return result
+    }
+    static func time(_ raw: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var date = parser.date(from: raw)
+        if date == nil { parser.formatOptions = [.withInternetDateTime]; date = parser.date(from: raw) }
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm"
+        return formatter.string(from: date)
     }
 }

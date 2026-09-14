@@ -30,12 +30,12 @@ struct ChatFile: Identifiable {
         guard granted, generation == id else { if !granted { error = "Allow speech recognition in Settings." }; return }
         let mic = await AVAudioApplication.requestRecordPermission()
         guard mic, generation == id else { if !mic { error = "Allow microphone access in Settings." }; return }
-        guard SystemCalls.shared.id == nil || SystemCalls.shared.audioReady else { return }
+        guard InAppCalls.shared.id == nil || InAppCalls.shared.audioReady else { return }
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable else { error = "Speech recognition is unavailable."; return }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-            if SystemCalls.shared.id == nil { try session.setActive(true) }
+            if InAppCalls.shared.id == nil { try session.setActive(true) }
             let request = SFSpeechAudioBufferRecognitionRequest(); request.shouldReportPartialResults = true; self.request = request
             let input = engine.inputNode; let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0 else { throw ServiceError(message: "No microphone is available.") }
@@ -164,8 +164,8 @@ struct CallCameraPreview: UIViewRepresentable {
     func play(_ text: String, store: AppStore, connectionOverride: JSONValue? = nil) async {
         stop(); error = nil; let id = UUID(); generation = id; speaking = true
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: SystemCalls.shared.id == nil ? .default : .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-            if SystemCalls.shared.id == nil { try AVAudioSession.sharedInstance().setActive(true) }
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: InAppCalls.shared.id == nil ? .default : .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+            if InAppCalls.shared.id == nil { try AVAudioSession.sharedInstance().setActive(true) }
             let connection = VoiceConfiguration.normalized(connectionOverride ?? VoiceConfiguration.connection(store))
             if !connection["apiKey"].string.isEmpty {
                 var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
@@ -189,7 +189,7 @@ struct CallCameraPreview: UIViewRepresentable {
 }
 
 struct NativeCallView: View {
-    @StateObject private var systemCall = SystemCalls.shared
+    @StateObject private var systemCall = InAppCalls.shared
     var initiator = "user"
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession

@@ -1,5 +1,6 @@
 import SwiftUI
 import EventKit
+import EventKitUI
 
 @MainActor final class SystemPlanner: ObservableObject {
     static let shared = SystemPlanner()
@@ -57,6 +58,10 @@ import EventKit
 
 struct SystemPlannerView: View {
     @StateObject private var planner = SystemPlanner.shared
+    @State private var selectedEvent: EKEvent?
+    @State private var selectedReminder: EKReminder?
+    @State private var editingEvent = false
+    @State private var editingReminder = false
     @State private var adding = false
     @State private var reminder = false
     @State private var title = ""
@@ -73,14 +78,14 @@ struct SystemPlannerView: View {
             if let error = planner.error { Text(error).foregroundStyle(.red).font(.caption) }
             Section("Calendar · next 7 days") {
                 ForEach(planner.events, id: \.calendarItemIdentifier) { item in
-                    VStack(alignment: .leading) { Text(item.title ?? "Event"); Text(item.startDate.formatted()).font(.caption); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) }
+                    Button { selectedEvent = item; editingEvent = true } label: { VStack(alignment: .leading) { Text(item.title ?? "Event"); Text(item.startDate.formatted()).font(.caption); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) } }.disabled(!item.calendar.allowsContentModifications)
                 }
                 if planner.events.isEmpty { Text("No events available.").foregroundStyle(.secondary) }
             }
             Section("Incomplete reminders") {
                 ForEach(planner.reminders, id: \.calendarItemIdentifier) { item in
                     HStack { Button { Task { await planner.complete(item) } } label: { Image(systemName: "circle") }.accessibilityLabel("Complete reminder")
-                        VStack(alignment: .leading) { Text(item.title ?? "Reminder"); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) }
+                        Button { selectedReminder = item; editingReminder = true } label: { VStack(alignment: .leading) { Text(item.title ?? "Reminder"); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) } }.disabled(!item.calendar.allowsContentModifications)
                     }
                 }
                 if planner.reminders.isEmpty { Text("No reminders available.").foregroundStyle(.secondary) }
@@ -88,6 +93,12 @@ struct SystemPlannerView: View {
         }.navigationTitle("Calendar & Reminders").navigationBarTitleDisplayMode(.inline)
         .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add event or reminder") }
         .task { await planner.refresh() }.refreshable { await planner.refresh() }
+        .sheet(isPresented: $editingEvent, onDismiss: { Task { await planner.refresh() } }) {
+            if let selectedEvent { EventEditor(event: selectedEvent, store: planner.store) }
+        }
+        .sheet(isPresented: $editingReminder, onDismiss: { Task { await planner.refresh() } }) {
+            if let selectedReminder { ReminderEditor(item: selectedReminder, planner: planner) }
+        }
         .sheet(isPresented: $adding) {
             NavigationStack {
                 Form {
@@ -104,5 +115,63 @@ struct SystemPlannerView: View {
                 }
             }
         }
+    }
+}
+
+struct EventEditor: UIViewControllerRepresentable {
+    let event: EKEvent
+    let store: EKEventStore
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIViewController(context: Context) -> EKEventEditViewController {
+        let controller = EKEventEditViewController()
+        controller.eventStore = store; controller.event = event; controller.editViewDelegate = context.coordinator
+        return controller
+    }
+    func updateUIViewController(_ controller: EKEventEditViewController, context: Context) {}
+    final class Coordinator: NSObject, EKEventEditViewDelegate {
+        func eventEditViewController(_ controller: EKEventEditViewController, didCompleteWith action: EKEventEditViewAction) {
+            controller.dismiss(animated: true)
+        }
+    }
+}
+
+struct ReminderEditor: View {
+    let item: EKReminder
+    @ObservedObject var planner: SystemPlanner
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var notes = ""
+    @State private var hasDueDate = false
+    @State private var due = Date()
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Title", text: $title)
+                TextField("Notes", text: $notes, axis: .vertical)
+                Toggle("Due date", isOn: $hasDueDate)
+                if hasDueDate { DatePicker("Due", selection: $due) }
+                Text(item.calendar.title).foregroundStyle(.secondary)
+                if let error { Text(error).foregroundStyle(.red) }
+            }.navigationTitle("Edit reminder")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }.disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }.onAppear {
+            title = item.title ?? ""; notes = item.notes ?? ""
+            hasDueDate = item.dueDateComponents != nil
+            due = item.dueDateComponents.flatMap { Calendar.current.date(from: $0) } ?? Date()
+        }
+    }
+    private func save() {
+        guard item.calendar.allowsContentModifications else { error = "This reminder list is read-only."; return }
+        let oldTitle = item.title; let oldNotes = item.notes; let oldDue = item.dueDateComponents
+        item.title = title; item.notes = notes
+        item.dueDateComponents = hasDueDate ? Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: due) : nil
+        do { try planner.store.save(item, commit: true); dismiss() }
+        catch { item.title = oldTitle; item.notes = oldNotes; item.dueDateComponents = oldDue; self.error = error.localizedDescription }
     }
 }

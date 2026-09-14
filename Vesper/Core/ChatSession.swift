@@ -6,7 +6,6 @@ import AVFoundation
 @MainActor final class ChatSession: ObservableObject {
     @Published var incomingCall = false
     @Published var callActive = false
-    private var notifiedMessages = Set<String>()
     @Published var thinkingSummary = ""
     @Published var messages: [JSONValue] = []
     @Published var conversations: [JSONValue] = []
@@ -349,16 +348,6 @@ import AVFoundation
             _ = try await api.request("/conversations/\(target)/messages", method: "POST", body: message, history: true)
         } catch { self.error = "Call ended, but its record could not be synced: " + error.localizedDescription }
     }
-    private func notifyReply(_ message: JSONValue) async {
-        guard !message.id.isEmpty, notifiedMessages.insert(message.id).inserted else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "Rowan"; content.body = String(message["content"].string.prefix(180))
-        if content.body.isEmpty { content.body = "Sent you an attachment" }
-        content.sound = .default; content.threadIdentifier = conversationID
-        content.userInfo = ["conversationId": conversationID]
-        do { try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "message-" + message.id, content: content, trigger: nil)) }
-        catch { self.error = "Message received; notification could not be displayed: " + error.localizedDescription }
-    }
     private func persist(_ message: JSONValue) async throws {
         guard let api else { return }
         _ = try await api.request("/conversations/\(conversationID)/messages", method: "POST", body: message, history: true)
@@ -432,7 +421,6 @@ import AVFoundation
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
                 messages.append(savedMessage); do { try await persist(savedMessage) } catch { self.error = "Reply received, but history could not be saved." }
             }
-            if let message = messages.first(where: { $0.id == itemID }) { await notifyReply(message) }
         } else if method == "turn/completed" {
             if !thinkingSummary.isEmpty || !events.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
@@ -493,15 +481,15 @@ import AVFoundation
                 attachment["type"] = .string("audio/mpeg"); attachment["transcript"] = .string(text); attachment["duration"] = .number(audio.duration)
                 let message: JSONValue = .object(["id": .string("voice:" + targetThread + ":" + callID), "conversationId": .string(targetConversation), "role": .string("agent"), "content": .string(text), "createdAt": .string(isoNow()), "status": .string("delivered"), "metadata": .object(["attachments": .array([attachment]), "voiceMessage": .bool(true)])])
                 _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
-                if targetConversation == conversationID { if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message } else { messages.append(message) }; await notifyReply(message) }
+                if targetConversation == conversationID { if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message } else { messages.append(message) } }
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Voice message saved with transcript")])])])]))
                 events.append("send_native_voice · completed")
                 return
             }
             if name == "request_native_call" {
                 guard UIApplication.shared.applicationState == .active, !callActive, !incomingCall else { throw ServiceError(message: "Vera cannot receive an in-app call invitation right now.") }
-                try await SystemCalls.shared.incoming()
-                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Incoming call reported to CallKit; not answered yet.")])])])]))
+                incomingCall = true
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("In-app call invitation displayed; Vera must accept and tap Start call. Not answered yet.")])])])]))
                 events.append("request_native_call · invitation displayed")
                 return
             }
@@ -515,7 +503,6 @@ import AVFoundation
                 _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
                 if targetConversation == conversationID {
                     if let index = messages.firstIndex(where: { $0.id == id }) { messages[index] = message } else { messages.append(message) }
-                    await notifyReply(message)
                 }
             }
             if ["send_chat_file", "album_send_photos"].contains(name) {
@@ -529,7 +516,6 @@ import AVFoundation
                 if targetConversation == conversationID {
                     if let index = messages.firstIndex(where: { $0.id == fileMessage.id }) { messages[index] = fileMessage }
                     else { messages.append(fileMessage) }
-                    await notifyReply(fileMessage)
                 }
             }
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))

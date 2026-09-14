@@ -122,12 +122,12 @@ struct VoiceMessageBar: View {
                 guard let url = URL(string: attachment["url"].string), url.scheme == "https" else { return }
                 music.pause(); Task { await playback.toggle(url: url) }
             } label: {
-                HStack(spacing: 12) {
+                HStack(spacing: 8) {
                     Image(systemName: playback.playing ? "pause.fill" : "play.fill")
-                    Image(systemName: "waveform").font(.title2)
+                    Image(systemName: "waveform").font(.system(size: 16))
                     let seconds = Int(max(0, attachment["duration"].number))
                     Text(playback.loading ? "Loading…" : "\(seconds / 60):\(String(format: "%02d", seconds % 60))").monospacedDigit()
-                }.frame(minWidth: 160, minHeight: 36).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }.font(.system(size: 14)).frame(minWidth: 100, minHeight: 32).padding(.horizontal, 10).padding(.vertical, 4).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(.plain)
             Button(expanded ? "Hide transcript" : "View transcript") { expanded.toggle() }.font(.caption)
             if expanded { Text(attachment["transcript"].string.isEmpty ? "Transcription unavailable." : attachment["transcript"].string).font(.subheadline).textSelection(.enabled).frame(maxWidth: 270, alignment: .leading) }

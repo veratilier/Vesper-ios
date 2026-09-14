@@ -492,8 +492,8 @@ import AVFoundation
             }
             if name == "request_native_call" {
                 guard UIApplication.shared.applicationState == .active, !callActive, !incomingCall else { throw ServiceError(message: "Vera cannot receive an in-app call invitation right now.") }
-                incomingCall = true
-                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Invitation displayed in app; not answered. Wait for Vera to accept and start the call.")])])])]))
+                try await SystemCalls.shared.incoming()
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Incoming call reported to CallKit; not answered yet.")])])])]))
                 events.append("request_native_call · invitation displayed")
                 return
             }

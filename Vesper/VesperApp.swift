@@ -102,6 +102,7 @@ struct RootView: View {
             Button("Decline", role: .cancel) { }
         } message: { Text("Your microphone stays off until you start the call.") }
         .fullScreenCover(isPresented: $acceptedCall) { NativeCallView(initiator: "agent") }
+        .onReceive(NotificationCenter.default.publisher(for: .init("VesperSystemCallAnswered"))) { _ in destination = .chat; acceptedCall = true }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
             destination = .chat

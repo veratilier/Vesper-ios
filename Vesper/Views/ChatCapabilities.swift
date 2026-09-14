@@ -30,11 +30,12 @@ struct ChatFile: Identifiable {
         guard granted, generation == id else { if !granted { error = "Allow speech recognition in Settings." }; return }
         let mic = await AVAudioApplication.requestRecordPermission()
         guard mic, generation == id else { if !mic { error = "Allow microphone access in Settings." }; return }
+        guard SystemCalls.shared.id == nil || SystemCalls.shared.audioReady else { return }
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable else { error = "Speech recognition is unavailable."; return }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true)
+            if SystemCalls.shared.id == nil { try session.setActive(true) }
             let request = SFSpeechAudioBufferRecognitionRequest(); request.shouldReportPartialResults = true; self.request = request
             let input = engine.inputNode; let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0 else { throw ServiceError(message: "No microphone is available.") }
@@ -163,8 +164,8 @@ struct CallCameraPreview: UIViewRepresentable {
     func play(_ text: String, store: AppStore, connectionOverride: JSONValue? = nil) async {
         stop(); error = nil; let id = UUID(); generation = id; speaking = true
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try AVAudioSession.sharedInstance().setActive(true)
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: SystemCalls.shared.id == nil ? .default : .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+            if SystemCalls.shared.id == nil { try AVAudioSession.sharedInstance().setActive(true) }
             let connection = VoiceConfiguration.normalized(connectionOverride ?? VoiceConfiguration.connection(store))
             if !connection["apiKey"].string.isEmpty {
                 var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
@@ -188,6 +189,7 @@ struct CallCameraPreview: UIViewRepresentable {
 }
 
 struct NativeCallView: View {
+    @StateObject private var systemCall = SystemCalls.shared
     var initiator = "user"
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
@@ -243,9 +245,10 @@ struct NativeCallView: View {
                 if VoiceConfiguration.connection(store)["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
                 if let error = notice ?? speech.error ?? voice.error { Text(error).font(.caption).foregroundStyle(.red) }
                 Spacer(minLength: 0)
-                if !active { Button { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID; Task { await speech.start() } } label: { Text("Start call").foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(chat.busy) }
+                if let error = systemCall.error { Text(error).font(.caption).foregroundStyle(.red) }
+                if !active { Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: { Text(systemCall.id == nil ? "Start call" : "Connecting…").foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(chat.busy || systemCall.id != nil) }
                 HStack(spacing: 30) {
-                    Button { muted.toggle(); silence?.cancel(); if muted { speech.stop() } else if !waiting && !voice.speaking { Task { await speech.start() } } } label: { Label(muted ? "Unmute" : "Mute", systemImage: muted ? "mic.slash" : "mic") }.disabled(!active)
+                    Button { systemCall.mute(!muted) } label: { Label(muted ? "Unmute" : "Mute", systemImage: muted ? "mic.slash" : "mic") }.disabled(!active)
                     Button { toggleCamera() } label: { Label(video ? "Camera off" : "Camera", systemImage: video ? "video.slash" : "video") }.disabled(cameraBusy)
                     Button { end(); dismiss() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
                 }.labelStyle(.titleAndIcon).font(.subheadline).frame(minHeight: 50).padding(.bottom, 12)
@@ -255,7 +258,10 @@ struct NativeCallView: View {
                     }
                 }
             }.padding(24)
-        }.onAppear { chat.configure(store); voice.finished = { if active && !muted { Task { await speech.start() } } } }
+        }.onAppear { chat.configure(store); voice.finished = { if active && !muted && systemCall.audioReady { Task { await speech.start() } } }; activateCall() }
+        .onChange(of: systemCall.audioReady) { _, ready in if ready { activateCall() } else { silence?.cancel(); speech.stop(); voice.stop() } }
+        .onChange(of: systemCall.id) { old, new in if old != nil && new == nil { end(); dismiss() } }
+        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else if active && systemCall.audioReady && !waiting && !voice.speaking { Task { await speech.start() } } }
         .onChange(of: speech.text) { _, text in
             silence?.cancel(); guard active, !muted, !waiting, !voice.speaking, !text.isEmpty else { return }
             silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
@@ -269,7 +275,12 @@ struct NativeCallView: View {
             caption = answer; transcript.append(.object(["speaker": .string("Rowan"), "text": .string(answer), "at": .string(ISO8601DateFormatter().string(from: Date()))])); Task { await voice.play(answer, store: store) }
         }
         .onDisappear { visible = false; end() }
-        .onChange(of: phase) { _, phase in if phase == .background { end() } }
+        .onChange(of: phase) { _, phase in if phase == .background { video = false; camera.stop() } }
+    }
+    private func activateCall() {
+        guard systemCall.audioReady else { return }
+        if !active { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID }
+        if !muted && !waiting && !voice.speaking { Task { await speech.start() } }
     }
     private func submit() {
         let text = speech.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -290,6 +301,7 @@ struct NativeCallView: View {
         return value.isEmpty ? "Thinking…" : value
     }
     private func end() {
+        systemCall.end()
         if let start = startedAt {
             startedAt = nil
             let entries = transcript; let target = callConversation; let wasVideo = usedVideo

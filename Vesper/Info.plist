@@ -58,5 +58,9 @@
 	<string>Add your current location to a message you choose to send.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Read the sleep, heart rate, steps and wrist temperature you choose to share, for your private on-device Health page.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Show your upcoming events and save events you create in Vesper.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Show your reminder lists and save or complete reminders you choose in Vesper.</string>
 </dict>
 </plist>

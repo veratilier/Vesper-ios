@@ -5,6 +5,7 @@ import AVFoundation
 
 @MainActor final class ChatSession: ObservableObject {
     var voiceCallContext: String?
+    var callVisualContext: String?
     @Published var incomingCall = false
     @Published var callActive = false
     @Published var thinkingSummary = ""
@@ -237,7 +238,10 @@ import AVFoundation
         let messageID = UUID().uuidString
         do {
             var attachments: [JSONValue] = []
-            for image in images { attachments.append(try await api.uploadImage(image, name: UUID().uuidString + ".jpg")) }
+            // Call frames are sent inline below; they do not need permanent chat uploads.
+            if voiceCallContext == nil {
+                for image in images { attachments.append(try await api.uploadImage(image, name: UUID().uuidString + ".jpg")) }
+            }
             var fileContext = ""
             for file in files {
                 let attachment = try await api.uploadFile(file.data, name: file.name, mime: file.mime)
@@ -279,7 +283,8 @@ import AVFoundation
                 musicContext = "\nShared music: \(title) — \(artist) (song ID: \(songID))"
             }
             let stickerContext = sticker.map { "Shared sticker: " + $0["name"].string + " " + $0["description"].string + " (assetId: " + $0["assetId"].string + ")" }
-            let modelInputText = (stickerContext ?? (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text)) + fileContext + musicContext
+            let visualContext = voiceCallContext != nil ? callVisualContext.map { "\n" + $0 } ?? "" : ""
+            let modelInputText = (stickerContext ?? (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text)) + fileContext + musicContext + visualContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
             if let sticker { user["type"] = .string("sticker"); user["metadata"]["sticker"] = sticker }
             if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }

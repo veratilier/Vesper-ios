@@ -144,8 +144,9 @@ struct ChatView: View {
                         if chat.busy {
                             AssistantMessageHeading(message: .object(["status": .string(chat.busy ? "streaming" : "delivered"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events)
                         }
-                        Color.clear.frame(height: 1).id("bottom").background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
+                        Color.clear.frame(height: 1).id("bottom")
                     }.padding(.horizontal, 20).padding(.vertical, 14)
+                    .background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
                 }.scrollDismissesKeyboard(.interactively)
                 .coordinateSpace(name: "chat-scroll")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })

@@ -134,6 +134,14 @@ struct RootView: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
+        .task(id: phase) {
+            guard phase == .active else { return }
+            player.configure(store)
+            while !Task.isCancelled {
+                await player.pollControl()
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            }
+        }
         .task(id: sidebar) {
             guard sidebar else { return }
             while !Task.isCancelled {

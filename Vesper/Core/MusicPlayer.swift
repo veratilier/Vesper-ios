@@ -11,6 +11,8 @@ import SwiftUI
     @Published var error: String?
     @Published var mode = "order"
     @Published var resolving = false
+    private var lastControlID = ""
+    private var pollingControl = false
     private var initialized = false
     private weak var store: AppStore?
     private var lastSyncAt = Date.distantPast
@@ -127,7 +129,7 @@ import SwiftUI
         catch { self.error = error.localizedDescription }
     }
     func pause() { selection = UUID(); resolveTask?.cancel(); resolving = false; player.pause(); synchronize() }
-    func toggle() { playing ? pause() : play() }
+    func toggle() { (resolving || player.timeControlStatus != .paused) ? pause() : play() }
     func next(_ delta: Int) { guard !tracks.isEmpty else { return }; if mode == "random", tracks.count > 1, let choice = tracks.filter({ $0.id != track.id }).randomElement() { select(choice); return }; let index = tracks.firstIndex { $0.id == track.id } ?? 0; select(tracks[(index + delta + tracks.count) % tracks.count]) }
     func seek(_ value: Double) { player.seek(to: CMTime(seconds: value, preferredTimescale: 600)) }
     func synchronize() {
@@ -143,13 +145,44 @@ import SwiftUI
                  "playing": .bool(playing), "resolving": .bool(resolving), "positionSeconds": .number(position),
                  "durationSeconds": .number(duration), "observedAt": .string(isoNow()), "audioIncluded": .bool(false)])
     }
+    func pollControl() async {
+        guard !pollingControl, let store, !store.token.isEmpty else { return }
+        pollingControl = true
+        defer { pollingControl = false }
+        do {
+            let result = try await store.api.request("/api/state?key=musicControl")
+            let command = result["value"]
+            guard !Task.isCancelled, !command.id.isEmpty, command["processedAt"].string.isEmpty else { return }
+            if command.id != lastControlID {
+                switch command["action"].string {
+                case "play": play()
+                case "pause": pause()
+                case "next": guard !tracks.isEmpty else { return }; next(1)
+                case "previous": guard !tracks.isEmpty else { return }; next(-1)
+                case "play_track":
+                    let id = command["trackId"].string
+                    guard let song = tracks.first(where: { $0.id == id || $0["neteaseId"].string == id }) else { return }
+                    select(song)
+                default: return
+                }
+                lastControlID = command.id
+            }
+            // Acknowledge handling, not successful audio output. Playback telemetry is separate.
+            _ = await store.mutate("musicControl", reportErrors: false) { current in
+                guard current.id == command.id else { return current }
+                var updated = current
+                updated["processedAt"] = .string(isoNow())
+                return updated
+            }
+        } catch { /* Retry on the next foreground poll; do not interrupt chat. */ }
+    }
     private func syncPlayback() {
         guard let store, !store.token.isEmpty, !store.saving, syncTask == nil else { return }
         guard lastSyncTrack != track.id || lastSyncPlaying != playing || Date().timeIntervalSince(lastSyncAt) >= 15 else { return }
         let value = liveContext; let currentTrack = track; let at = Date()
         syncTask = Task {
             defer { syncTask = nil }
-            let saved = await store.mutate("musicPlayback") { current in
+            let saved = await store.mutate("musicPlayback", reportErrors: false) { current in
                 var next = current
                 next["trackId"] = currentTrack["id"]
                 next["playing"] = value["playing"]; next["positionSeconds"] = value["positionSeconds"]; next["durationSeconds"] = value["durationSeconds"]

@@ -38,15 +38,25 @@ import SwiftUI
     }
     /// Re-read before applying an item-level mutation. Preserve unknown fields and unrelated rows.
     /// The legacy endpoint has no compare-and-swap; concurrent cross-device edits remain a server limitation.
-    func mutate(_ key: String, change: (JSONValue) throws -> JSONValue) async -> Bool {
-        guard !saving else { error = "Please wait for the current save."; return false }
-        saving = true; defer { saving = false }
+    private var saveWaiters: [CheckedContinuation<Void, Never>] = []
+    private func acquireSave() async {
+        if !saving { saving = true; return }
+        await withCheckedContinuation { saveWaiters.append($0) }
+    }
+    private func releaseSave() {
+        if saveWaiters.isEmpty { saving = false }
+        else { saveWaiters.removeFirst().resume() }
+    }
+    func mutate(_ key: String, reportErrors: Bool = true, change: (JSONValue) throws -> JSONValue) async -> Bool {
+        await acquireSave()
+        defer { releaseSave() }
+        guard !Task.isCancelled else { return false }
         do {
             let latest = try await api.request("/api/state?key=\(key)")
             let value = try change(latest["value"])
             _ = try await api.request("/api/state", method: "PUT", body: .object(["key": .string(key), "value": value]))
             documents[key] = value; if key == "notes" { WidgetSync.notes(value) }; return true
-        } catch { self.error = error.localizedDescription; return false }
+        } catch { if reportErrors { self.error = error.localizedDescription }; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {
         await mutate(key) { current in

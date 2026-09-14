@@ -88,7 +88,7 @@ struct MusicView: View {
     }
     private var trackCopy: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(player.track["title"].string.isEmpty ? "Your next song" : player.track["title"].string).font(.system(size: 25, weight: .semibold)).lineLimit(2)
+            Text(player.track["title"].string.isEmpty ? "No song selected" : player.track["title"].string).font(.system(size: 25, weight: .semibold)).lineLimit(2)
             Text([player.track["artist"].string, player.track["album"].string].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 14)).foregroundStyle(VesperTheme.muted).lineLimit(2)
             if player.track == .null { Text("Open My Music to connect NetEase or search for songs.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
         }.frame(maxWidth: .infinity, alignment: .leading)

@@ -13,7 +13,7 @@ import SwiftUI
     @Published var resolving = false
     private var lastControlID = ""
     private var pollingControl = false
-    private var initialized = false
+    private var library: [JSONValue] = []
     private weak var store: AppStore?
     private var lastSyncAt = Date.distantPast
     private var lastSyncTrack = ""
@@ -74,15 +74,12 @@ import SwiftUI
         MPRemoteCommandCenter.shared().previousTrackCommand.addTarget { [weak self] _ in Task { @MainActor in self?.next(-1) }; return .success }
     }
     func updateLibrary(_ values: [JSONValue]) {
-        guard !initialized else { return }
-        tracks = values
-        if !values.isEmpty { initialized = true }
-        if track == .null { track = values.first ?? .null }
+        // A saved library is not the user's selected playback queue.
+        library = values
     }
     func setQueue(_ values: [JSONValue], append: Bool = false) {
         var seen = Set<String>()
         tracks = (append ? tracks + values : values).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
-        initialized = true
         if !tracks.contains(where: { $0.id == track.id }) { pause(); player.replaceCurrentItem(with: nil); track = tracks.first ?? .null; position = 0; duration = 0; synchronize() }
     }
     func remove(_ id: String) { setQueue(tracks.filter { $0.id != id }) }
@@ -161,7 +158,7 @@ import SwiftUI
                 case "previous": guard !tracks.isEmpty else { return }; next(-1)
                 case "play_track":
                     let id = command["trackId"].string
-                    guard let song = tracks.first(where: { $0.id == id || $0["neteaseId"].string == id }) else { return }
+                    guard let song = (tracks + library).first(where: { $0.id == id || $0["neteaseId"].string == id }) else { return }
                     select(song)
                 default: return
                 }

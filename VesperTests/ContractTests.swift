@@ -4,6 +4,18 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    func testHistoryRestoresPublicDetailsWithoutResurrectingMessages() throws {
+        let snapshot = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"thread":{"id":"thread","turns":[{"id":"turn","items":[{"type":"reasoning","summary":["Saved summary"],"content":["Never display raw reasoning"]},{"type":"dynamicToolCall","tool":"sticker_search","status":"completed"},{"id":"reply","type":"agentMessage","text":"Hello"},{"id":"deleted","type":"agentMessage","text":"Deleted"}]}]}}"#.utf8))
+        let saved: JSONValue = .object(["id": .string("reply"), "role": .string("agent"), "content": .string("Hello")])
+        let restored = ChatDetailRecovery.restore([saved], snapshot: snapshot)
+        XCTAssertEqual(restored.count, 1)
+        XCTAssertEqual(restored[0]["metadata"]["thoughtSummary"].string, "Saved summary")
+        XCTAssertEqual(restored[0]["metadata"]["toolEvents"].array.map { $0.string }, ["sticker_search · completed"])
+        XCTAssertEqual(restored[0]["metadata"]["turnId"].string, "turn")
+        XCTAssertEqual(ChatDetailRecovery.restore(restored, snapshot: snapshot), restored)
+        XCTAssertEqual(ChatDetailRecovery.restore(restored, snapshot: .object([:])), restored)
+        XCTAssertTrue(ChatDetailRecovery.restore([], snapshot: snapshot).isEmpty)
+    }
     func testWakeLedgerIsHiddenButMessagesAndNormalToolsRemain() {
         let activity: JSONValue = .object(["id": .string("wake-tool"), "role": .string("system"), "metadata": .object(["wakeRunId": .string("run"), "blockType": .string("execution")])])
         let reply: JSONValue = .object(["id": .string("wake-final"), "role": .string("agent"), "content": .string("Hello"), "metadata": .object(["wakeRunId": .string("run"), "blockType": .string("agentMessage")])])

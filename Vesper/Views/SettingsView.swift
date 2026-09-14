@@ -47,13 +47,14 @@ struct WakeView: View {
     var body: some View {
         Page(title: "Autonomous Wake", subtitle: "Choose what Rowan may do and share.") {
             GlassCard { VStack(alignment: .leading, spacing: 18) {
-                if !supported { Text("Update the VPS wake service to use permission switches.").font(.caption) }
+                if !supported { Text("The app has been updated, but the connected wake service has not reported permission support. Update and restart the VPS wake service, then tap Refresh service. Your existing wake settings have not been changed.").font(.caption) }
                 Toggle("Automatic wake-up", isOn: $enabled)
                 Picker("Interval", selection: $interval) {
                     Text("Adaptive").tag(0)
                     ForEach([60,120,240,360,720,1440], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
                 Text("Active chats and quiet requests may postpone a wake-up. With Desire reading off, Adaptive uses 120 minutes.").font(.caption).foregroundStyle(VesperTheme.muted)
+                if supported {
                 Text("Messages Rowan may send").font(.headline)
                 ForEach(runtime["messageOptions"].array.map { $0.string }, id: \.self) { name in
                     Toggle(name.capitalized, isOn: permission(name, messages: true))
@@ -69,6 +70,7 @@ struct WakeView: View {
                     Text(busy ? "Saving…" : "Save permissions").font(.body.weight(.semibold)).foregroundStyle(.white)
                         .padding(.horizontal, 20).frame(minHeight: 44).background(VesperTheme.ink, in: Capsule())
                 }.buttonStyle(.plain)
+                }
             }.disabled(!supported || busy) }
             if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
             Button("Refresh service") { Task { await load() } }.disabled(busy)

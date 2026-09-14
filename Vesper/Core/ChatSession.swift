@@ -407,7 +407,7 @@ import AVFoundation
             for key in ["command", "cwd", "exitCode", "durationMs"] { if item[key] != .null { execution[key] = item[key] } }
             if item["aggregatedOutput"] != .null { execution["output"] = item["aggregatedOutput"] }
             if item["changes"] != .null { execution["files"] = item["changes"] }
-            let message: JSONValue = .object(["id": .string("execution-" + id), "conversationId": .string(conversationID), "role": .string("tool"), "content": .string(""), "createdAt": .string(index.map { messages[$0]["createdAt"].string } ?? isoNow()), "source": .string("codex"), "metadata": .object(["blockType": item["type"], "execution": execution])])
+            let message: JSONValue = .object(["id": .string("execution-" + id), "conversationId": .string(conversationID), "role": .string("system"), "content": .string(execution["title"].string), "createdAt": .string(index.map { messages[$0]["createdAt"].string } ?? isoNow()), "source": .string("codex"), "metadata": .object(["blockType": item["type"], "execution": execution, "turnId": .string(turnID ?? ""), "threadId": .string(threadID ?? "")])])
             if let index { messages[index] = message } else { messages.append(message) }
             if method == "item/completed" { do { try await persist(message) } catch { self.error = "Terminal output received, but history could not be saved." } }
         }
@@ -421,10 +421,16 @@ import AVFoundation
             if let index = messages.firstIndex(where: { $0.id == itemID }) {
                 if !item["text"].string.isEmpty { messages[index]["content"] = item["text"] }
                 messages[index]["status"] = .string("delivered")
+                messages[index]["metadata"]["threadId"] = .string(threadID ?? "")
+                messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
+                messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
+                messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
                 do { try await persist(messages[index]) } catch { self.error = "Reply received, but history could not be saved." }
             } else if !item["text"].string.isEmpty {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
-                messages.append(message); do { try await persist(message) } catch { self.error = "Reply received, but history could not be saved." }
+                var savedMessage = message
+                savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
+                messages.append(savedMessage); do { try await persist(savedMessage) } catch { self.error = "Reply received, but history could not be saved." }
             }
             if let message = messages.first(where: { $0.id == itemID }) { await notifyReply(message) }
         } else if method == "turn/completed" {
@@ -527,6 +533,44 @@ import AVFoundation
     }
 }
 
+/// Restore only public reasoning summaries and tool statuses supplied by the server.
+/// Match saved assistant messages by stable item ID; never recreate deleted messages.
+enum ChatDetailRecovery {
+    static func restore(_ saved: [JSONValue], snapshot: JSONValue) -> [JSONValue] {
+        let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
+        var result = saved
+        for turn in thread["turns"].array {
+            var summaries: [String] = []
+            var tools: [String] = []
+            for item in turn["items"].array {
+                let kind = item["type"].string
+                if kind == "reasoning" {
+                    for part in item["summary"].array {
+                        let text = part.string.isEmpty ? part["text"].string : part.string
+                        if !text.isEmpty { summaries.append(text) }
+                    }
+                }
+                if ["dynamicToolCall", "mcpToolCall", "commandExecution", "fileChange", "shellCall"].contains(kind) {
+                    let name = item["tool"].string.isEmpty ? (item["name"].string.isEmpty ? kind : item["name"].string) : item["tool"].string
+                    let status = item["status"].string
+                    tools.append(name + (status.isEmpty ? "" : " · " + status))
+                }
+                guard kind == "agentMessage", !item.id.isEmpty,
+                      let index = result.firstIndex(where: { $0["role"].string == "agent" && ($0.id == item.id || $0["metadata"]["itemId"].string == item.id) }) else { continue }
+                result[index]["metadata"]["turnId"] = .string(turn.id)
+                result[index]["metadata"]["threadId"] = thread["id"]
+                if result[index]["metadata"]["thoughtSummary"].string.isEmpty && !summaries.isEmpty {
+                    result[index]["metadata"]["thoughtSummary"] = .string(summaries.joined(separator: "\n"))
+                }
+                if result[index]["metadata"]["toolEvents"].array.isEmpty && !tools.isEmpty {
+                    result[index]["metadata"]["toolEvents"] = .array(tools.map { .string($0) })
+                }
+            }
+        }
+        return result
+    }
+}
+
 /// Recover user-authored items from the same snapshot used by the web client.
 /// Do not replace saved bubbles, invent timestamps, or resurrect deleted items.
 enum UserHistoryRecovery {
@@ -549,7 +593,7 @@ enum UserHistoryRecovery {
         for turn in thread["turns"].array {
             entries += turn["items"].array.map { ($0, turn.id, turn["startedAt"] == .null ? turn["createdAt"] : turn["startedAt"]) }
         }
-        var result = saved
+        var result = ChatDetailRecovery.restore(saved, snapshot: snapshot)
         for (item, turnID, turnTime) in entries {
             guard item["role"].string == "user" || ["userMessage", "userInput"].contains(item["type"].string), !item.id.isEmpty else { continue }
             let chunks = item["content"].array.map { $0["text"].string }.joined()

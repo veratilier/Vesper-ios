@@ -483,7 +483,7 @@ struct ChatView: View {
             }
             .confirmationDialog("Delete this conversation from the list?", isPresented: Binding(get: { removingConversation != nil }, set: { if !$0 { removingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) { if let item = removingConversation { Task { await chat.removeConversation(item) } }; removingConversation = nil }
-            } message: { Text("This archives the conversation on the server.") }
+            } message: { Text("This permanently deletes the conversation and cannot be undone.") }
         }.presentationDetents([.large])
     }
     private func isFavorite(_ message: JSONValue) -> Bool { store.document("favorites").array.contains { $0["messageId"].string == message.id } }

@@ -4,6 +4,7 @@ import UserNotifications
 import AVFoundation
 
 @MainActor final class ChatSession: ObservableObject {
+    var voiceCallContext: String?
     @Published var incomingCall = false
     @Published var callActive = false
     @Published var thinkingSummary = ""
@@ -255,16 +256,20 @@ import AVFoundation
                 let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
                 messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
             } else {
-                let catalog = try await api.request("/api/codex/tools")
+                let catalog: JSONValue
+                if voiceCallContext != nil { catalog = .object(["tools": .array([])]) }
+                else { catalog = try await api.request("/api/codex/tools") }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
-                let instructions = (UserDefaults.standard.string(forKey: "nativeInstructions") ?? "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese.") + "\nVesper Desire is independent. Use only the built-in desire_* tools; never the official Rowan Desire connector or desire.r-vera.com."
-                let result = try await rpc("thread/start", .object(["dynamicTools": .array(try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let instructions = (voiceCallContext ?? "") + "\n" + (UserDefaults.standard.string(forKey: "nativeInstructions") ?? "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese.") + "\nVesper Desire is independent. Use only the built-in desire_* tools; never the official Rowan Desire connector or desire.r-vera.com."
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(voiceCallContext != nil ? [] : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
                 threadID = id
             }
             guard let threadID else { throw ServiceError(message: "No chat thread.") }
+            if voiceCallContext == nil {
             _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(conversations.first(where: { $0.id == conversationID })?["title"].string ?? String(text.prefix(50))), "source": .string("codex")]), history: true)
+            }
             var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
             var musicContext = ""
             if let music {
@@ -349,7 +354,7 @@ import AVFoundation
         } catch { self.error = "Call ended, but its record could not be synced: " + error.localizedDescription }
     }
     private func persist(_ message: JSONValue) async throws {
-        guard let api else { return }
+        guard voiceCallContext == nil, let api else { return }
         _ = try await api.request("/conversations/\(conversationID)/messages", method: "POST", body: message, history: true)
     }
     private func handle(_ packet: JSONValue) async {

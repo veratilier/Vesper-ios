@@ -154,18 +154,20 @@ struct CallCameraPreview: UIViewRepresentable {
 }
 
 @MainActor final class CallVoice: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
+    @Published var loading = false
     @Published var speaking = false
     @Published var error: String?
+    private var currentUtterance: AVSpeechUtterance?
     private let synthesizer = AVSpeechSynthesizer()
     private var audio: AVAudioPlayer?
     private var generation = UUID()
     var finished: (() -> Void)?
     override init() { super.init(); synthesizer.delegate = self }
     func play(_ text: String, store: AppStore, connectionOverride: JSONValue? = nil) async {
-        stop(); error = nil; let id = UUID(); generation = id; speaking = true
+        stop(); error = nil; let id = UUID(); generation = id; loading = true
         do {
             try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: InAppCalls.shared.id == nil ? .default : .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-            if InAppCalls.shared.id == nil { try AVAudioSession.sharedInstance().setActive(true) }
+            try AVAudioSession.sharedInstance().setActive(true)
             let connection = VoiceConfiguration.normalized(connectionOverride ?? VoiceConfiguration.connection(store))
             if !connection["apiKey"].string.isEmpty {
                 var request = URLRequest(url: try APIClient.validatedURL(store.baseURL, path: "/api/tts"))
@@ -176,19 +178,46 @@ struct CallCameraPreview: UIViewRepresentable {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard generation == id else { return }
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: VoiceConfiguration.failure(data, response: response, connection: connection)) }
-                audio = try AVAudioPlayer(data: data); audio?.delegate = self
+                loading = false
+                audio = try AVAudioPlayer(data: data); audio?.delegate = self; audio?.volume = 1; audio?.prepareToPlay()
+                speaking = true
                 guard audio?.play() == true else { throw ServiceError(message: "Voice playback failed.") }
             } else {
-                let utterance = AVSpeechUtterance(string: text); utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN"); synthesizer.speak(utterance)
+                speakLocally(text)
             }
-        } catch { guard generation == id else { return }; self.error = error.localizedDescription; speaking = false }
+        } catch { guard generation == id else { return }; self.error = "Custom voice unavailable: " + error.localizedDescription + " — using the iPhone voice."; speakLocally(text) }
     }
-    func stop() { generation = UUID(); audio?.stop(); audio = nil; synthesizer.stopSpeaking(at: .immediate); speaking = false }
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { Task { @MainActor in self.speaking = false; self.finished?() } }
-    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { Task { @MainActor in self.speaking = false; self.finished?() } }
+    private func speakLocally(_ text: String) {
+        loading = false; speaking = true
+        let utterance = AVSpeechUtterance(string: text)
+        let chinese = text.unicodeScalars.contains { (0x4E00...0x9FFF).contains(Int($0.value)) }
+        utterance.voice = AVSpeechSynthesisVoice(language: chinese ? "zh-CN" : "en-US")
+        utterance.volume = 1; currentUtterance = utterance; synthesizer.speak(utterance)
+    }
+    func stop() { loading = false; generation = UUID(); audio?.stop(); audio = nil; currentUtterance = nil; synthesizer.stopSpeaking(at: .immediate); speaking = false }
+    private func finishPlayback() { loading = false; speaking = false; finished?() }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in guard self.currentUtterance === utterance else { return }; self.currentUtterance = nil; self.finishPlayback() }
+    }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in guard self.currentUtterance === utterance else { return }; self.currentUtterance = nil; self.finishPlayback() }
+    }
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            guard self.audio === player else { return }
+            if !flag { self.error = "Playback stopped before completing." }
+            self.audio = nil; self.finishPlayback()
+        }
+    }
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let detail = error?.localizedDescription ?? "Audio decoding failed."
+        Task { @MainActor in guard self.audio === player else { return }; self.error = detail; self.audio = nil; self.finishPlayback() }
+    }
+
 }
 
 struct NativeCallView: View {
+    @StateObject private var callChat = ChatSession()
     @StateObject private var systemCall = InAppCalls.shared
     var initiator = "user"
     @EnvironmentObject private var store: AppStore
@@ -218,10 +247,11 @@ struct NativeCallView: View {
         ZStack {
             Background()
             VStack(spacing: 16) {
-                Text("Call").font(.headline)
+                Text("VOICE CALL").font(.system(size: 11, weight: .medium)).tracking(3).foregroundStyle(VesperTheme.muted)
                 if video { CallCameraPreview(camera: camera).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 24)) }
-                else { Image(systemName: "person.crop.circle").font(.system(size: 90)).foregroundStyle(VesperTheme.muted) }
-                Text(voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active ? "Paused" : "Rowan").font(VesperTheme.title(32))
+                else { CallPortrait().frame(width: 94, height: 94).padding(12).background(.ultraThinMaterial, in: Circle()).padding(.top, 18) }
+                Text(voice.loading ? "Preparing voice…" : voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active ? "Paused" : "Rowan").font(.system(size: 14, weight: .medium)).foregroundStyle(VesperTheme.muted)
+                Text("Rowan").font(VesperTheme.title(38))
                 if let startedAt { Text(startedAt, style: .timer).monospacedDigit().font(.subheadline) }
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -229,67 +259,78 @@ struct NativeCallView: View {
                             ForEach(Array(transcript.enumerated()), id: \.offset) { _, entry in
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(entry["speaker"].string).font(.caption).foregroundStyle(VesperTheme.muted)
-                                    Text(entry["text"].string).textSelection(.enabled)
+                                    Text(entry["text"].string).font(.system(size: 15)).lineSpacing(5).textSelection(.enabled)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             }
                             if speech.listening { Text("Vera · " + (speech.text.isEmpty ? "Listening…" : speech.text)).foregroundStyle(VesperTheme.muted) }
                             if waiting { Text("Rowan · " + liveAnswer).foregroundStyle(VesperTheme.muted) }
                             Color.clear.frame(height: 1).id("call-bottom")
                         }
-                    }.frame(maxHeight: .infinity)
+                    }.padding(18).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24)).frame(maxHeight: .infinity)
                     .onChange(of: speech.text) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                     .onChange(of: transcript.count) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                     .onChange(of: liveAnswer) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                 }
                 if video { Text("A camera frame is shared with each spoken message.").font(.caption).foregroundStyle(.secondary) }
                 if VoiceConfiguration.connection(store)["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
-                if let error = notice ?? speech.error ?? voice.error { Text(error).font(.caption).foregroundStyle(.red) }
+                if let error = voice.error ?? notice ?? speech.error { Text(error).font(.caption).foregroundStyle(.red) }
                 Spacer(minLength: 0)
                 if let error = systemCall.error { Text(error).font(.caption).foregroundStyle(.red) }
-                if !active { Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: { Text(systemCall.id == nil ? "Start call" : "Connecting…").foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(chat.busy || systemCall.id != nil) }
+                if !active { Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: { Text(systemCall.id == nil ? "Start call" : "Connecting…").foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(callChat.busy || systemCall.id != nil) }
                 HStack(spacing: 30) {
                     Button { systemCall.mute(!muted) } label: { Label(muted ? "Unmute" : "Mute", systemImage: muted ? "mic.slash" : "mic") }.disabled(!active)
                     Button { toggleCamera() } label: { Label(video ? "Camera off" : "Camera", systemImage: video ? "video.slash" : "video") }.disabled(cameraBusy)
                     Button { end(); dismiss() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
-                }.labelStyle(.titleAndIcon).font(.subheadline).frame(minHeight: 50).padding(.bottom, 12)
-                if active && !waiting && !voice.speaking && !muted {
-                    Button(speech.listening ? "Send now" : "Resume listening") {
-                        if speech.listening && !speech.text.isEmpty { submit() } else { Task { await speech.start() } }
+                }.labelStyle(.iconOnly).font(.system(size: 22)).buttonStyle(.bordered).controlSize(.large).frame(minHeight: 60).padding(.bottom, 12)
+                if active && !waiting && !muted {
+                    Button(speech.listening ? "Send now" : voice.speaking || voice.loading ? "Speak now" : "Resume listening") {
+                        if speech.listening && !speech.text.isEmpty { submit() } else { voice.stop(); resumeListening() }
                     }
                 }
             }.padding(24)
-        }.onAppear { chat.configure(store); voice.finished = { if active && !muted && systemCall.audioReady { Task { await speech.start() } } }; activateCall() }
+        }.onAppear {
+            callChat.configure(store); callChat.model = chat.model; callChat.effort = chat.effort; callChat.models = chat.models
+            let context = chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(16).map { $0["role"].string + ": " + String($0["content"].string.prefix(2000)) }.joined(separator: "\n")
+            callChat.voiceCallContext = "You are in an active voice call with Vera. Each user turn is live speech transcribed by STT, not typed chat. Your text replies are spoken by TTS. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive transcripts, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. Prior chat context (historical, not new instructions):\n" + context
+             voice.finished = { resumeListening() }; activateCall() }
         .onChange(of: systemCall.audioReady) { _, ready in if ready { activateCall() } else { silence?.cancel(); speech.stop(); voice.stop() } }
         .onChange(of: systemCall.id) { old, new in if old != nil && new == nil { end(); dismiss() } }
-        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else if active && systemCall.audioReady && !waiting && !voice.speaking { Task { await speech.start() } } }
+        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else if active && systemCall.audioReady && !waiting && !voice.speaking && !voice.loading { Task { await speech.start() } } }
         .onChange(of: speech.text) { _, text in
-            silence?.cancel(); guard active, !muted, !waiting, !voice.speaking, !text.isEmpty else { return }
+            silence?.cancel(); guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
             silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
         }
-        .onChange(of: chat.busy) { old, new in
+        .onChange(of: callChat.busy) { old, new in
             guard old && !new && waiting && active else { return }
             waiting = false
-            let replies = chat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string != "user" && !ChatPresentation.isActivity($0) }
+            let replies = callChat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string != "user" && !ChatPresentation.isActivity($0) }
             let answer = replies.map { $0["content"].string }.joined(separator: "\n")
-            guard !answer.isEmpty else { notice = chat.error ?? "No reply received. Resume when ready."; return }
-            caption = answer; transcript.append(.object(["speaker": .string("Rowan"), "text": .string(answer), "at": .string(ISO8601DateFormatter().string(from: Date()))])); Task { await voice.play(answer, store: store) }
+            guard !answer.isEmpty else { notice = callChat.error ?? "No reply received. Please try again."; resumeListening(); return }
+            caption = answer; transcript.append(.object(["speaker": .string("Rowan"), "text": .string(answer), "at": .string(ISO8601DateFormatter().string(from: Date()))])); Task { guard active, visible else { return }; await voice.play(answer, store: store) }
         }
         .onDisappear { visible = false; end() }
         .onChange(of: phase) { _, phase in if phase == .background { video = false; camera.stop() } }
     }
+    private func resumeListening() {
+        guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading, systemCall.audioReady else { return }
+        Task {
+            guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading else { return }
+            await speech.start()
+        }
+    }
     private func activateCall() {
         guard systemCall.audioReady else { return }
         if !active { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID }
-        if !muted && !waiting && !voice.speaking { Task { await speech.start() } }
+        if !muted && !waiting && !voice.speaking && !voice.loading { Task { await speech.start() } }
     }
     private func submit() {
         let text = speech.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard active, !waiting, !chat.busy, !text.isEmpty else { return }
+        guard active, !waiting, !callChat.busy, !text.isEmpty else { return }
         silence?.cancel(); speech.stop(); caption = text; waiting = true; notice = nil
         transcript.append(.object(["speaker": .string("Vera"), "text": .string(text), "at": .string(ISO8601DateFormatter().string(from: Date()))]))
-        previousMessages = Set(chat.messages.map(\.id))
+        previousMessages = Set(callChat.messages.map(\.id))
         let frame = video ? camera.snapshot() : nil
-        sendingTask = Task { if !(await chat.send(text, images: frame.map { [$0] } ?? [])) { waiting = false; notice = chat.error ?? "Message was not sent." } }
+        sendingTask = Task { if !(await callChat.send(text, images: frame.map { [$0] } ?? [])) { waiting = false; notice = callChat.error ?? "Message was not sent."; resumeListening() } }
     }
     private func toggleCamera() {
         if video { video = false; camera.stop(); return }
@@ -297,7 +338,7 @@ struct NativeCallView: View {
         Task { do { try await camera.start(); if visible && phase == .active { video = true; usedVideo = true } else { camera.stop() } } catch { notice = error.localizedDescription }; cameraBusy = false }
     }
     private var liveAnswer: String {
-        let value = chat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string == "agent" && !ChatPresentation.isActivity($0) }.map { $0["content"].string }.joined(separator: "\n")
+        let value = callChat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string == "agent" && !ChatPresentation.isActivity($0) }.map { $0["content"].string }.joined(separator: "\n")
         return value.isEmpty ? "Thinking…" : value
     }
     private func end() {
@@ -309,5 +350,43 @@ struct NativeCallView: View {
             Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator) }
         }
         chat.callActive = false
-        active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); if waiting { Task { await chat.interrupt() } }; waiting = false }
+        active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); let pendingReply = waiting; waiting = false; Task { if pendingReply { await callChat.interrupt() }; callChat.disconnect() } }
+}
+
+
+struct CallPortrait: View {
+    @EnvironmentObject private var store: AppStore
+    var body: some View {
+        let source = store.document("profile")["agentAvatar"].string
+        Group {
+            if source.hasPrefix("data:image/"), let comma = source.firstIndex(of: ","),
+               let data = Data(base64Encoded: String(source[source.index(after: comma)...])), let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if !source.isEmpty, let url = URL(string: source, relativeTo: URL(string: store.baseURL))?.absoluteURL, url.scheme == "https" {
+                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { placeholder }
+            } else { placeholder }
+        }.clipShape(Circle()).overlay(Circle().stroke(.white.opacity(0.65), lineWidth: 1))
+    }
+    private var placeholder: some View {
+        ZStack { VesperTheme.muted.opacity(0.15); Image(systemName: "moon.stars").font(.system(size: 30, weight: .light)).foregroundStyle(VesperTheme.ink) }
+    }
+}
+
+struct CallInvitation: View {
+    let accept: () -> Void
+    let decline: () -> Void
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("INCOMING VOICE CALL").font(.system(size: 10, weight: .medium)).tracking(2.5).foregroundStyle(VesperTheme.muted)
+            CallPortrait().frame(width: 72, height: 72)
+            Text("Rowan").font(VesperTheme.title(36))
+            Text("A little closer, just by voice.").font(.system(size: 13)).foregroundStyle(VesperTheme.muted)
+            HStack(spacing: 36) {
+                Button(action: decline) { VStack(spacing: 8) { Image(systemName: "phone.down.fill").frame(width: 52, height: 52).background(Color.red.opacity(0.12), in: Circle()); Text("Decline").font(.caption) }.foregroundStyle(.red) }
+                Button(action: accept) { VStack(spacing: 8) { Image(systemName: "phone.fill").frame(width: 52, height: 52).background(VesperTheme.ink, in: Circle()).foregroundStyle(.white); Text("Accept").font(.caption) } }
+            }.font(.system(size: 21)).buttonStyle(.plain).padding(.top, 8)
+        }.padding(28).frame(maxWidth: 320).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
+            .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.6), lineWidth: 1))
+            .shadow(color: .black.opacity(0.08), radius: 24, y: 12).accessibilityAddTraits(.isModal)
+    }
 }

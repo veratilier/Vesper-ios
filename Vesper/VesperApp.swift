@@ -97,10 +97,13 @@ struct RootView: View {
         }
         if opening { OpeningView { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { opening = false } }.transition(.opacity).zIndex(2) }
         }
-        .alert("Rowan is inviting you to a call", isPresented: $chat.incomingCall) {
-            Button("Accept") { destination = .chat; acceptedCall = true }
-            Button("Decline", role: .cancel) { }
-        } message: { Text("Your microphone stays off until you start the call.") }
+        .overlay {
+            if chat.incomingCall {
+                Color.black.opacity(0.18).ignoresSafeArea()
+                CallInvitation(accept: { chat.incomingCall = false; destination = .chat; acceptedCall = true }, decline: { chat.incomingCall = false })
+                    .padding(28).transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
+        }
         .fullScreenCover(isPresented: $acceptedCall) { NativeCallView(initiator: "agent") }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }

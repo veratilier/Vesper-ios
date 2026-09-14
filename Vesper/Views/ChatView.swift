@@ -151,20 +151,29 @@ struct ChatView: View {
                 .coordinateSpace(name: "chat-scroll")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
                 .onPreferenceChange(ChatBottomPosition.self) { bottom in nearBottom = bottom <= viewportHeight + 80 }
-                .overlay(alignment: .bottom) {
-                    if !nearBottom && !chat.messages.isEmpty {
-                        Button { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }; nearBottom = true } label: {
-                            Image(systemName: "arrow.down").font(.system(size: 16, weight: .semibold)).frame(width: 40, height: 40).background(.regularMaterial, in: Circle()).overlay(Circle().stroke(.white.opacity(0.8)))
-                        }.buttonStyle(.plain).accessibilityLabel("Jump to latest message").padding(.bottom, 8)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        if !chat.messages.isEmpty {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                                nearBottom = true
+                            } label: {
+                                Label("回到底部", systemImage: "arrow.down")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(VesperTheme.ink)
+                                    .padding(.horizontal, 14).frame(minHeight: 44)
+                                    .background(.regularMaterial, in: Capsule())
+                                    .overlay(Capsule().stroke(.white.opacity(0.8)))
+                            }.buttonStyle(.plain).accessibilityLabel("回到最新消息")
+                        }
+                        composer
+                        if drawer { attachmentDrawer.transition(.move(edge: .bottom).combined(with: .opacity)) }
                     }
                 }
                 .task { await Task.yield(); proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: chat.messages.count) { _, _ in if nearBottom || chat.messages.last?["role"].string == "user" { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) } } }
                 .onChange(of: chat.messages.last?["content"].string) { _, _ in if nearBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) { composer; if drawer { attachmentDrawer.transition(.move(edge: .bottom).combined(with: .opacity)) } }
         }
     }
     private var photoContent: some View {

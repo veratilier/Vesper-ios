@@ -267,7 +267,13 @@ import AVFoundation
             guard let threadID else { throw ServiceError(message: "No chat thread.") }
             _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(conversations.first(where: { $0.id == conversationID })?["title"].string ?? String(text.prefix(50))), "source": .string("codex")]), history: true)
             var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
-            let musicContext = music.map { "\nShared music: " + $0["title"].string + " — " + $0["artist"].string + " (song ID: " + $0["neteaseId"].string + ")" } ?? ""
+            var musicContext = ""
+            if let music {
+                let title = music["title"].string
+                let artist = music["artist"].string
+                let songID = music["neteaseId"].string
+                musicContext = "\nShared music: \(title) — \(artist) (song ID: \(songID))"
+            }
             let modelInputText = (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text) + fileContext + musicContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
             if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }

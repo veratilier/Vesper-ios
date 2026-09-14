@@ -623,12 +623,12 @@ private struct AssistantMessageHeading: View {
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
-            ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in MiniTerminal(execution: item["metadata"]["execution"]) }
-            let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
-            if !toolEvents.isEmpty {
-                MiniTerminal(execution: .object(["title": .string("Tool activity"), "status": .string(message["status"].string), "output": .string(toolEvents.joined(separator: "\n"))]))
-            }
             if expanded {
+                ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in MiniTerminal(execution: item["metadata"]["execution"]) }
+                let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
+                if !toolEvents.isEmpty {
+                    MiniTerminal(execution: .object(["title": .string("Tool activity"), "status": .string(message["status"].string), "output": .string(toolEvents.joined(separator: "\n"))]))
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Thinking").font(.caption).italic()
                     if !message["metadata"]["thoughtSummary"].string.isEmpty {
@@ -640,7 +640,7 @@ private struct AssistantMessageHeading: View {
                         }
                     }
 
-                    if activities.isEmpty && liveEvents.isEmpty && message["metadata"]["thoughtSummary"].string.isEmpty {
+                    if activities.isEmpty && toolEvents.isEmpty && message["metadata"]["thoughtSummary"].string.isEmpty {
                         Text("No saved details for this message.").font(.caption)
                     }
                 }.foregroundStyle(VesperTheme.muted).padding(.vertical, 4)

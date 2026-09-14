@@ -4,6 +4,16 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    func testToolCardsExcludeLifecycleAndPreserveRepeatedFailures() {
+        let cards = ToolActivityRecords.cards(["userMessage · running", "dynamicToolCall · completed", "request_native_call · failed\nCallKit code 0", "request_native_call · failed\nSecond attempt"])
+        XCTAssertEqual(cards.count, 2)
+        XCTAssertEqual(cards[0]["title"].string, "request_native_call")
+        XCTAssertEqual(cards[0]["status"].string, "failed")
+        XCTAssertEqual(cards[0]["output"].string, "CallKit code 0")
+        XCTAssertNotEqual(cards[0].id, cards[1].id)
+        let record: JSONValue = .object(["id": .string("call1"), "title": .string("request_native_call"), "status": .string("failed"), "durationMs": .number(200)])
+        XCTAssertEqual(ToolActivityRecords.cards(["request_native_call · failed", "vesper-tool:" + record.pretty]), [record])
+    }
     func testHistoryRestoresPublicDetailsWithoutResurrectingMessages() throws {
         let snapshot = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"thread":{"id":"thread","turns":[{"id":"turn","items":[{"type":"reasoning","summary":["Saved summary"],"content":["Never display raw reasoning"]},{"type":"dynamicToolCall","tool":"sticker_search","status":"completed"},{"id":"reply","type":"agentMessage","text":"Hello"},{"id":"deleted","type":"agentMessage","text":"Deleted"}]}]}}"#.utf8))
         let saved: JSONValue = .object(["id": .string("reply"), "role": .string("agent"), "content": .string("Hello")])

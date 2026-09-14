@@ -457,6 +457,14 @@ import AVFoundation
         let targetThread = threadID ?? ""
         let targetTurn = turnID ?? ""
         let callID = p["callId"].string.isEmpty ? (p["itemId"].string.isEmpty ? packet["id"].pretty : p["itemId"].string) : p["callId"].string
+        let toolStarted = Date()
+        var toolError: String?
+        recordTool(callID, name: name, status: "running", duration: nil, output: "")
+        defer {
+            if conversationID == targetConversation {
+                recordTool(callID, name: name, status: toolError == nil ? "completed" : "failed", duration: Date().timeIntervalSince(toolStarted) * 1000, output: toolError ?? "")
+            }
+        }
         var args = p["arguments"]
         if case .string(let raw) = args { args = (try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))) ?? .object([:]) }
         do {
@@ -527,10 +535,36 @@ import AVFoundation
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))
             events.append("\(name) · completed")
         } catch {
+            toolError = error.localizedDescription
             if name == "request_native_call" {
                 events.append("request_native_call · failed\n" + error.localizedDescription)
             } else { events.append("\(name) · failed") }
             try? await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(false), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(error.localizedDescription)])])])]))
+        }
+    }
+    private func recordTool(_ id: String, name: String, status: String, duration: Double?, output: String) {
+        var record: JSONValue = .object(["id": .string(id), "title": .string(name), "status": .string(status), "output": .string(output)])
+        if let duration { record["durationMs"] = .number(duration) }
+        let encoded = "vesper-tool:" + record.pretty
+        if let index = events.firstIndex(where: { ToolActivityRecords.decode($0)?.id == id }) { events[index] = encoded }
+        else { events.append(encoded) }
+    }
+}
+
+enum ToolActivityRecords {
+    static func decode(_ value: String) -> JSONValue? {
+        guard value.hasPrefix("vesper-tool:") else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: Data(value.dropFirst("vesper-tool:".count).utf8))
+    }
+    static func cards(_ events: [String]) -> [JSONValue] {
+        let structured = events.compactMap(decode)
+        if !structured.isEmpty { return structured }
+        let lifecycle: Set<String> = ["userMessage", "agentMessage", "dynamicToolCall", "mcpToolCall", "reasoning", "commandExecution", "fileChange", "shellCall"]
+        return events.enumerated().compactMap { index, value in
+            let lines = value.components(separatedBy: "\n")
+            let parts = (lines.first ?? "").components(separatedBy: " · ")
+            guard parts.count == 2, !lifecycle.contains(parts[0]) else { return nil }
+            return .object(["id": .string("legacy-\(index)"), "title": .string(parts[0]), "status": .string(parts[1]), "output": .string(lines.dropFirst().joined(separator: "\n"))])
         }
     }
 }

@@ -566,12 +566,13 @@ private struct MiniTerminal: View {
     @State private var expanded = false
     @State private var details = false
     private var title: String { execution["title"].string.isEmpty ? "Terminal" : execution["title"].string }
+    private var statusColor: Color { ["failed", "error"].contains(execution["status"].string) ? .red : execution["status"].string == "running" ? .yellow : .white.opacity(0.8) }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Button { expanded.toggle() } label: { Label(title, systemImage: "terminal").lineLimit(1) }
+                Button { details = true } label: { Label(title, systemImage: "terminal").lineLimit(1) }
                 Spacer()
-                Text(execution["status"].string).font(.caption2)
+                Text(execution["status"].string.capitalized).font(.caption2).foregroundStyle(statusColor)
                 Button { details = true } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.accessibilityLabel("Expand terminal")
             }
             if expanded { output.frame(maxHeight: 220) }
@@ -587,13 +588,16 @@ private struct MiniTerminal: View {
                 }
                 output
             }.padding().font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
-            .background(Color(red: 0.12, green: 0.14, blue: 0.18)).presentationDetents([.large])
+            .background(Color(red: 0.12, green: 0.14, blue: 0.18)).presentationDetents([.height(300), .large])
         }
     }
     private var output: some View {
-        ScrollView([.vertical, .horizontal]) {
+        ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(execution["status"].string)
+                HStack {
+                    Text(execution["status"].string.capitalized).foregroundStyle(statusColor)
+                    if execution["durationMs"] != .null { Text(String(format: "%.1fs", execution["durationMs"].number / 1000)) }
+                }
                 if !execution["cwd"].string.isEmpty { Text(execution["cwd"].string) }
                 if execution["exitCode"] != .null { Text("Exit \(Int(execution["exitCode"].number))") }
                 if !execution["command"].string.isEmpty { Text("$ " + execution["command"].string) }
@@ -603,7 +607,7 @@ private struct MiniTerminal: View {
                     if file["truncated"].bool { Text("Saved diff is partial.").foregroundStyle(.yellow) }
                 }
                 if !execution["output"].string.isEmpty { code(execution["output"].string) }
-                if execution["output"].string.isEmpty && execution["files"].array.isEmpty { Text("No output received yet.") }
+                if execution["output"].string.isEmpty && execution["files"].array.isEmpty { Text(execution["status"].string == "running" ? "Waiting for result…" : "No detailed output was saved for this call.") }
                 if execution["truncated"].bool || execution["filesTruncated"].bool { Text("The saved output is partial.").foregroundStyle(.yellow) }
             }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -611,7 +615,7 @@ private struct MiniTerminal: View {
     private func code(_ value: String) -> some View {
         LazyVStack(alignment: .leading, spacing: 2) {
             ForEach(Array(value.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                Text(line.isEmpty ? " " : line).foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : line.hasPrefix("@@") ? Color.cyan : Color.white.opacity(0.9))
+                Text(line.isEmpty ? " " : line).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : line.hasPrefix("@@") ? Color.cyan : Color.white.opacity(0.9))
             }
         }
     }
@@ -638,11 +642,13 @@ private struct AssistantMessageHeading: View {
             if expanded {
                 ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in MiniTerminal(execution: item["metadata"]["execution"]) }
                 let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
-                if !toolEvents.isEmpty {
-                    MiniTerminal(execution: .object(["title": .string("Tool activity"), "status": .string(message["status"].string), "output": .string(toolEvents.joined(separator: "\n"))]))
+                let toolCards = ToolActivityRecords.cards(toolEvents)
+                if !toolCards.isEmpty {
+                    Text("Tool calls").font(.caption).foregroundStyle(VesperTheme.muted)
+                    ForEach(toolCards) { card in MiniTerminal(execution: card) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Thinking").font(.caption).italic()
+                    Text("Thinking summary").font(.caption).foregroundStyle(VesperTheme.muted)
                     if !message["metadata"]["thoughtSummary"].string.isEmpty {
                         Text(message["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                     }

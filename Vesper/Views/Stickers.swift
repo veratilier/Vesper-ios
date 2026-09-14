@@ -14,10 +14,14 @@ struct StickerLibraryView: View {
     @State private var busy = false
     @State private var query = ""
     @State private var status = ""
+    @State private var importDescription = ""
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Shared with your web sticker library. Rowan can find these with sticker search.").font(.caption).foregroundStyle(.secondary)
+                TextField("Description (optional), e.g. happy, hug", text: $importDescription, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).disabled(busy)
+                Text("Applies to every image in your next import. Leave blank if you prefer.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Import photos", systemImage: "photo.badge.plus") }
                     Button { importing = true } label: { Label("Import files", systemImage: "folder.badge.plus") }
@@ -54,6 +58,7 @@ struct StickerLibraryView: View {
                         count += 1
                     }
                     status = "Imported \(count) stickers."
+                    importDescription = ""
                 } catch { status = "Imported \(count). " + error.localizedDescription }
                 photos = []; busy = false; await load()
             }
@@ -72,6 +77,7 @@ struct StickerLibraryView: View {
                         count += 1
                     }
                     status = "Imported \(count) stickers."
+                    importDescription = ""
                 } catch { status = "Imported \(count). " + error.localizedDescription }
                 busy = false; await load()
             }
@@ -88,9 +94,9 @@ struct StickerLibraryView: View {
         guard data.count <= 16 * 1024 * 1024 else { throw ServiceError(message: "Choose stickers under 16 MB.") }
         if type.conforms(to: .heic) || type.conforms(to: .heif) {
             guard let image = UIImage(data: data), let png = image.pngData() else { throw ServiceError(message: "Could not prepare this image.") }
-            _ = try await store.api.uploadFile(png, name: (name as NSString).deletingPathExtension + ".png", mime: "image/png", sticker: true)
+            _ = try await store.api.uploadFile(png, name: (name as NSString).deletingPathExtension + ".png", mime: "image/png", sticker: true, description: importDescription.trimmingCharacters(in: .whitespacesAndNewlines))
         } else {
-            _ = try await store.api.uploadFile(data, name: name, mime: type.preferredMIMEType ?? "application/octet-stream", sticker: true)
+            _ = try await store.api.uploadFile(data, name: name, mime: type.preferredMIMEType ?? "application/octet-stream", sticker: true, description: importDescription.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 }

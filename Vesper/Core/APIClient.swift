@@ -42,7 +42,7 @@ struct APIClient {
     func uploadImage(_ data: Data, name: String) async throws -> JSONValue {
         try await uploadFile(data, name: name, mime: "image/jpeg")
     }
-    func uploadFile(_ data: Data, name: String, mime: String, sticker: Bool = false) async throws -> JSONValue {
+    func uploadFile(_ data: Data, name: String, mime: String, sticker: Bool = false, description: String = "") async throws -> JSONValue {
         guard !token.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         guard data.count <= 32 * 1024 * 1024 else { throw ServiceError(message: "Choose an image under 32 MB.") }
         let boundary = "Vesper-" + UUID().uuidString
@@ -52,7 +52,11 @@ struct APIClient {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let safeName = name.replacingOccurrences(of: "\"", with: "_").replacingOccurrences(of: "\r", with: "_").replacingOccurrences(of: "\n", with: "_")
         var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\nContent-Type: \(mime)\r\n\r\n".utf8)
-        body.append(data); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        body.append(data)
+        if sticker && !description.isEmpty {
+            body.append(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"description\"\r\n\r\n\(description)".utf8))
+        }
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         let (result, response) = try await URLSession.shared.upload(for: request, from: body)
         let value = try JSONDecoder().decode(JSONValue.self, from: result)
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode), sticker ? !value["sticker"]["assetId"].string.isEmpty : !value["key"].string.isEmpty else { throw ServiceError(message: value["error"].string.isEmpty ? "Image upload failed." : value["error"].string) }

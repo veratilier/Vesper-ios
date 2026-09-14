@@ -150,24 +150,30 @@ struct ChatView: View {
                 }.scrollDismissesKeyboard(.interactively)
                 .coordinateSpace(name: "chat-scroll")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
-                .onPreferenceChange(ChatBottomPosition.self) { bottom in nearBottom = bottom <= viewportHeight + 80 }
+                .onPreferenceChange(ChatBottomPosition.self) { bottom in
+                    guard let bottom, viewportHeight > 0 else { return }
+                    nearBottom = bottom <= viewportHeight + 2
+                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
-                        if !chat.messages.isEmpty {
-                            Button {
-                                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
-                                nearBottom = true
-                            } label: {
-                                Label("回到底部", systemImage: "arrow.down")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(VesperTheme.ink)
-                                    .padding(.horizontal, 14).frame(minHeight: 44)
-                                    .background(.regularMaterial, in: Capsule())
-                                    .overlay(Capsule().stroke(.white.opacity(0.8)))
-                            }.buttonStyle(.plain).accessibilityLabel("回到最新消息")
-                        }
                         composer
                         if drawer { attachmentDrawer.transition(.move(edge: .bottom).combined(with: .opacity)) }
+                    }
+                    .overlay(alignment: .top) {
+                        if !nearBottom && !chat.messages.isEmpty {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(VesperTheme.ink)
+                                    .frame(width: 40, height: 40)
+                                    .background(.regularMaterial, in: Circle())
+                                    .overlay(Circle().stroke(VesperTheme.muted.opacity(0.3), lineWidth: 1))
+                            }
+                            .buttonStyle(.plain).accessibilityLabel("回到最新消息")
+                            .offset(y: -48)
+                        }
                     }
                 }
                 .task { await Task.yield(); proxy.scrollTo("bottom", anchor: .bottom) }
@@ -704,6 +710,9 @@ private struct CallRecordButton: View {
 }
 
 private struct ChatBottomPosition: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        // Siblings without a measurement must not overwrite the content position with zero.
+        if let next = nextValue() { value = next }
+    }
 }

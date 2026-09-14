@@ -7,7 +7,7 @@ struct SettingsView: View {
         Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
             NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
             NavigationLink { NotificationSettingsView() } label: { settingsRow("Notifications", subtitle: "Permission and system settings", icon: "bell") }
-            NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Schedule, prompt and recent activity", icon: "sparkles") }
+            NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
             NavigationLink { HealthView() } label: { settingsRow("Health", subtitle: "Sleep, heart rate and activity", icon: "heart.text.square") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
             NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
@@ -39,62 +39,111 @@ struct WakeView: View {
     @State private var runtime: JSONValue = .null
     @State private var enabled = false
     @State private var interval = 0
-    @State private var prompt = ""
+    @State private var allowedTools: Set<String> = []
+    @State private var allowedMessages: Set<String> = []
     @State private var busy = false
     @State private var status = ""
-    @State private var loaded = false
-    private var version: Double { runtime["configVersion"].number }
+    private var supported: Bool { runtime["permissionVersion"].number >= 1 }
     var body: some View {
-        Page(title: "Autonomous Wake", subtitle: "A little room for initiative.") {
+        Page(title: "Autonomous Wake", subtitle: "Choose what Rowan may do and share.") {
             GlassCard { VStack(alignment: .leading, spacing: 18) {
-                if !loaded { Text(status.isEmpty ? "Checking wake service…" : "Could not load the wake service.").font(.subheadline) }
-                else if version < 1 { Text("The server responded, but this version does not support changing wake settings. Update the VPS wake service first.").font(.subheadline) }
-                if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
-                Button("Check service again") { Task { await load() } }.disabled(busy)
-                Toggle("Automatic wake-up", isOn: $enabled).disabled(version < 1 || busy)
+                if !supported { Text("Update the VPS wake service to use permission switches.").font(.caption) }
+                Toggle("Automatic wake-up", isOn: $enabled)
                 Picker("Interval", selection: $interval) {
                     Text("Adaptive").tag(0)
-                    ForEach([30,60,120,240,360,720,1440], id: \.self) { Text("\($0) minutes").tag($0) }
-                }.disabled(version < 1 || busy)
-                Text("Active chats and quiet requests may postpone a wake-up.").font(.caption).foregroundStyle(VesperTheme.muted)
-                FormField(label: "Wake prompt", text: $prompt, multiline: true).disabled(version < 2 || busy)
-                Text("\(prompt.unicodeScalars.count) / \(max(8000, Int(runtime["promptMaxLength"].number)))").font(.caption)
-                if version < 2 { Text("The background service must support prompt editing before this field can be saved.").font(.caption) }
-                Button("Restore default prompt") { prompt = runtime["defaultPrompt"].string }.disabled(version < 2 || busy)
+                    ForEach([60,120,240,360,720,1440], id: \.self) { Text("\($0) minutes").tag($0) }
+                }
+                Text("Active chats and quiet requests may postpone a wake-up. With Desire reading off, Adaptive uses 120 minutes.").font(.caption).foregroundStyle(VesperTheme.muted)
+                Text("Messages Rowan may send").font(.headline)
+                ForEach(runtime["messageOptions"].array.map { $0.string }, id: \.self) { name in
+                    Toggle(name.capitalized, isOn: permission(name, messages: true))
+                }
+                Text("Allowed tools").font(.headline)
+                ForEach(runtime["toolOptions"].array.map { $0.string }, id: \.self) { name in
+                    Toggle(isOn: permission(name, messages: false)) {
+                        Text(name.replacingOccurrences(of: "_", with: " ")).font(.subheadline)
+                    }
+                }
+                Text("External MCP access stays read-only. Turning on a tool does not authorize purchases, deletion or account changes.").font(.caption).foregroundStyle(VesperTheme.muted)
                 Button { Task { await save() } } label: {
-                    Text(busy ? "Saving…" : "Save settings")
-                        .font(.body.weight(.semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 20).frame(minHeight: 44)
-                        .background(VesperTheme.ink, in: Capsule())
-                }.buttonStyle(.plain).disabled(version < 1 || busy || (version >= 2 && (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || prompt.unicodeScalars.count > max(8000, Int(runtime["promptMaxLength"].number)))))
-                if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
-            }}
+                    Text(busy ? "Saving…" : "Save permissions").font(.body.weight(.semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 20).frame(minHeight: 44).background(VesperTheme.ink, in: Capsule())
+                }.buttonStyle(.plain)
+            }.disabled(!supported || busy) }
+            if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
+            Button("Refresh service") { Task { await load() } }.disabled(busy)
             Text("Recent activity").font(VesperTheme.title(30))
-            if runtime["jobs"].array.isEmpty { EmptyCard(title: "No activity to show", message: "Pull to refresh the latest server history.") }
+            if runtime["jobs"].array.isEmpty { EmptyCard(title: "No activity to show", message: "Runs and tool steps will appear here.") }
             ForEach(runtime["jobs"].array) { job in
-                GlassCard { DisclosureGroup {
-                    Text(job["decision"].string).font(.subheadline).textSelection(.enabled)
-                    ForEach(Array(job["calls"].array.enumerated()), id: \.offset) { _, call in Text("\(call["name"].string) · \(call["status"].string)").font(.caption) }
-                } label: { VStack(alignment: .leading, spacing: 5) { Text(job["status"].string); Text(Date(timeIntervalSince1970: job["created"].number).formatted()).font(.caption).foregroundStyle(VesperTheme.muted) } } }
+                NavigationLink { WakeRunDetail(job: job) } label: {
+                    GlassCard { HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(job["status"].string).font(.headline)
+                            Text(Date(timeIntervalSince1970: job["created"].number).formatted()).font(.caption)
+                            Text("\(job["calls"].array.count) steps").font(.caption)
+                        }
+                        Spacer(); Image(systemName: "chevron.right")
+                    }.foregroundStyle(VesperTheme.ink) }
+                }.buttonStyle(.plain)
             }
         }.task { await load() }.refreshable { await load() }
     }
+    private func permission(_ name: String, messages: Bool) -> Binding<Bool> {
+        Binding(get: { (messages ? allowedMessages : allowedTools).contains(name) }, set: { value in
+            if messages { if value { allowedMessages.insert(name) } else { allowedMessages.remove(name) } }
+            else { if value { allowedTools.insert(name) } else { allowedTools.remove(name) } }
+        })
+    }
+    private func apply(_ value: JSONValue) {
+        runtime = value; enabled = value["config"]["enabled"].bool
+        interval = Int(value["config"]["intervalMinutes"].number)
+        allowedTools = Set(value["permissions"]["tools"].array.map { $0.string })
+        allowedMessages = Set(value["permissions"]["messages"].array.map { $0.string })
+    }
     private func load() async {
-        guard !busy else { return }
-        busy = true; defer { busy = false }
-        do { runtime = try await store.api.request("/wake", history: true); loaded = true; enabled = runtime["config"]["enabled"].bool; interval = Int(runtime["config"]["intervalMinutes"].number); prompt = runtime["prompt"].string; status = "" }
-        catch { loaded = false; runtime = .null; status = "Wake service: " + error.localizedDescription }
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do { apply(try await store.api.request("/wake", history: true)); status = "" }
+        catch { status = error.localizedDescription }
     }
     private func save() async {
-        busy = true; defer { busy = false }
+        guard supported, !busy else { return }; busy = true; defer { busy = false }
+        let permissions: JSONValue = .object(["tools": .array(allowedTools.sorted().map { .string($0) }), "messages": .array(allowedMessages.sorted().map { .string($0) })])
+        let body: JSONValue = .object(["action": .string("configure"), "enabled": .bool(enabled), "intervalMinutes": interval == 0 ? .null : .number(Double(interval)), "permissions": permissions])
         do {
-            var body: JSONValue = .object(["action": .string("configure"), "enabled": .bool(enabled), "intervalMinutes": interval == 0 ? .null : .number(Double(interval))])
-            if version >= 2 { body["prompt"] = .string(prompt) }
             let result = try await store.api.request("/wake", method: "POST", body: body, history: true)
-            guard result["configVersion"].number >= 1, result["config"] != .null else { throw ServiceError(message: "The background service needs an update.") }
-            if version >= 2 && result["prompt"].string != prompt { throw ServiceError(message: "The server did not confirm the saved prompt.") }
-            runtime = result; enabled = result["config"]["enabled"].bool; interval = Int(result["config"]["intervalMinutes"].number); status = "Saved. Changes apply from the next run."
+            guard result["permissionVersion"].number >= 1, result["permissions"] == permissions,
+                  result["config"]["enabled"].bool == enabled,
+                  Int(result["config"]["intervalMinutes"].number) == interval else {
+                throw ServiceError(message: "The server did not confirm these permissions.")
+            }
+            apply(result); status = "Saved. New permissions are checked before each tool call and message."
         } catch { status = error.localizedDescription }
+    }
+}
+private struct WakeRunDetail: View {
+    let job: JSONValue
+    var body: some View {
+        Page(title: "Run details", subtitle: job["status"].string) {
+            GlassCard { VStack(alignment: .leading, spacing: 10) {
+                Text(Date(timeIntervalSince1970: job["created"].number).formatted())
+                if job["finished"].number > 0 { Text("Finished " + Date(timeIntervalSince1970: job["finished"].number).formatted()) }
+                if !job["decision"].string.isEmpty { Text(job["decision"].string.replacingOccurrences(of: "_", with: " ")) }
+                Text("\(Int(job["tokens"].number)) tokens").font(.caption)
+            }.frame(maxWidth: .infinity, alignment: .leading) }
+            ForEach(Array(job["calls"].array.enumerated()), id: \.offset) { index, call in
+                GlassCard { VStack(alignment: .leading, spacing: 8) {
+                    Text("\(index + 1). " + call["name"].string).font(.headline)
+                    Text(call["status"].string).font(.subheadline)
+                    if call["started"].number > 0 { Text(Date(timeIntervalSince1970: call["started"].number).formatted()).font(.caption) }
+                    if call["finished"].number > 0 { Text("Finished " + Date(timeIntervalSince1970: call["finished"].number).formatted()).font(.caption) }
+                    Text(call["status"].string == "done" ? "Tool returned a result." : "This step did not confirm success.").font(.caption).foregroundStyle(VesperTheme.muted)
+                }.frame(maxWidth: .infinity, alignment: .leading) }
+            }
+            if !job["notification"].string.isEmpty {
+                Text("Message").font(.headline)
+                Text(job["notification"].string).textSelection(.enabled)
+            }
+        }
     }
 }
 struct AgentSettingsView: View {

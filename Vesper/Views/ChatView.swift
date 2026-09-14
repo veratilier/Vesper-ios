@@ -514,7 +514,13 @@ enum ChatPresentation {
         }
         return result
     }
-    static func displayRows(_ messages: [JSONValue]) -> [Row] {
+    static func isWakeActivity(_ message: JSONValue) -> Bool {
+        let meta = message["metadata"]
+        let wake = meta["wake"] != .null || !meta["wakeRunId"].string.isEmpty || meta["source"].string == "automation" || message.id.hasPrefix("execution:auto-")
+        return wake && isActivity(message)
+    }
+    static func displayRows(_ input: [JSONValue]) -> [Row] {
+        let messages = input.filter { !isWakeActivity($0) }
         let replies = messages.indices.filter { !isUser(messages[$0]) && !isActivity(messages[$0]) }
         var attached: [Int: [JSONValue]] = [:]
         var orphans: [Int] = []

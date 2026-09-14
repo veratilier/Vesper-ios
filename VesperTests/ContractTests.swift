@@ -4,6 +4,17 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    func testWakeLedgerIsHiddenButMessagesAndNormalToolsRemain() {
+        let activity: JSONValue = .object(["id": .string("wake-tool"), "role": .string("system"), "metadata": .object(["wakeRunId": .string("run"), "blockType": .string("execution")])])
+        let reply: JSONValue = .object(["id": .string("wake-final"), "role": .string("agent"), "content": .string("Hello"), "metadata": .object(["wakeRunId": .string("run"), "blockType": .string("agentMessage")])])
+        let normal: JSONValue = .object(["id": .string("normal-tool"), "role": .string("tool")])
+        XCTAssertTrue(ChatPresentation.isWakeActivity(activity))
+        XCTAssertFalse(ChatPresentation.isWakeActivity(reply))
+        XCTAssertFalse(ChatPresentation.isWakeActivity(normal))
+        let rows = ChatPresentation.displayRows([activity, reply])
+        XCTAssertEqual(rows.map { $0.id }, ["wake-final"])
+        XCTAssertTrue(rows[0].activities.isEmpty)
+    }
     func testMixedToolCatalogUsesOneCanonicalFormat() throws {
         let legacy: JSONValue = .object(["name": .string("native_health"), "description": .string("Read"), "inputSchema": .object(["type": .string("object")])])
         var canonical = legacy; canonical["type"] = .string("function"); canonical["name"] = .string("server_tool")

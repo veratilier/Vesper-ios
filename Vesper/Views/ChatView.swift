@@ -4,6 +4,16 @@ import PhotosUI
 import UniformTypeIdentifiers
 import QuickLook
 
+private struct ChatScrollUpdate: Equatable {
+    let conversationID: String
+    let messageCount: Int
+    let lastMessageID: String?
+    let lastContent: String
+    let localMessageID: String?
+    let viewportHeight: CGFloat
+    let followsLatest: Bool
+}
+
 private struct AttachmentRowAlignment: ViewModifier {
     let single: Bool
     let user: Bool
@@ -119,6 +129,10 @@ struct ChatView: View {
     @State private var stickerPicker = false
     @State private var pendingMusic: JSONValue?
     @State private var nearBottom = true
+    @State private var followsLatest = true
+    @State private var positionedConversationID: String?
+    @State private var observedLocalMessageID: String?
+    @State private var draggingHistory = false
     @State private var viewportHeight: CGFloat = 0
     @State private var locationPicker = false
     @State private var confirmNew = false
@@ -147,13 +161,26 @@ struct ChatView: View {
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(.horizontal, 20).padding(.vertical, 14)
                     .background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
+                    .opacity(positionedConversationID == chat.conversationID || chat.messages.isEmpty ? 1 : 0)
                 }.scrollDismissesKeyboard(.interactively)
+                .defaultScrollAnchor(followsLatest ? .bottom : nil)
                 .coordinateSpace(name: "chat-scroll")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
                 .onPreferenceChange(ChatBottomPosition.self) { bottom in
                     guard let bottom, viewportHeight > 0 else { return }
                     nearBottom = bottom <= viewportHeight + 2
+                    if draggingHistory || nearBottom { followsLatest = nearBottom }
                  }
+                .simultaneousGesture(DragGesture(minimumDistance: 3)
+                    .onChanged { _ in
+                        draggingHistory = true
+                        followsLatest = false
+                        positionedConversationID = chat.conversationID
+                    }
+                    .onEnded { _ in
+                        draggingHistory = false
+                        followsLatest = nearBottom
+                    })
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         composer
@@ -162,6 +189,7 @@ struct ChatView: View {
                     .overlay(alignment: .top) {
                         if !nearBottom && !chat.messages.isEmpty {
                             Button {
+                                followsLatest = true
                                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
                             } label: {
                                 Image(systemName: "arrow.down")
@@ -176,11 +204,48 @@ struct ChatView: View {
                         }
                     }
                 }
-                .task { await Task.yield(); proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: chat.messages.count) { _, _ in if nearBottom || chat.messages.last?["role"].string == "user" { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) } } }
-                .onChange(of: chat.messages.last?["content"].string) { _, _ in if nearBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .task(id: scrollUpdate) { await positionLatest(using: proxy) }
+                .onAppear {
+                    positionedConversationID = nil
+                    observedLocalMessageID = chat.latestLocalMessageID
+                    followsLatest = true
+                }
+                .onChange(of: chat.conversationID) { _, _ in
+                    positionedConversationID = nil
+                    observedLocalMessageID = chat.latestLocalMessageID
+                    followsLatest = true
+                    nearBottom = true
+                }
             }
         }
+    }
+    private var scrollUpdate: ChatScrollUpdate {
+        ChatScrollUpdate(conversationID: chat.conversationID,
+                         messageCount: chat.messages.count,
+                         lastMessageID: chat.messages.last?.id,
+                         lastContent: chat.messages.last?["content"].string ?? "",
+                         localMessageID: chat.latestLocalMessageID,
+                         viewportHeight: viewportHeight,
+                         followsLatest: followsLatest)
+    }
+    @MainActor private func positionLatest(using proxy: ScrollViewProxy) async {
+        let conversationID = chat.conversationID
+        let firstPosition = positionedConversationID != conversationID
+        let sentLocally = observedLocalMessageID != chat.latestLocalMessageID
+        guard firstPosition || sentLocally || followsLatest else { return }
+        guard !draggingHistory, !chat.messages.isEmpty, viewportHeight > 0 else { return }
+        // History and thread/resume arrive asynchronously. Scroll after their
+        // rows enter the layout, independently of the measured bottom state.
+        await Task.yield()
+        guard !Task.isCancelled, chat.conversationID == conversationID, !draggingHistory else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo("bottom", anchor: .bottom) }
+        await Task.yield()
+        guard !Task.isCancelled, chat.conversationID == conversationID, !draggingHistory else { return }
+        positionedConversationID = conversationID
+        observedLocalMessageID = chat.latestLocalMessageID
+        followsLatest = true
     }
     private var photoContent: some View {
         chatContent

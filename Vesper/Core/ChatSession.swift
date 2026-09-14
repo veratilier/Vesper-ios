@@ -49,7 +49,8 @@ import AVFoundation
     @Published var error: String?
     @Published var approval: JSONValue?
     @Published var events: [String] = []
-    private(set) var conversationID = UUID().uuidString
+    @Published private(set) var conversationID = UUID().uuidString
+    @Published private(set) var latestLocalMessageID: String?
     private var tombstones: [JSONValue] = []
     private var threadID: String?
     private var turnID: String?
@@ -293,6 +294,7 @@ import AVFoundation
             if let sticker { user["type"] = .string("sticker"); user["metadata"]["sticker"] = sticker }
             if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }
             messages.append(user)
+            latestLocalMessageID = messageID
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]

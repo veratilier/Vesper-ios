@@ -49,7 +49,7 @@ struct HomeView: View {
                 }.padding(.horizontal, 16).padding(.bottom, 20).frame(maxWidth: 650).frame(maxWidth: .infinity)
             }.refreshable { await store.refresh(); await loadDesire(); await loadUsage(); await refreshWeather() }
         }.buttonStyle(.plain)
-        .task { player.updateLibrary(store.document("music").array); await loadDesire() }
+        .task { await store.refresh(); player.updateLibrary(store.document("music").array); await loadDesire() }
         .task(id: phase) {
             guard phase == .active else { return }
             // This task ends when Home disappears or the app leaves the foreground.
@@ -166,12 +166,28 @@ struct HomeView: View {
             }
         }
     }
+    private var latestNote: JSONValue? {
+        let formatter = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func timestamp(_ note: JSONValue) -> Date {
+            for key in ["createdAt", "updatedAt"] {
+                let text = note[key].string
+                if let date = fractional.date(from: text) ?? formatter.date(from: text) { return date }
+            }
+            return .distantPast
+        }
+        return store.document("notes").array.enumerated().sorted { left, right in
+            let lhs = timestamp(left.element), rhs = timestamp(right.element)
+            return lhs == rhs ? left.offset < right.offset : lhs > rhs
+        }.first?.element
+    }
     private func notesCard(height: CGFloat) -> some View {
         Button { navigate(.notes) } label: {
             HomeCard {
                 VStack(alignment: .leading, spacing: 7) {
                     cardTitle("Notes")
-                    Text(store.document("notes").array.first?["text"].string ?? "A little space for your thoughts.")
+                    Text(latestNote?["text"].string ?? "A little space for your thoughts.")
                         .font(.system(size: 10.5)).lineSpacing(2).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 0)
                 }

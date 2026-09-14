@@ -18,10 +18,35 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Vesper widgets</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>vesper</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Show your upcoming events and save events you create in Vesper.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo or share camera frames during a call you start.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Read the sleep, heart rate, steps and wrist temperature you choose to share, for your private on-device Health page.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Add your current location to a message you choose to send.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Use voice input and calls when you tap the microphone.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Show your reminder lists and save or complete reminders you choose in Vesper.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Convert your speech into messages for Rowan.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Ballet.ttf</string>
@@ -48,19 +73,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>Take a photo or share camera frames during a call you start.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Use voice input and calls when you tap the microphone.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Convert your speech into messages for Rowan.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Add your current location to a message you choose to send.</string>
-	<key>NSHealthShareUsageDescription</key>
-	<string>Read the sleep, heart rate, steps and wrist temperature you choose to share, for your private on-device Health page.</string>
-    <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>Show your upcoming events and save events you create in Vesper.</string>
-    <key>NSRemindersFullAccessUsageDescription</key>
-    <string>Show your reminder lists and save or complete reminders you choose in Vesper.</string>
 </dict>
 </plist>

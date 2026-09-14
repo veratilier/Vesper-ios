@@ -4,6 +4,29 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    @MainActor func testUnplayableSelectionDoesNotLeavePreviousSongMetadata() {
+        let player = MusicPlayer()
+        let first: JSONValue = .object(["id": .string("first"), "title": .string("First")])
+        let second: JSONValue = .object(["id": .string("second"), "title": .string("Second"), "url": .string("http://invalid.example/audio")])
+        player.setQueue([first, second])
+        player.start(second)
+        XCTAssertEqual(player.track.id, "second")
+        XCTAssertFalse(player.playing)
+        XCTAssertEqual(player.position, 0)
+        XCTAssertNotNil(player.error)
+        player.pause()
+        XCTAssertFalse(player.playing)
+        player.remove("second")
+        XCTAssertEqual(player.track.id, "first")
+    }
+    func testWidgetSnapshotPreservesUnknownUsageAsMissing() throws {
+        let snapshot = WidgetSnapshot(updatedAt: Date(timeIntervalSince1970: 100), text: "Note", values: [:])
+        let restored = try JSONDecoder().decode(WidgetSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertNil(restored.values["remaining"])
+        XCTAssertEqual(restored.updatedAt, snapshot.updatedAt)
+        XCTAssertEqual(restored.text, "Note")
+    }
+
     func testToolCardsExcludeLifecycleAndPreserveRepeatedFailures() {
         let cards = ToolActivityRecords.cards(["userMessage · running", "dynamicToolCall · completed", "request_native_call · failed\nCallKit code 0", "request_native_call · failed\nSecond attempt"])
         XCTAssertEqual(cards.count, 2)

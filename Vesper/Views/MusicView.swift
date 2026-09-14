@@ -31,7 +31,7 @@ struct MusicView: View {
                 VStack(spacing: 12) {
                     HStack { Spacer(); Button { sheet = .library } label: { Label("My Music", systemImage: "books.vertical").font(.system(size: 14, weight: .medium)).padding(.horizontal, 16).frame(height: 42).background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25))) } }
                     together
-                    Artwork(url: player.track["cover"].string)
+                    Artwork(url: player.track["cover"].string).id(player.track.id + player.track["cover"].string)
                         .frame(width: max(180, min(geometry.size.width - 88, 340)), height: max(180, min(geometry.size.width - 88, 340)))
                         .clipShape(Circle()).overlay(Circle().stroke(VesperTheme.accent.opacity(0.6), lineWidth: 5))
                         .padding(.vertical, 2)

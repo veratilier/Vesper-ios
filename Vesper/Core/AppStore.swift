@@ -32,6 +32,7 @@ import SwiftUI
             let result = try await api.request("/api/state")
             guard case .object(let docs) = result["documents"] else { throw ServiceError(message: "Invalid document response.") }
             documents = docs.mapValues { $0["value"] }; connected = true
+            WidgetSync.notes(document("notes"))
         } catch { self.error = error.localizedDescription; connected = false }
     }
     /// Re-read before applying an item-level mutation. Preserve unknown fields and unrelated rows.
@@ -43,7 +44,7 @@ import SwiftUI
             let latest = try await api.request("/api/state?key=\(key)")
             let value = try change(latest["value"])
             _ = try await api.request("/api/state", method: "PUT", body: .object(["key": .string(key), "value": value]))
-            documents[key] = value; return true
+            documents[key] = value; if key == "notes" { WidgetSync.notes(value) }; return true
         } catch { self.error = error.localizedDescription; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {

@@ -35,6 +35,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
 }
 struct RootView: View {
+    @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @State private var acceptedCall = false
@@ -110,7 +111,29 @@ struct RootView: View {
             destination = .chat
             Task { await chat.open(.object(["id": .string(id)])) }
         }
-        .task(id: store.token) { await refreshUsage() }
+         .task(id: store.token) { await refreshUsage() }
+        .onChange(of: store.token) { _, _ in WidgetSync.clear() }
+        .onOpenURL { url in
+            guard url.scheme == "vesper" else { return }
+            switch url.host {
+            case "desire": destination = .desire
+            case "notes": destination = .notes
+            case "usage": sidebar = true; Task { await refreshUsage() }
+            default: break
+            }
+        }
+        .task(id: phase) {
+            guard phase == .active else { return }
+            player.synchronize()
+            while !Task.isCancelled {
+                if !store.token.isEmpty {
+                    await store.refresh()
+                    if let response = try? await store.api.request("/api/desire") { WidgetSync.desire(response["data"]) }
+                    await refreshUsage()
+                }
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
         .task(id: sidebar) {
             guard sidebar else { return }
             while !Task.isCancelled {

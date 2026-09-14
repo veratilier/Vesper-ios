@@ -321,7 +321,7 @@ import AVFoundation
         loadingUsage = true; usageError = nil
         defer { loadingUsage = false }
         do {
-            try await connect(); usage = try await rpc("account/rateLimits/read"); usageUpdatedAt = Date()
+            try await connect(); usage = try await rpc("account/rateLimits/read"); usageUpdatedAt = Date(); WidgetSync.usage(weeklyRemaining)
             if weeklyRemaining == nil { usageError = "Weekly usage unavailable" }
         } catch { usageError = error.localizedDescription }
     }
@@ -384,7 +384,7 @@ import AVFoundation
             try? await sendPacket(.object(["id": packet["id"], "error": .object(["code": .number(-32601), "message": .string("This request needs a client with support for this interaction.")])]))
             return
         }
-        if method == "account/rateLimits/updated" { usage = p; usageError = nil; usageUpdatedAt = Date() }
+        if method == "account/rateLimits/updated" { usage = p; usageError = nil; usageUpdatedAt = Date(); WidgetSync.usage(weeklyRemaining) }
         else if method == "item/reasoning/summaryTextDelta" {
             thinkingSummary += p["delta"].string
         }

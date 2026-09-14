@@ -11,6 +11,8 @@ def ref(path, kind): return put('file:'+path, isa='PBXFileReference', lastKnownF
 source_refs=[];source_build=[];resource_refs=[];resource_build=[]
 for p in sorted((root/'Vesper').rglob('*.swift')):
  path=str(p.relative_to(root));f=ref(path,'sourcecode.swift');source_refs.append(f);source_build.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
+shared_ref=ref('Shared/WidgetSnapshot.swift','sourcecode.swift')
+source_refs.append(shared_ref);source_build.append(put('shared-app-build',isa='PBXBuildFile',fileRef=shared_ref))
 for path,kind in [('Vesper/Resources/Assets.xcassets','folder.assetcatalog'),('Vesper/Resources/Ballet.ttf','file'),('Vesper/Resources/Ballet-OFL.txt','text')]:
  if (root/path).exists():
   f=ref(path,kind);resource_refs.append(f);resource_build.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
@@ -46,7 +48,7 @@ proxy=put('test-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'
 dep=put('test-dep',isa='PBXTargetDependency',target=app_target,targetProxy=proxy)
 test_config=configs('test',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.tests','PRODUCT_NAME':'$(TARGET_NAME)','GENERATE_INFOPLIST_FILE':'YES','TEST_HOST':'$(BUILT_PRODUCTS_DIR)/Vesper.app/Vesper','BUNDLE_LOADER':'$(TEST_HOST)','CODE_SIGN_STYLE':'Automatic'})
 test_target=put('test-target',isa='PBXNativeTarget',buildConfigurationList=test_config,buildPhases=[tests_phase],buildRules=[],dependencies=[dep],name='VesperTests',productName='VesperTests',productReference=test_product,productType='com.apple.product-type.bundle.unit-test')
-# Widget extension has its own resources and requires no App Group or server token.
+# Widget extension reads app snapshots through an App Group; no server token is shared.
 widget_ref=ref('VesperWidgets/VesperWidgets.swift','sourcecode.swift')
 widget_assets=ref('VesperWidgets/Assets.xcassets','folder.assetcatalog')
 widget_info=ref('VesperWidgets/Info.plist','text.plist.xml')
@@ -54,9 +56,9 @@ widget_product=put('widget-product',isa='PBXFileReference',explicitFileType='wra
 widget_group=put('widget-group',isa='PBXGroup',children=[widget_ref,widget_assets,widget_info],name='Widgets',sourceTree='<group>')
 objects[main]['children'].append(widget_group)
 objects[products]['children'].append(widget_product)
-widget_sources=phase('widget-sources','PBXSourcesBuildPhase',[put('widget-source-build',isa='PBXBuildFile',fileRef=widget_ref)])
+widget_sources=phase('widget-sources','PBXSourcesBuildPhase',[put('widget-source-build',isa='PBXBuildFile',fileRef=widget_ref),put('shared-widget-build',isa='PBXBuildFile',fileRef=shared_ref)])
 widget_resources=phase('widget-resources','PBXResourcesBuildPhase',[put('widget-assets-build',isa='PBXBuildFile',fileRef=widget_assets)])
-widget_config=configs('widget',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.widgets','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'VesperWidgets/Info.plist','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SKIP_INSTALL':'YES','APPLICATION_EXTENSION_API_ONLY':'YES','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks','@executable_path/../../Frameworks']})
+widget_config=configs('widget',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.widgets','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'VesperWidgets/Info.plist','CODE_SIGN_ENTITLEMENTS':'VesperWidgets/VesperWidgets.entitlements','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SKIP_INSTALL':'YES','APPLICATION_EXTENSION_API_ONLY':'YES','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks','@executable_path/../../Frameworks']})
 widget_target=put('widget-target',isa='PBXNativeTarget',buildConfigurationList=widget_config,buildPhases=[widget_sources,widget_resources],buildRules=[],dependencies=[],name='VesperWidgets',productName='VesperWidgets',productReference=widget_product,productType='com.apple.product-type.app-extension')
 widget_proxy=put('widget-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'),proxyType=1,remoteGlobalIDString=widget_target,remoteInfo='VesperWidgets')
 widget_dep=put('widget-dependency',isa='PBXTargetDependency',target=widget_target,targetProxy=widget_proxy)

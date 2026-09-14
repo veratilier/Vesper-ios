@@ -116,6 +116,7 @@ struct ChatView: View {
     @State private var call = false
     @State private var filePicker = false
     @State private var musicPicker = false
+    @State private var stickerPicker = false
     @State private var pendingMusic: JSONValue?
     @State private var nearBottom = true
     @State private var viewportHeight: CGFloat = 0
@@ -228,6 +229,9 @@ struct ChatView: View {
         }
         .sheet(isPresented: $locationPicker) { locationSheet }
         .sheet(isPresented: $musicPicker) { musicSheet }
+        .sheet(isPresented: $stickerPicker) { NavigationStack { StickerLibraryView { sticker in
+            Task { if await chat.send("", sticker: sticker) { stickerPicker = false; drawer = false } }
+        } } }
         .sheet(isPresented: $history) { historySheet }
         .confirmationDialog("Start a new chat and clear this draft?", isPresented: $confirmNew) { Button("New chat", role: .destructive) { newChat() } }
         .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
@@ -349,6 +353,7 @@ struct ChatView: View {
                     } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
                 if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: message["metadata"]["musicCard"]) }
+                if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
                 if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)
@@ -406,6 +411,7 @@ struct ChatView: View {
             drawerItem("Location", "mappin.circle.fill") { locationPicker = true; location.locate() }
             drawerItem("File", "folder.fill") { filePicker = true }
             drawerItem("Music", "music.note") { musicPicker = true }
+            drawerItem("Stickers", "face.smiling") { stickerPicker = true }
         }.padding(20).background(.regularMaterial)
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {

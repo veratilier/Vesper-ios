@@ -42,11 +42,11 @@ struct APIClient {
     func uploadImage(_ data: Data, name: String) async throws -> JSONValue {
         try await uploadFile(data, name: name, mime: "image/jpeg")
     }
-    func uploadFile(_ data: Data, name: String, mime: String) async throws -> JSONValue {
+    func uploadFile(_ data: Data, name: String, mime: String, sticker: Bool = false) async throws -> JSONValue {
         guard !token.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         guard data.count <= 32 * 1024 * 1024 else { throw ServiceError(message: "Choose an image under 32 MB.") }
         let boundary = "Vesper-" + UUID().uuidString
-        var request = URLRequest(url: try Self.validatedURL(baseURL, path: "/api/media"))
+        var request = URLRequest(url: try Self.validatedURL(baseURL, path: sticker ? "/api/stickers" : "/api/media"))
         request.httpMethod = "POST"; request.timeoutInterval = 60
         request.setValue(token, forHTTPHeaderField: "x-vesper-device-token")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -55,7 +55,7 @@ struct APIClient {
         body.append(data); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         let (result, response) = try await URLSession.shared.upload(for: request, from: body)
         let value = try JSONDecoder().decode(JSONValue.self, from: result)
-        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode), !value["key"].string.isEmpty else { throw ServiceError(message: value["error"].string.isEmpty ? "Photo upload failed." : value["error"].string) }
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode), sticker ? !value["sticker"]["assetId"].string.isEmpty : !value["key"].string.isEmpty else { throw ServiceError(message: value["error"].string.isEmpty ? "Image upload failed." : value["error"].string) }
         return value
     }
     func request(_ path: String, method: String = "GET", body: JSONValue? = nil, history: Bool = false) async throws -> JSONValue {

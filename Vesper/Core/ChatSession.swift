@@ -231,8 +231,8 @@ import AVFoundation
             if models.isEmpty { modelError = "The server returned no available models." }
         } catch { modelError = error.localizedDescription; if !initialized { disconnect() } }
     }
-    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil) async -> Bool {
-        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil) else { return false }
+    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil) async -> Bool {
+        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
         busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
         let messageID = UUID().uuidString
         do {
@@ -274,14 +274,17 @@ import AVFoundation
                 let songID = music["neteaseId"].string
                 musicContext = "\nShared music: \(title) — \(artist) (song ID: \(songID))"
             }
-            let modelInputText = (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text) + fileContext + musicContext
+            let stickerContext = sticker.map { "Shared sticker: " + $0["name"].string + " " + $0["description"].string + " (assetId: " + $0["assetId"].string + ")" }
+            let modelInputText = (stickerContext ?? (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text)) + fileContext + musicContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
+            if let sticker { user["type"] = .string("sticker"); user["metadata"]["sticker"] = sticker }
             if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }
             messages.append(user)
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
+            if let sticker { input.append(.object(["type": .string("image"), "url": sticker["url"]])) }
             params["input"] = .array(input)
             if !model.isEmpty { params["model"] = .string(model) }
             if !effort.isEmpty {
@@ -489,6 +492,18 @@ import AVFoundation
                 return
             }
             let r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(threadID ?? ""), "conversationId": .string(conversationID), "turnId": .string(turnID ?? ""), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
+            if name == "sticker_send" {
+                let sticker = r["result"]["stickerMessage"]
+                guard !sticker["assetId"].string.isEmpty, !sticker["url"].string.isEmpty, !sticker["mimeType"].string.isEmpty else { throw ServiceError(message: "The tool returned no sticker; delivery was not confirmed.") }
+                let id = "sticker:\(targetThread):\(callID)"
+                let existing = messages.first(where: { $0.id == id })
+                let message: JSONValue = .object(["id": .string(id), "conversationId": .string(targetConversation), "role": .string("agent"), "type": .string("sticker"), "content": .string(""), "createdAt": .string(existing?["createdAt"].string ?? isoNow()), "status": .string("delivered"), "metadata": .object(["sticker": sticker, "showTurnStatus": .bool(false), "threadId": .string(targetThread), "turnId": .string(targetTurn)])])
+                _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+                if targetConversation == conversationID {
+                    if let index = messages.firstIndex(where: { $0.id == id }) { messages[index] = message } else { messages.append(message) }
+                    await notifyReply(message)
+                }
+            }
             if ["send_chat_file", "album_send_photos"].contains(name) {
                 let result = r["result"]
                 guard !result["attachments"].array.isEmpty else { throw ServiceError(message: "The tool returned no attachments; file delivery was not confirmed.") }

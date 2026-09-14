@@ -11,6 +11,7 @@ struct SettingsView: View {
             NavigationLink { HealthView() } label: { settingsRow("Health", subtitle: "Sleep, heart rate and activity", icon: "heart.text.square") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
             NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
+            NavigationLink { StickerLibraryView() } label: { settingsRow("Stickers", subtitle: "Import and browse your sticker library", icon: "face.smiling") }
             NavigationLink { DataSettingsView() } label: { settingsRow("Data", subtitle: "Export and privacy", icon: "archivebox") }
         }.buttonStyle(.plain)
     }

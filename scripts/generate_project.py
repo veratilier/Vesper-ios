@@ -11,6 +11,8 @@ def ref(path, kind): return put('file:'+path, isa='PBXFileReference', lastKnownF
 source_refs=[];source_build=[];resource_refs=[];resource_build=[]
 for p in sorted((root/'Vesper').rglob('*.swift')):
  path=str(p.relative_to(root));f=ref(path,'sourcecode.swift');source_refs.append(f);source_build.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
+broadcast_access=ref('Shared/BroadcastAccess.swift','sourcecode.swift')
+source_refs.append(broadcast_access);source_build.append(put('broadcast-access-app-build',isa='PBXBuildFile',fileRef=broadcast_access))
 shared_ref=ref('Shared/WidgetSnapshot.swift','sourcecode.swift')
 source_refs.append(shared_ref);source_build.append(put('shared-app-build',isa='PBXBuildFile',fileRef=shared_ref))
 for path,kind in [('Vesper/Resources/Assets.xcassets','folder.assetcatalog'),('Vesper/Resources/Ballet.ttf','file'),('Vesper/Resources/Ballet-OFL.txt','text')]:
@@ -66,7 +68,19 @@ embed_file=put('widget-embed-file',isa='PBXBuildFile',fileRef=widget_product,set
 embed=put('widget-embed',isa='PBXCopyFilesBuildPhase',buildActionMask=2147483647,dstPath='',dstSubfolderSpec=13,files=[embed_file],name='Embed App Extensions',runOnlyForDeploymentPostprocessing=0)
 objects[app_target]['buildPhases'].append(embed)
 objects[app_target]['dependencies'].append(widget_dep)
-project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target,widget_target])
+# ReplayKit cross-app upload extension.
+broadcast_source=ref('VesperBroadcast/SampleHandler.swift','sourcecode.swift')
+broadcast_info=ref('VesperBroadcast/Info.plist','text.plist.xml')
+broadcast_product=put('broadcast-product',isa='PBXFileReference',explicitFileType='wrapper.app-extension',path='VesperBroadcast.appex',sourceTree='BUILT_PRODUCTS_DIR',includeInIndex=0)
+objects[main]['children'].append(put('broadcast-group',isa='PBXGroup',children=[broadcast_source,broadcast_info],name='Broadcast',sourceTree='<group>'))
+objects[products]['children'].append(broadcast_product)
+broadcast_sources=phase('broadcast-sources','PBXSourcesBuildPhase',[put('broadcast-source-build',isa='PBXBuildFile',fileRef=broadcast_source),put('broadcast-access-build',isa='PBXBuildFile',fileRef=broadcast_access)])
+broadcast_config=configs('broadcast',{'PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.native.broadcast','PRODUCT_NAME':'$(TARGET_NAME)','CODE_SIGN_STYLE':'Automatic','INFOPLIST_FILE':'VesperBroadcast/Info.plist','CODE_SIGN_ENTITLEMENTS':'VesperBroadcast/VesperBroadcast.entitlements','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SKIP_INSTALL':'YES','APPLICATION_EXTENSION_API_ONLY':'YES','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks','@executable_path/../../Frameworks']})
+broadcast_target=put('broadcast-target',isa='PBXNativeTarget',buildConfigurationList=broadcast_config,buildPhases=[broadcast_sources],buildRules=[],dependencies=[],name='VesperBroadcast',productName='VesperBroadcast',productReference=broadcast_product,productType='com.apple.product-type.app-extension')
+broadcast_proxy=put('broadcast-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'),proxyType=1,remoteGlobalIDString=broadcast_target,remoteInfo='VesperBroadcast')
+objects[app_target]['dependencies'].append(put('broadcast-dep',isa='PBXTargetDependency',target=broadcast_target,targetProxy=broadcast_proxy))
+objects[embed]['files'].append(put('broadcast-embed-file',isa='PBXBuildFile',fileRef=broadcast_product,settings={'ATTRIBUTES':['RemoveHeadersOnCopy']}))
+project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target,widget_target,broadcast_target])
 def serialize(v,level=0):
  if isinstance(v,dict):return '{\n'+''.join('\t'*(level+1)+json.dumps(str(k))+' = '+serialize(x,level+1)+';\n' for k,x in v.items())+'\t'*level+'}'
  if isinstance(v,list):return '( '+', '.join(serialize(x,level) for x in v)+', )' if v else '()'

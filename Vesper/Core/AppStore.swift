@@ -1,6 +1,7 @@
 import SwiftUI
 
 @MainActor final class AppStore: ObservableObject {
+    weak var musicPlayer: MusicPlayer?
     @Published var documents: [String: JSONValue] = [:]
     @Published var error: String?
     @Published var loading = false

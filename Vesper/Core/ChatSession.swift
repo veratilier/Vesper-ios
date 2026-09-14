@@ -283,6 +283,10 @@ import AVFoundation
                 musicContext = "\nShared music: \(title) — \(artist) (song ID: \(songID))"
             }
             let stickerContext = sticker.map { "Shared sticker: " + $0["name"].string + " " + $0["description"].string + " (assetId: " + $0["assetId"].string + ")" }
+            if let player = appStore?.musicPlayer {
+                player.synchronize()
+                musicContext += "\nCurrent native playback (fresh device state; overrides earlier shared music; metadata only, not audio): " + player.liveContext.pretty
+            }
             let visualContext = voiceCallContext != nil ? callVisualContext.map { "\n" + $0 } ?? "" : ""
             let modelInputText = (stickerContext ?? (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text)) + fileContext + musicContext + visualContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])

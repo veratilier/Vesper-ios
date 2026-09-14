@@ -124,7 +124,7 @@ struct RootView: View {
         }
         .task(id: phase) {
             guard phase == .active else { return }
-            player.synchronize()
+            player.configure(store); player.synchronize()
             while !Task.isCancelled {
                 if !store.token.isEmpty {
                     await store.refresh()

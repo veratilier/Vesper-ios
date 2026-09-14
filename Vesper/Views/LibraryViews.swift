@@ -288,6 +288,7 @@ private struct MovieRoomView: View {
     @Environment(\.scenePhase) private var phase
     @StateObject private var movie = MoviePlayback()
     @StateObject private var screen = ScreenShare()
+    @State private var broadcastReady = false
     @StateObject private var conversation = ChatSession()
     @AppStorage("native-movie-conversation") private var conversationID = ""
     @AppStorage("native-movie-import-job") private var job = ""
@@ -306,6 +307,20 @@ private struct MovieRoomView: View {
                 if movie.loaded { VideoPlayer(player: movie.player).frame(height: 235).clipShape(RoundedRectangle(cornerRadius: 16)); Text(movie.title).font(.headline) }
                 else { EmptyCard(title: "Watch together", message: "Choose a local video or import a Bilibili link.") }
                 sourceControls
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("跨 App 分享屏幕").font(.headline)
+                        Text("Tap the system broadcast button, choose Vesper and start. Stop with the system recording control.").font(.caption)
+                    }
+                    if broadcastReady { BroadcastPicker().frame(width: 52, height: 52) }
+                }
+                TimelineView(.periodic(from: .now, by: 3)) { _ in
+                    let defaults = UserDefaults(suiteName: BroadcastAccess.group)
+                    if let status = defaults?.string(forKey: "broadcastStatus") { Text(status).font(.caption) }
+                    if let reply = defaults?.string(forKey: "broadcastReply"), !reply.isEmpty {
+                        GlassCard { Text(reply).font(.subheadline).textSelection(.enabled) }
+                    }
+                }
                 Button { screen.active || screen.starting ? screen.stop() : screen.start() } label: {
                     Label(screen.active ? "停止分享屏幕" : screen.starting ? "Starting…" : "分享屏幕", systemImage: screen.active ? "stop.circle.fill" : "rectangle.on.rectangle")
                 }.buttonStyle(.borderedProminent)
@@ -326,6 +341,8 @@ private struct MovieRoomView: View {
         }.navigationTitle("Movie Room").navigationBarTitleDisplayMode(.inline)
             .task {
                 conversation.configure(store); music.pause()
+                do { try BroadcastAccess.save(endpoint: store.socketURL, token: store.token); broadcastReady = !store.token.isEmpty }
+                catch { message = error.localizedDescription }
                 if !conversationID.isEmpty { await conversation.open(.object(["id": .string(conversationID)])) }
             }
             .task(id: "\(job)-\(phase)-\(retry)") { await checkImport() }

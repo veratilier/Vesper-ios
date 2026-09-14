@@ -19,6 +19,15 @@ final class ContractTests: XCTestCase {
         player.remove("second")
         XCTAssertEqual(player.track.id, "first")
     }
+    @MainActor func testPlaybackContextUsesCurrentSelectionWithoutClaimingAudio() {
+        let player = MusicPlayer()
+        player.start(.object(["id": .string("new"), "title": .string("我们俩"), "artist": .string("郭顶")]))
+        let context = player.liveContext
+        XCTAssertEqual(context["track"]["title"].string, "我们俩")
+        XCTAssertEqual(context["playing"], .bool(false))
+        XCTAssertEqual(context["audioIncluded"], .bool(false))
+        XCTAssertFalse(context["observedAt"].string.isEmpty)
+    }
     func testWidgetSnapshotPreservesUnknownUsageAsMissing() throws {
         let snapshot = WidgetSnapshot(updatedAt: Date(timeIntervalSince1970: 100), text: "Note", values: [:])
         let restored = try JSONDecoder().decode(WidgetSnapshot.self, from: JSONEncoder().encode(snapshot))

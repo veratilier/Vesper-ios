@@ -12,13 +12,18 @@ import SwiftUI
     @Published var mode = "order"
     @Published var resolving = false
     private var initialized = false
+    private weak var store: AppStore?
+    private var lastSyncAt = Date.distantPast
+    private var lastSyncTrack = ""
+    private var lastSyncPlaying = false
+    private var syncTask: Task<Void, Never>?
     private var resolveTask: Task<Void, Never>?
     private var api: APIClient?
     private var endObserver: NSObjectProtocol?
     private var audioObservers: [NSObjectProtocol] = []
     private var playbackObserver: NSKeyValueObservation?
     private var selection = UUID()
-    func configure(_ store: AppStore) { api = store.api }
+    func configure(_ store: AppStore) { self.store = store; api = store.api; store.musicPlayer = self }
     private let player = AVPlayer()
     private var observer: Any?
     private var statusObserver: NSKeyValueObservation?
@@ -133,7 +138,29 @@ import SwiftUI
         duration = total.isFinite ? max(0, total) : 0
         publishNowPlaying()
     }
+    var liveContext: JSONValue {
+        .object(["track": .object(["id": track["id"], "title": track["title"], "artist": track["artist"], "album": track["album"]]),
+                 "playing": .bool(playing), "resolving": .bool(resolving), "positionSeconds": .number(position),
+                 "durationSeconds": .number(duration), "observedAt": .string(isoNow()), "audioIncluded": .bool(false)])
+    }
+    private func syncPlayback() {
+        guard let store, !store.token.isEmpty, !store.saving, syncTask == nil else { return }
+        guard lastSyncTrack != track.id || lastSyncPlaying != playing || Date().timeIntervalSince(lastSyncAt) >= 15 else { return }
+        let value = liveContext; let currentTrack = track; let at = Date()
+        syncTask = Task {
+            defer { syncTask = nil }
+            let saved = await store.mutate("musicPlayback") { current in
+                var next = current
+                next["trackId"] = currentTrack["id"]
+                next["playing"] = value["playing"]; next["positionSeconds"] = value["positionSeconds"]; next["durationSeconds"] = value["durationSeconds"]
+                next["updatedAt"] = value["observedAt"]; next["nativePlayback"] = value
+                return next
+            }
+            if saved { lastSyncAt = at; lastSyncTrack = currentTrack.id; lastSyncPlaying = value["playing"].bool }
+        }
+    }
     private func publishNowPlaying() {
+        syncPlayback()
         guard track != .null else { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil; return }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [MPMediaItemPropertyTitle: track["title"].string, MPMediaItemPropertyArtist: track["artist"].string, MPMediaItemPropertyPlaybackDuration: duration, MPNowPlayingInfoPropertyElapsedPlaybackTime: position, MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0]
     }

@@ -527,8 +527,10 @@ import AVFoundation
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))
             events.append("\(name) · completed")
         } catch {
+            if name == "request_native_call" {
+                events.append("request_native_call · failed\n" + error.localizedDescription)
+            } else { events.append("\(name) · failed") }
             try? await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(false), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(error.localizedDescription)])])])]))
-            events.append("\(name) · failed")
         }
     }
 }

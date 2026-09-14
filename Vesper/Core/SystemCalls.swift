@@ -11,6 +11,10 @@ import Combine
     private let provider: CXProvider
     private let controller = CXCallController()
     private var outgoing = false
+    static func failure(_ error: Error) -> String {
+        let value = error as NSError
+        return "CallKit: \(value.domain) (code \(value.code)): \(value.localizedDescription)"
+    }
     override init() {
         let config = CXProviderConfiguration(localizedName: "Vesper")
         config.maximumCallGroups = 1; config.maximumCallsPerCallGroup = 1
@@ -24,13 +28,13 @@ import Combine
         let update = CXCallUpdate(); update.remoteHandle = CXHandle(type: .generic, value: "Rowan")
         update.localizedCallerName = "Rowan"; update.supportsHolding = false; update.supportsGrouping = false; update.supportsUngrouping = false
         do { try await provider.reportNewIncomingCall(with: callID, update: update) }
-        catch { id = nil; throw error }
+        catch { id = nil; let detail = Self.failure(error); self.error = detail; throw ServiceError(message: detail) }
     }
     func start() async throws {
         guard id == nil else { throw ServiceError(message: "A call is already in progress.") }
         let callID = UUID(); id = callID; error = nil; outgoing = true
         do { try await controller.request(CXTransaction(action: CXStartCallAction(call: callID, handle: CXHandle(type: .generic, value: "Rowan")))) }
-        catch { id = nil; throw error }
+        catch { id = nil; let detail = Self.failure(error); self.error = detail; throw ServiceError(message: detail) }
     }
     func end() {
         guard let id else { return }

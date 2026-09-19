@@ -8,3 +8,7 @@ xcuserdata/
 *.mobileprovision
 .env*
 Local.xcconfig
+
+# Generated from the original artwork by the Xcode build phase
+Vesper/Resources/Assets.xcassets/AppIconWhite.appiconset/icon.png
+Vesper/Resources/Assets.xcassets/AppIconBlack.appiconset/icon.png

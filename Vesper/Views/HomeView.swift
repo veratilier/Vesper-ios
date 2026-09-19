@@ -138,7 +138,7 @@ struct HomeView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
                     .overlay(alignment: .top) {
-                        LinearGradient(colors: [.white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+                        LinearGradient(colors: [VesperTheme.palette == .black ? .black.opacity(0.5) : .white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
                             .frame(height: 88)
                     }
                     .overlay(alignment: .topLeading) {
@@ -241,7 +241,7 @@ private struct HomeCard<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         content.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color(red: 0.91, green: 0.94, blue: 0.97).opacity(0.80), in: RoundedRectangle(cornerRadius: 22))
+            .background(VesperTheme.palette == .blue ? Color(red: 0.91, green: 0.94, blue: 0.97).opacity(0.80) : VesperTheme.surface, in: RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.90), lineWidth: 1.3))
     }
 }
@@ -250,27 +250,44 @@ struct DesireTide: View {
     var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
+    @State private var previous: [Double] = []
+    @State private var target: [Double] = []
+    @State private var changedAt = Date.timeIntervalSinceReferenceDate
     private let labels = ["想念", "温柔", "玩心", "浓度", "依恋", "占有"]
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active)) { timeline in
-            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            let time = timeline.date.timeIntervalSinceReferenceDate
             Canvas { context, size in
                 draw(context: context, size: size, time: time)
             }
+        }
+        .onAppear { previous = normalized; target = normalized }
+        .onChange(of: values) { _, _ in
+            let now = Date.timeIntervalSinceReferenceDate
+            previous = (0..<6).map { value($0, time: now) }; target = normalized; changedAt = now
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("此刻的潮汐")
         .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "未加载" : "未加载") }.joined(separator: "，"))
     }
-    private func value(_ i: Int) -> Double { values.indices.contains(i) ? min(100, max(0, values[i] ?? 0)) : 0 }
+    private var normalized: [Double] { (0..<6).map { values.indices.contains($0) ? min(100, max(0, values[$0] ?? 0)) : 0 } }
+    private func value(_ i: Int, time: Double) -> Double {
+        guard previous.count == 6, target.count == 6 else { return normalized[i] }
+        let t = reduceMotion ? 1 : min(1, max(0, (time - changedAt) / 1.2))
+        let eased = t * t * (3 - 2 * t)
+        return previous[i] + (target[i] - previous[i]) * eased
+    }
     private func shore(_ x: CGFloat, size: CGSize, time: Double) -> CGFloat {
-        let u = min(5, max(0, Double(x / size.width) * 6 - 0.5))
-        let index = min(4, Int(u)), f = u - Double(index)
-        let blend = f * f * (3 - 2 * f)
-        let v = value(index) * (1 - blend) + value(index + 1) * blend
+        let u = min(5, max(0, Double(x / max(1, size.width)) * 6 - 0.5))
+        let index = min(4, Int(u)), t = u - Double(index)
+        let p0 = value(max(0, index - 1), time: time), p1 = value(index, time: time)
+        let p2 = value(index + 1, time: time), p3 = value(min(5, index + 2), time: time)
+        let v = min(100, max(0, 0.5 * ((2 * p1) + (-p0 + p2) * t + (2*p0 - 5*p1 + 4*p2 - p3)*t*t + (-p0 + 3*p1 - 3*p2 + p3)*t*t*t)))
         let base = size.height * (0.65 - v * 0.0043)
-        let ripple = sin(Double(x) * 0.027 + time * 0.65) * 2 + sin(Double(x) * 0.071 - time * 0.43) * 0.8
-        return base + CGFloat(ripple)
+        let time = reduceMotion ? 0 : time
+        let wave = sin(Double(x) * 0.018 + time * 0.48) * 4.5
+        let ripple = sin(Double(x) * 0.037 - time * 0.65) * 2 + sin(Double(x) * 0.079 + time * 0.43) * 0.8
+        return base + CGFloat(wave + ripple)
     }
     private func line(size: CGSize, time: Double, offset: CGFloat = 0) -> Path {
         var path = Path()
@@ -317,13 +334,13 @@ struct DesireTide: View {
         if !compact {
             for i in 0..<6 {
                 let x = size.width * (CGFloat(i) + 0.5) / 6
-                let y = shore(x, size: size, time: 0) - 22
+                let y = shore(x, size: size, time: time) - 22
                 var guide = Path(); guide.move(to: CGPoint(x: x, y: y)); guide.addLine(to: CGPoint(x: x, y: y + 19))
-                context.stroke(guide, with: .color(VesperTheme.muted.opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
-                context.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)), with: .color(VesperTheme.muted))
+                context.stroke(guide, with: .color(Color(red: 0.33, green: 0.43, blue: 0.5).opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
+                context.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)), with: .color(Color(red: 0.33, green: 0.43, blue: 0.5)))
                 let number = values.indices.contains(i) ? values[i].map { String(Int(min(100, max(0, $0)))) } ?? "—" : "—"
-                context.draw(Text(number).font(.system(size: 19, design: .serif)).foregroundColor(VesperTheme.ink), at: CGPoint(x: x, y: y - 17))
-                context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(VesperTheme.ink), at: CGPoint(x: x, y: size.height - 14))
+                context.draw(Text(number).font(.system(size: 19, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: y - 17))
+                context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: size.height - 14))
             }
         }
     }

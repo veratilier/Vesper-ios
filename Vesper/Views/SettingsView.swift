@@ -28,7 +28,7 @@ struct ConnectionView: View {
                 FormField(label: "History address", text: $store.historyURL)
                 FormField(label: "Chat address", text: $store.socketURL)
                 Text("Device token").font(.caption).foregroundStyle(VesperTheme.muted)
-                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(.white.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(store.loading)
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
@@ -224,7 +224,7 @@ struct VoiceSettingsView: View {
                 Picker("Provider", selection: Binding(get: { provider }, set: { value in provider = value; baseURL = value == "ElevenLabs" ? "https://api.elevenlabs.io" : "https://api.minimax.chat"; model = value == "ElevenLabs" ? "eleven_multilingual_v2" : "speech-2.6-hd"; voiceID = ""; apiKey = ""; groupID = "" })) { Text("ElevenLabs").tag("ElevenLabs"); Text("MiniMax").tag("MiniMax") }
                 FormField(label: "API address", text: $baseURL)
                 Text("API key").font(.caption)
-                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 FormField(label: "Voice ID", text: $voiceID)
                 FormField(label: "Model", text: $model)
                 if provider == "MiniMax" { FormField(label: "Group ID (optional)", text: $groupID) }

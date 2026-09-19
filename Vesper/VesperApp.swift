@@ -6,10 +6,12 @@ import UserNotifications
     @StateObject private var store = AppStore()
     @StateObject private var player = MusicPlayer()
     @StateObject private var chat = ChatSession()
+    @AppStorage("vesperPalette") private var palette = "blue"
     var body: some Scene {
         WindowGroup {
-            RootView().environmentObject(store).environmentObject(player).environmentObject(chat)
-                .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(.light)
+            RootView().environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
+                .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
+                .onChange(of: palette) { _, value in ThemeIcons.apply(value) }
         }
     }
 }
@@ -38,6 +40,10 @@ struct RootView: View {
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
+    @AppStorage("navigationStyle") private var navigationStyle = "vesper"
+    @State private var nativeTab = 0
+    @State private var vesperPage: Destination = .desire
+    @State private var morePage: Destination = .settings
     @State private var acceptedCall = false
     @State private var opening = true
     @Environment(\.scenePhase) private var phase
@@ -47,29 +53,18 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack(alignment: .leading) {
-        NavigationStack {
-            ZStack {
-                Background()
-                if destination == .home {
-                    VStack(spacing: 0) { homeHeader; content }
-                } else { content }
-            }
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar(destination == .home || destination == .chat ? .hidden : .visible, for: .navigationBar)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
-                    ToolbarItem(placement: .principal) { Text(destination == .home ? "Vesper" : destination.rawValue).font(destination == .home ? VesperTheme.title(28) : .headline) }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        if destination != .music { Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.title2) }.accessibilityLabel("Settings") }
-                    }
+        Group {
+            if navigationStyle == "native" {
+                TabView(selection: $nativeTab) {
+                    shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
+                    NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+                    shell(nativeVesperDestination).tabItem { Label("Vesper", systemImage: "heart") }.tag(2)
+                    shell(.memory).tabItem { Label("Memory", systemImage: "brain.head.profile") }.tag(3)
+                    shell(nativeMoreDestination).tabItem { Label("More", systemImage: "ellipsis") }.tag(4)
+                }.onChange(of: nativeTab) { _, tab in
+                    destination = tab == 0 ? .home : tab == 1 ? .chat : tab == 2 ? nativeVesperDestination : tab == 3 ? .memory : nativeMoreDestination
                 }
-                .alert("Vesper", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
-                    Button("OK") { store.error = nil }
-                } message: { Text(store.error ?? "") }
-                .opacity(appeared ? 1 : 0)
-                .onAppear { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { appeared = true } }
-                .task { await store.refresh() }
-                .onChange(of: phase) { _, value in if value == .active { Task { await store.refresh() } } }
+            } else { shell(destination) }
         }
         .accessibilityHidden(sidebar || opening)
         if sidebar {
@@ -83,14 +78,15 @@ struct RootView: View {
                 ScrollView {
                     VStack(spacing: 3) {
                         ForEach(Destination.allCases) { item in
-                            Button { withAnimation { destination = item; sidebar = false } } label: {
+                            Button { withAnimation { navigate(item); sidebar = false } } label: {
                                 Label(item.rawValue, systemImage: item.icon).font(.system(size: 15)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).frame(minHeight: 44)
                                     .background(destination == item ? Color.gray.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 14))
                             }.accessibilityAddTraits(destination == item ? .isSelected : [])
                         }
-                        WeeklyUsageView().padding(.horizontal, 18).padding(.vertical, 12)
                     }.padding(.horizontal, 12)
                 }
+                Divider()
+                WeeklyUsageView().padding(.horizontal, 28).padding(.bottom, 12)
             }.padding(.top, 8).frame(width: 280).frame(maxHeight: .infinity)
                 .background(.regularMaterial).transition(.move(edge: .leading))
                 .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
@@ -98,26 +94,28 @@ struct RootView: View {
         }
         if opening { OpeningView { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { opening = false } }.transition(.opacity).zIndex(2) }
         }
+        .onChange(of: navigationStyle) { _, _ in navigate(destination); sidebar = false }
+        .onAppear { navigate(destination) }
         .overlay {
             if chat.incomingCall {
                 Color.black.opacity(0.18).ignoresSafeArea()
-                CallInvitation(accept: { chat.incomingCall = false; destination = .chat; acceptedCall = true }, decline: { chat.incomingCall = false })
+                CallInvitation(accept: { chat.incomingCall = false; navigate(.chat); acceptedCall = true }, decline: { chat.incomingCall = false })
                     .padding(28).transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
         .fullScreenCover(isPresented: $acceptedCall) { NativeCallView(initiator: "agent") }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
-            destination = .chat
-            Task { await chat.open(.object(["id": .string(id)])) }
+            navigate(.chat)
+            Task { await chat.open(.object(["id": .string(id)])); if let messageID = event.userInfo?["messageId"] as? String { await chat.reveal(messageID) } }
         }
          .task(id: store.token) { await refreshUsage() }
         .onChange(of: store.token) { _, _ in WidgetSync.clear() }
         .onOpenURL { url in
             guard url.scheme == "vesper" else { return }
             switch url.host {
-            case "desire": destination = .desire
-            case "notes": destination = .notes
+            case "desire": navigate(.desire)
+            case "notes": navigate(.notes)
             case "usage": sidebar = true; Task { await refreshUsage() }
             default: break
             }
@@ -155,13 +153,50 @@ struct RootView: View {
         .onChange(of: phase) { _, phase in if phase == .active { Task { await refreshUsage() } } }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
-    @ViewBuilder private var content: some View {
-        switch destination {
-        case .home: HomeView(navigate: { destination = $0 })
-        case .chat: ChatView(onMenu: { withAnimation { sidebar = true } })
+    private var nativeVesperDestination: Destination { vesperPage }
+    private var nativeMoreDestination: Destination { morePage }
+    private func navigate(_ page: Destination) {
+        destination = page
+        if [.desire, .journal, .notes, .dates, .music, .album].contains(page) { vesperPage = page }
+        if [.reminders, .pandora, .settings].contains(page) { morePage = page }
+        nativeTab = page == .home ? 0 : page == .chat ? 1 : page == .memory ? 3 : [.reminders, .pandora, .settings].contains(page) ? 4 : 2
+    }
+    private func shell(_ page: Destination) -> some View {
+        NavigationStack {
+            ZStack {
+                Background()
+                if page == .home && navigationStyle != "native" { VStack(spacing: 0) { homeHeader; content(page) } }
+                else { content(page) }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(page == .chat || (page == .home && navigationStyle != "native") ? .hidden : .visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if navigationStyle == "vesper" {
+                        Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
+                    } else if nativeTab == 2 || nativeTab == 4 {
+                        Menu {
+                            ForEach(Destination.allCases.filter { nativeTab == 2 ? [.desire, .journal, .notes, .dates, .music, .album].contains($0) : [.reminders, .pandora, .settings].contains($0) }) { item in
+                                Button { navigate(item) } label: { Label(item.rawValue, systemImage: item.icon) }
+                            }
+                        } label: { Image(systemName: "square.grid.2x2") }.accessibilityLabel("Pages")
+                    }
+                }
+                ToolbarItem(placement: .principal) { Text(page == .home ? "Vesper" : page.rawValue).font(.headline) }
+                ToolbarItem(placement: .topBarTrailing) { AppearancePicker() }
+            }
+        }
+        .alert("Vesper", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+            Button("OK") { store.error = nil }
+        } message: { Text(store.error ?? "") }
+    }
+    @ViewBuilder private func content(_ page: Destination) -> some View {
+        switch page {
+        case .home: HomeView(navigate: { navigate($0) })
+        case .chat: ChatView(onMenu: { withAnimation { sidebar = true } }, native: navigationStyle == "native")
         case .desire: DesireView()
         case .journal: JournalView()
-        case .notes: CollectionView(kind: .notes)
+        case .notes: NotesBoard()
         case .reminders: CollectionView(kind: .reminders)
         case .dates: CollectionView(kind: .dates)
         case .music: MusicView()
@@ -175,7 +210,7 @@ struct RootView: View {
         HStack {
             Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal").font(.system(size: 20)).frame(width: 44, height: 44) }.accessibilityLabel("Open sidebar")
             Spacer()
-            Text("Vesper").font(VesperTheme.title(27))
+            HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); Text("Vesper").font(VesperTheme.title(27)) }
             Spacer()
             Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.system(size: 25)).frame(width: 44, height: 44) }.accessibilityLabel("Settings")
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
@@ -191,25 +226,36 @@ struct OpeningView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visible = false
     @State private var ready = false
+    @State private var entering = false
+    @State private var curtainProgress = 0.0
+    @AppStorage("vesperPalette") private var palette = "blue"
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 Color(red: 0.92, green: 0.94, blue: 0.96)
-                Image("OpeningScene").resizable().scaledToFill()
+                Image(palette == "blue" ? "OpeningScene" : (VesperPalette(rawValue: palette) ?? .blue).background).resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped().opacity(visible ? 1 : 0)
+                TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion)) { timeline in
+                    CurtainFabric(progress: curtainProgress, time: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate, dark: palette == "black")
+                }
                 VStack(spacing: 12) {
                     Text("Vesper").font(VesperTheme.title(72))
                     Text("Somewhere we belong.").font(.system(size: 15, design: .serif).italic())
-                }.foregroundStyle(.white).shadow(color: .black.opacity(0.25), radius: 8)
-                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready ? 1 : 0)
-                VStack { Spacer(); Button(action: enter) {
+                }.foregroundStyle(VesperTheme.ink).shadow(color: .black.opacity(0.08), radius: 8)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready && !entering ? 1 : 0)
+                VStack { Spacer(); Button { entering = true } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
                         .background(.ultraThinMaterial, in: Capsule())
                         .overlay(Capsule().stroke(.white.opacity(0.7)))
-                }.buttonStyle(.plain).padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0).disabled(!ready) }
+                }.buttonStyle(.plain).padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0).disabled(!ready || entering) }
             }
-        }.ignoresSafeArea().task {
+        }.ignoresSafeArea().task(id: entering) {
+            guard entering else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 1.9)) { curtainProgress = 1 }
+            if !reduceMotion { do { try await Task.sleep(for: .milliseconds(1900)) } catch { return } }
+            guard !Task.isCancelled else { return }; enter()
+        }.task {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.85)) { visible = true }
             if !reduceMotion { try? await Task.sleep(for: .milliseconds(850)) }
             guard !Task.isCancelled else { return }

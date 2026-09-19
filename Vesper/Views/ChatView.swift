@@ -98,9 +98,24 @@ private struct AttachmentQuickLook: UIViewControllerRepresentable {
     }
 }
 
+final class ChatComposer: ObservableObject {
+    @Published var draft = ""
+    @Published var images: [Data] = []
+    @Published var files: [ChatFile] = []
+    @Published var pendingMusic: JSONValue?
+    private struct Draft { var text: String; var images: [Data]; var files: [ChatFile]; var music: JSONValue? }
+    private var saved: [String: Draft] = [:]
+    func switchConversation(from: String, to: String) {
+        guard from != to else { return }
+        saved[from] = Draft(text: draft, images: images, files: files, music: pendingMusic)
+        let next = saved[to]; draft = next?.text ?? ""; images = next?.images ?? []; files = next?.files ?? []; pendingMusic = next?.music
+    }
+}
+
 struct ChatView: View {
     var onMenu: () -> Void = {}
     var restoreLatest = true
+    var native = false
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var player: MusicPlayer
@@ -112,7 +127,8 @@ struct ChatView: View {
     @State private var avatarPicker = false
     @State private var avatarPhoto: PhotosPickerItem?
     @State private var savingAvatar = false
-    @State private var draft = ""
+    @EnvironmentObject private var draftStore: ChatComposer
+    private var draft: String { get { draftStore.draft } nonmutating set { draftStore.draft = newValue } }
     @State private var history = false
     @State private var historyTab = 0
     @State private var query = ""
@@ -127,7 +143,7 @@ struct ChatView: View {
     @State private var filePicker = false
     @State private var musicPicker = false
     @State private var stickerPicker = false
-    @State private var pendingMusic: JSONValue?
+    private var pendingMusic: JSONValue? { get { draftStore.pendingMusic } nonmutating set { draftStore.pendingMusic = newValue } }
     @State private var nearBottom = true
     @State private var followsLatest = true
     @State private var positionedConversationID: String?
@@ -138,16 +154,18 @@ struct ChatView: View {
     @State private var confirmNew = false
     @State private var deleting: JSONValue?
     @State private var selectedPhotos: [PhotosPickerItem] = []
-    @State private var images: [Data] = []
-    @State private var files: [ChatFile] = []
+    private var images: [Data] { get { draftStore.images } nonmutating set { draftStore.images = newValue } }
+    private var files: [ChatFile] { get { draftStore.files } nonmutating set { draftStore.files = newValue } }
     @State private var loadingPhotos = false
     @FocusState private var focused: Bool
     private var chatContent: some View {
         VStack(spacing: 0) {
             header
+            if !chat.memoryStatus.isEmpty { Text(chat.memoryStatus).font(.caption2).foregroundStyle(VesperTheme.muted).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
+                        if chat.hasOlderMessages { Button(chat.loadingOlder ? "Loading…" : "Load earlier messages") { followsLatest = false; Task { await chat.loadOlder() } }.disabled(chat.loadingOlder) }
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
                         ForEach(ChatPresentation.displayRows(chat.messages)) { row in
                             if let message = row.messages.first {
@@ -204,6 +222,10 @@ struct ChatView: View {
                         }
                     }
                 }
+                .onChange(of: chat.jumpMessageID) { _, id in
+                    guard let id else { return }; followsLatest = false
+                    Task { await Task.yield(); withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                }
                 .task(id: scrollUpdate) { await positionLatest(using: proxy) }
                 .onAppear {
                     positionedConversationID = nil
@@ -230,6 +252,10 @@ struct ChatView: View {
     }
     @MainActor private func positionLatest(using proxy: ScrollViewProxy) async {
         let conversationID = chat.conversationID
+        if let target = chat.jumpMessageID, chat.messages.contains(where: { $0.id == target }) {
+            followsLatest = false; positionedConversationID = conversationID
+            await Task.yield(); proxy.scrollTo(target, anchor: .center); return
+        }
         let firstPosition = positionedConversationID != conversationID
         let sentLocally = observedLocalMessageID != chat.latestLocalMessageID
         guard firstPosition || sentLocally || followsLatest else { return }
@@ -249,7 +275,7 @@ struct ChatView: View {
     }
     private var photoContent: some View {
         chatContent
-        .task { chat.configure(store); if restoreLatest { await chat.openLatestConversation() } }
+        .task { chat.configure(store); if restoreLatest { await chat.loadConversations(); if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() } } }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
         .onChange(of: voiceRecorder.error) { _, error in if let error { chat.error = error } }
@@ -373,13 +399,12 @@ struct ChatView: View {
     }
     private var header: some View {
         HStack(spacing: 5) {
-            Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
+            if !native { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
             Spacer()
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
-            Button { if draft.isEmpty && images.isEmpty && files.isEmpty { newChat() } else { confirmNew = true } } label: { Image(systemName: "plus") }.accessibilityLabel("New chat").disabled(chat.busy || chat.loadingModels)
-            Button { openCall() } label: { Image(systemName: "phone") }.accessibilityLabel("Call").disabled(chat.busy)
+            AppearancePicker()
             Button { focused = false; speech.stop(); history = true; Task { await chat.loadConversations() } } label: { Image(systemName: "archivebox") }.accessibilityLabel("Conversations and favorites")
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
     }
@@ -445,10 +470,11 @@ struct ChatView: View {
                         if user { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
                         Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message")
                         Button { Task { await favorite(message) } } label: { Image(systemName: isFavorite(message) ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(store.saving)
+                        Button { Task { await remember(message) } } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(chat.busy)
                         Button { deleting = message } label: { Image(systemName: "trash") }.accessibilityLabel("Delete message").disabled(chat.busy)
                     }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(.plain).padding(.vertical, 4)
                 }
-            }.frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+            }.padding(4).background(chat.jumpMessageID == message.id ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12)).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
             if !user { Spacer(minLength: 20) }
         }
     }
@@ -473,7 +499,7 @@ struct ChatView: View {
                 } } }
             }
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
-            TextField(speech.listening ? "Listening…" : "Write to Rowan…", text: $draft, axis: .vertical).lineLimit(1...5).focused($focused).font(.system(size: 16))
+            TextField(speech.listening ? "Listening…" : "Write to Rowan…", text: $draftStore.draft, axis: .vertical).lineLimit(1...5).focused($focused).font(.system(size: 16))
             HStack(spacing: 4) {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
@@ -496,7 +522,7 @@ struct ChatView: View {
         }.padding(20).background(.regularMaterial)
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
+        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
     }
     private var locationSheet: some View {
         NavigationStack { VStack(spacing: 20) {
@@ -521,9 +547,12 @@ struct ChatView: View {
                 Picker("Collection", selection: $historyTab) { Text("Conversations").tag(0); Text("Favorites").tag(1) }.pickerStyle(.segmented).padding(.horizontal)
                 List {
                     if historyTab == 0 {
+                        NavigationLink { ChatSearchView() { history = false } } label: { Label("Search all messages", systemImage: "magnifyingglass") }
+                        Button { Task { await chat.openMainRoom(); history = false } } label: { Label("Main room", systemImage: "house") }.disabled(chat.busy)
+                        Button { history = false; if draft.isEmpty && images.isEmpty && files.isEmpty { newChat() } else { confirmNew = true } } label: { Label("New Chat", systemImage: "plus") }.disabled(chat.busy || chat.loadingModels)
                         ForEach(chat.conversations.filter { query.isEmpty || $0["title"].string.localizedCaseInsensitiveContains(query) }) { item in
                             HStack {
-                                Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain)
+                                Button { Task { await chat.open(item); history = false } } label: { VStack(alignment: .leading) { Text(item["title"].string); Text(item["preview"].string).font(.caption).lineLimit(2); Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain)
                                 Menu {
                                     Button("Rename") { renameText = item["title"].string; renaming = item }
                                     Button("Delete", role: .destructive) { removingConversation = item }
@@ -550,6 +579,13 @@ struct ChatView: View {
                 Button("Delete conversation", role: .destructive) { if let item = removingConversation { Task { await chat.removeConversation(item) } }; removingConversation = nil }
             } message: { Text("This permanently deletes the conversation and cannot be undone.") }
         }.presentationDetents([.large])
+    }
+    private func remember(_ message: JSONValue) async {
+        do {
+            let source = try await store.api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(chat.conversationID), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "attachments": message["metadata"]["attachments"]]))
+            _ = try await store.api.request("/api/memory", method: "POST", body: .object(["action": .string("create_core"), "body": message["content"], "evidenceIds": .array([source["evidenceId"]])]))
+            chat.memoryStatus = "Saved to Memory with its original source."
+        } catch { chat.error = error.localizedDescription }
     }
     private func isFavorite(_ message: JSONValue) -> Bool { store.document("favorites").array.contains { $0["messageId"].string == message.id } }
     private func favorite(_ message: JSONValue) async {

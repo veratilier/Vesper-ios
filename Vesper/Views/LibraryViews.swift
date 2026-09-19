@@ -62,45 +62,6 @@ struct DesireView: View {
         } catch { status = error.localizedDescription }
     }
 }
-struct MemoryView: View {
-    @EnvironmentObject private var store: AppStore
-    @State private var items: [JSONValue] = []
-    @State private var search = ""
-    @State private var type = ""
-    @State private var status = ""
-    @State private var adding = false
-    @State private var text = ""
-    @State private var busy = false
-    var body: some View {
-        Page(title: "Memory", subtitle: "Things worth keeping close.") {
-            Picker("Type", selection: $type) { Text("All").tag(""); Text("Core").tag("core"); Text("Long-term").tag("long_term"); Text("Feelings").tag("feeling"); Text("Dreams").tag("dream") }.pickerStyle(.menu)
-            HStack { TextField("Search memories", text: $search).submitLabel(.search).onSubmit { Task { await load() } }; Button { Task { await load() } } label: { Image(systemName: "magnifyingglass") } }.padding(14).background(.regularMaterial, in: Capsule())
-            Button { adding = true } label: { Label("Add core memory", systemImage: "plus") }
-            if !status.isEmpty { Text(status).font(.caption) }
-            ForEach(items) { item in
-                GlassCard { VStack(alignment: .leading, spacing: 12) {
-                    HStack { Text(item["type"].string.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption).foregroundStyle(VesperTheme.muted); Spacer(); Button { Task { await pin(item) } } label: { Image(systemName: item["pinned"].bool ? "pin.fill" : "pin") }.disabled(busy) }
-                    Text(item["body"].string).font(.subheadline).textSelection(.enabled)
-                }}
-            }
-        }.task { await load() }.onChange(of: type) { _, _ in Task { await load() } }
-        .sheet(isPresented: $adding) {
-            EditorSheet(title: "Core memory", busy: busy, save: {
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                Task { busy = true; defer { busy = false }; do { _ = try await store.api.request("/api/memory", method: "POST", body: .object(["action": .string("create_core"), "body": .string(text)])); adding = false; text = ""; await load() } catch { store.error = error.localizedDescription } }
-            }) { FormField(label: "Memory", text: $text, multiline: true) }
-        }
-    }
-    private func load() async {
-        do { var query = URLComponents(); query.queryItems = [URLQueryItem(name: "q", value: search), URLQueryItem(name: "type", value: type)]; let r = try await store.api.request("/api/memory?" + (query.percentEncodedQuery ?? "")); items = r["memories"].array; status = items.isEmpty ? "No memories found." : "" }
-        catch { status = error.localizedDescription }
-    }
-    private func pin(_ item: JSONValue) async {
-        busy = true; defer { busy = false }
-        do { _ = try await store.api.request("/api/memory", method: "PATCH", body: .object(["id": .string(item.id), "action": .string("pin"), "pinned": .bool(!item["pinned"].bool)])); await load() }
-        catch { status = error.localizedDescription }
-    }
-}
 struct AlbumView: View {
     @EnvironmentObject private var store: AppStore
     @State private var photos: [JSONValue] = []
@@ -354,7 +315,7 @@ private struct MovieRoomView: View {
             .onChange(of: conversation.conversationID) { _, value in if !conversation.messages.isEmpty { conversationID = value } }
             .onChange(of: conversation.messages.count) { _, count in if count > 0 { conversationID = conversation.conversationID } }
             .sheet(isPresented: $chatOpen) {
-                NavigationStack { ChatView(onMenu: { chatOpen = false }, restoreLatest: false).environmentObject(conversation) }
+                NavigationStack { ChatView(onMenu: { chatOpen = false }, restoreLatest: false).environmentObject(conversation).environmentObject(conversation.composer) }
             }
             .fileImporter(isPresented: $fileOpen, allowedContentTypes: subtitleFile ? [.plainText, .data] : [.movie, .video]) { result in
                 do {

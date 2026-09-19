@@ -8,12 +8,12 @@ private struct DatePhotoBackground: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Color.white.opacity(0.82)
+                VesperTheme.surface
                 if let imageURL = URL(string: url), imageURL.scheme == "https" {
                     AsyncImage(url: imageURL) { image in
                         image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
                     } placeholder: { Color.clear }
-                    Color.white.opacity(0.42)
+                    (VesperTheme.palette == .black ? Color.black : Color.white).opacity(0.42)
                 }
             }
         }.clipped()
@@ -360,7 +360,7 @@ private struct DatesBoard: View {
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             Text(DateCounter.count(item).map(String.init) ?? "—").font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).frame(width: 78).frame(maxHeight: .infinity).background(DateCounter.color(item))
             Text("天").font(.subheadline).frame(width: 34).frame(maxHeight: .infinity).background(DateCounter.color(item).opacity(0.85))
-        }.foregroundStyle(VesperTheme.ink).frame(height: 60).background(.white.opacity(0.9))
+        }.foregroundStyle(VesperTheme.ink).frame(height: 60).background(VesperTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 8)).shadow(color: .black.opacity(0.05), radius: 2, y: 2)
     }
 }

@@ -210,8 +210,8 @@ private struct MemoryRelationGraph: View {
         .sheet(item: $selected) { item in NavigationStack { MemoryDetailView(memory: item).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selected = nil } } } } }
     }
     private func point(_ index: Int, count: Int, outer: Bool, size: CGSize) -> CGPoint {
-        let angle = Double(index) / Double(max(1, count)) * 2 * Double.pi - Double.pi / 2
-        let radius = min(size.width / 2 - 24, 138) * (outer ? 1 : 0.47)
-        return CGPoint(x: size.width/2 + cos(angle)*radius, y: size.height/2 + sin(angle)*radius)
+        let angle: Double = Double(index) / Double(max(1, count)) * 2 * Double.pi - Double.pi / 2
+        let radius: CGFloat = min(size.width / 2 - 24, 138) * (outer ? 1 : 0.47)
+        return CGPoint(x: size.width/2 + CGFloat(cos(angle))*radius, y: size.height/2 + CGFloat(sin(angle))*radius)
     }
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct NativeChatHome: View {
+    var onMenu: (() -> Void)? = nil
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
     @State private var open = false
@@ -24,14 +25,16 @@ struct NativeChatHome: View {
                 }
             }.scrollContentBackground(.hidden).background { Background() }
             .disabled(chat.busy || chat.callActive)
-            .navigationTitle("Chat").toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+            .navigationTitle("Chat").toolbar {
+                ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
+                ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
             .navigationDestination(isPresented: $open) {
                 ChatView(restoreLatest: false, native: true)
-                    .background { Background() }.navigationTitle("Chat").navigationBarTitleDisplayMode(.inline)
+                    .background { Background() }.toolbar(.hidden, for: .navigationBar)
             }
             .task {
                 chat.configure(store); await chat.loadConversations()
-                if !openedOnce { openedOnce = true; if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() }; open = true }
+                if !openedOnce { openedOnce = true }
             }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { _ in open = true }
         }
@@ -48,10 +51,12 @@ struct ChatSearchView: View {
     @State private var busy = false
     @State private var error = ""
     @State private var hasMore = false
+    @State private var searchNotice = ""
     var body: some View {
         List {
             Picker("Search in", selection: $scope) { Text("All chats").tag("All chats"); Text("This chat").tag("This chat") }.pickerStyle(.segmented)
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            if !searchNotice.isEmpty { Text(searchNotice).font(.caption).foregroundStyle(VesperTheme.muted) }
             if busy { ProgressView() }
             ForEach(results) { message in
                 Button { Task {
@@ -79,13 +84,40 @@ struct ChatSearchView: View {
     }
     private func search(more: Bool = false) async {
         guard !busy else { return }; busy = true; defer { busy = false }
-        let requested = query
+        let requested = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requested.isEmpty else { results = []; hasMore = false; error = ""; searchNotice = ""; return }
+        let requestedScope = scope
         do {
             var params = URLComponents(); params.queryItems = [URLQueryItem(name: "q", value: requested), URLQueryItem(name: "conversationId", value: scope == "This chat" ? chat.conversationID : ""), URLQueryItem(name: "offset", value: String(more ? results.count : 0))]
             let response = try await store.api.request("/search?" + (params.percentEncodedQuery ?? ""), history: true)
-            guard requested == query else { return }
+            guard requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
             results = more ? results + response["results"].array : response["results"].array
-            hasMore = response["hasMore"].bool; error = ""
+            hasMore = response["hasMore"].bool; error = ""; searchNotice = ""
+        } catch let failure as ServiceError where failure.statusCode == 404 {
+            await legacySearch(requested, scope: requestedScope)
         } catch { self.error = error.localizedDescription }
+    }
+    private func legacySearch(_ requested: String, scope requestedScope: String) async {
+        do {
+            let response = try await store.api.request("/conversations", history: true)
+            let conversations = response["conversations"].array.filter { requestedScope != "This chat" || $0.id == chat.conversationID }
+            var matches: [JSONValue] = []
+            var limited = false
+            for conversation in conversations {
+                guard requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
+                let page = try await store.api.request("/conversations/" + conversation.id, history: true)
+                let messages = page["messages"].array
+                if messages.count >= 1000 || page["hasMore"].bool { limited = true }
+                for message in messages where message["content"].string.localizedCaseInsensitiveContains(requested) {
+                    var fields = message.object
+                    fields["conversationId"] = .string(conversation.id)
+                    fields["title"] = conversation["title"]
+                    matches.append(.object(fields))
+                }
+            }
+            guard requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
+            results = matches; hasMore = false; error = ""
+            searchNotice = limited ? "Compatibility search: the server may return only the first 1,000 messages per chat. Update the history service for complete search." : "Compatibility search of saved chats. Update the history service to enable the dedicated search endpoint."
+        } catch { self.error = "Could not search saved history: " + error.localizedDescription }
     }
 }

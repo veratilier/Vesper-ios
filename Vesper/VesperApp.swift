@@ -42,8 +42,8 @@ struct RootView: View {
     @EnvironmentObject private var chat: ChatSession
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     @State private var nativeTab = 0
+    @State private var libraryPath: [Destination] = []
     @State private var vesperPage: Destination = .desire
-    @State private var morePage: Destination = .settings
     @State private var acceptedCall = false
     @State private var opening = true
     @Environment(\.scenePhase) private var phase
@@ -52,24 +52,49 @@ struct RootView: View {
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder private var navigationSurface: some View {
-        if navigationStyle == "native" { nativeTabs } else { shell(destination) }
+        if navigationStyle == "native" { nativeTabs }
+        else if destination == .chat { NativeChatHome(onMenu: { sidebar = true }) }
+        else { shell(destination) }
     }
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
                     NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
-                    shell(nativeVesperDestination).tabItem { Label("Vesper", systemImage: "heart") }.tag(2)
-                    shell(.memory).tabItem { Label("Memory", systemImage: "brain.head.profile") }.tag(3)
-                    shell(nativeMoreDestination).tabItem { Label("More", systemImage: "ellipsis") }.tag(4)
+                    appLibrary.tabItem { Label("Vesper", systemImage: "heart") }.tag(2)
+                    shell(.journal).tabItem { Label("Journal", systemImage: "book.closed") }.tag(3)
+                    shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
                 }.onChange(of: nativeTab) { _, tab in
                     switch tab {
                     case 0: destination = .home
                     case 1: destination = .chat
                     case 2: destination = nativeVesperDestination
-                    case 3: destination = .memory
-                    default: destination = nativeMoreDestination
+                    case 3: destination = .journal
+                    default: destination = .settings
                     }
                 }
+    }
+    private var appLibrary: some View {
+        NavigationStack(path: $libraryPath) {
+            ZStack {
+                Background()
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                        ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .pandora]) { page in
+                            NavigationLink(value: page) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(page.rawValue).font(.headline)
+                                    Spacer(minLength: 12)
+                                    HStack { Image(systemName: page.icon).font(.system(size: 28)).foregroundStyle(VesperTheme.muted); Spacer(); Image(systemName: "chevron.right").font(.caption) }
+                                }.padding(20).frame(maxWidth: .infinity, minHeight: 138, alignment: .leading)
+                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+                            }.buttonStyle(.plain)
+                        }
+                    }.padding(18)
+                }
+            }.navigationTitle("Vesper")
+                .navigationDestination(for: Destination.self) { page in content(page).background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+        }
     }
     private var sidebarPanel: some View {
             VStack(alignment: .leading, spacing: 12) {
@@ -171,12 +196,17 @@ struct RootView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
     private var nativeVesperDestination: Destination { vesperPage }
-    private var nativeMoreDestination: Destination { morePage }
     private func navigate(_ page: Destination) {
         destination = page
+        if ![.home, .chat, .journal, .settings].contains(page) { libraryPath = [page] }
         if [.desire, .journal, .notes, .dates, .music, .album].contains(page) { vesperPage = page }
-        if [.reminders, .pandora, .settings].contains(page) { morePage = page }
-        nativeTab = page == .home ? 0 : page == .chat ? 1 : page == .memory ? 3 : [.reminders, .pandora, .settings].contains(page) ? 4 : 2
+        switch page {
+        case .home: nativeTab = 0
+        case .chat: nativeTab = 1
+        case .journal: nativeTab = 3
+        case .settings: nativeTab = 4
+        default: nativeTab = 2
+        }
     }
     private func shell(_ page: Destination) -> some View {
         NavigationStack {
@@ -191,12 +221,6 @@ struct RootView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     if navigationStyle == "vesper" {
                         Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
-                    } else if nativeTab == 2 || nativeTab == 4 {
-                        Menu {
-                            ForEach(Destination.allCases.filter { nativeTab == 2 ? [.desire, .journal, .notes, .dates, .music, .album].contains($0) : [.reminders, .pandora, .settings].contains($0) }) { item in
-                                Button { navigate(item) } label: { Label(item.rawValue, systemImage: item.icon) }
-                            }
-                        } label: { Image(systemName: "square.grid.2x2") }.accessibilityLabel("Pages")
                     }
                 }
                 ToolbarItem(placement: .principal) { Text(page == .home ? "Vesper" : page.rawValue).font(.headline) }
@@ -229,7 +253,7 @@ struct RootView: View {
             Spacer()
             HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); Text("Vesper").font(VesperTheme.title(27)) }
             Spacer()
-            Button { destination = .settings } label: { Image(systemName: "person.crop.circle").font(.system(size: 25)).frame(width: 44, height: 44) }.accessibilityLabel("Settings")
+            AppearancePicker().frame(width: 44, height: 44)
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
     }
     private func refreshUsage() async {

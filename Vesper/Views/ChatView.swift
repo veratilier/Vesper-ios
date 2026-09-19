@@ -160,7 +160,7 @@ struct ChatView: View {
     @FocusState private var focused: Bool
     private var chatContent: some View {
         VStack(spacing: 0) {
-            header
+            header.background(.regularMaterial).zIndex(1)
             if !chat.memoryStatus.isEmpty { Text(chat.memoryStatus).font(.caption2).foregroundStyle(VesperTheme.muted).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -397,9 +397,11 @@ struct ChatView: View {
         }
         .alert("Chat", isPresented: Binding(get: { chat.error != nil }, set: { if !$0 { chat.error = nil } })) { Button("OK") { chat.error = nil } } message: { Text(chat.error ?? "") }
     }
+    @Environment(\.dismiss) private var dismissChat
     private var header: some View {
         HStack(spacing: 5) {
-            if !native { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
+            if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
+            else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
             Spacer()
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)

@@ -51,10 +51,10 @@ struct RootView: View {
     @State private var sidebar = false
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var scene: some View {
-        ZStack(alignment: .leading) {
-        Group {
-            if navigationStyle == "native" {
+    @ViewBuilder private var navigationSurface: some View {
+        if navigationStyle == "native" { nativeTabs } else { shell(destination) }
+    }
+    private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
                     NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
@@ -62,13 +62,16 @@ struct RootView: View {
                     shell(.memory).tabItem { Label("Memory", systemImage: "brain.head.profile") }.tag(3)
                     shell(nativeMoreDestination).tabItem { Label("More", systemImage: "ellipsis") }.tag(4)
                 }.onChange(of: nativeTab) { _, tab in
-                    destination = tab == 0 ? .home : tab == 1 ? .chat : tab == 2 ? nativeVesperDestination : tab == 3 ? .memory : nativeMoreDestination
+                    switch tab {
+                    case 0: destination = .home
+                    case 1: destination = .chat
+                    case 2: destination = nativeVesperDestination
+                    case 3: destination = .memory
+                    default: destination = nativeMoreDestination
+                    }
                 }
-            } else { shell(destination) }
-        }
-        .accessibilityHidden(sidebar || opening)
-        if sidebar {
-            Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { withAnimation { sidebar = false } }.accessibilityLabel("Close sidebar").accessibilityAddTraits(.isButton)
+    }
+    private var sidebarPanel: some View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("Vesper").font(VesperTheme.title(32))
@@ -91,6 +94,14 @@ struct RootView: View {
                 .background(.regularMaterial).transition(.move(edge: .leading))
                 .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
                 .accessibilityAddTraits(.isModal)
+    }
+    private var scene: some View {
+        ZStack(alignment: .leading) {
+        navigationSurface
+        .accessibilityHidden(sidebar || opening)
+        if sidebar {
+            Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { withAnimation { sidebar = false } }.accessibilityLabel("Close sidebar").accessibilityAddTraits(.isButton)
+            sidebarPanel
         }
         if opening { OpeningView { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { opening = false } }.transition(.opacity).zIndex(2) }
         }

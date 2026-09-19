@@ -51,7 +51,7 @@ struct RootView: View {
     @State private var sidebar = false
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
+    private var scene: some View {
         ZStack(alignment: .leading) {
         Group {
             if navigationStyle == "native" {
@@ -104,6 +104,9 @@ struct RootView: View {
             }
         }
         .fullScreenCover(isPresented: $acceptedCall) { NativeCallView(initiator: "agent") }
+    }
+    private var lifecycle: some View {
+        scene
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
             navigate(.chat)
@@ -140,6 +143,9 @@ struct RootView: View {
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }
             }
         }
+    }
+    var body: some View {
+        lifecycle
         .task(id: sidebar) {
             guard sidebar else { return }
             while !Task.isCancelled {

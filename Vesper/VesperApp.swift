@@ -287,7 +287,7 @@ struct OpeningView: View {
                     Text("Vesper").font(VesperTheme.title(72))
                     Text("Somewhere we belong.").font(.system(size: 15, design: .serif).italic())
                 }.foregroundStyle(VesperTheme.ink).shadow(color: .black.opacity(0.08), radius: 8)
-                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready && !entering ? 1 : 0)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready ? 1 : 0)
                 VStack { Spacer(); Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)

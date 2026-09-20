@@ -157,8 +157,8 @@ import AVFoundation
                     // Recover a stale pointer only after a confirmed missing record.
                 }
             }
-            let response = try await store.api.request("/conversations", history: true)
-            conversations = response["conversations"].array
+            let listing = try await store.api.request("/conversations", history: true)
+            conversations = listing["conversations"].array
             if let room = conversations.first(where: { $0.id != id }) {
                 try await loadConversation(room.id)
             } else {

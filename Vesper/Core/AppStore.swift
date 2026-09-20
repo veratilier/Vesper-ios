@@ -26,12 +26,16 @@ import SwiftUI
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
+    private var documentRevision = 0
     func refresh() async {
-        guard !loading, !token.isEmpty else { return }
+        guard !loading, !saving, !token.isEmpty else { return }
+        let revision = documentRevision
         loading = true; defer { loading = false }
         do {
             let result = try await api.request("/api/state")
             guard case .object(let docs) = result["documents"] else { throw ServiceError(message: "Invalid document response.") }
+            // A read started before a save must never replace the saved document.
+            guard revision == documentRevision, !saving else { return }
             documents = docs.mapValues { $0["value"] }; connected = true
             WidgetSync.notes(document("notes"))
         } catch { self.error = error.localizedDescription; connected = false }
@@ -47,14 +51,20 @@ import SwiftUI
         if saveWaiters.isEmpty { saving = false }
         else { saveWaiters.removeFirst().resume() }
     }
-    func mutate(_ key: String, reportErrors: Bool = true, change: (JSONValue) throws -> JSONValue) async -> Bool {
+    func mutate(_ key: String, reportErrors: Bool = true, verifySavedValue: Bool = false, change: (JSONValue) throws -> JSONValue) async -> Bool {
         await acquireSave()
-        defer { releaseSave() }
+        documentRevision += 1
+        defer { documentRevision += 1; releaseSave() }
         guard !Task.isCancelled else { return false }
         do {
             let latest = try await api.request("/api/state?key=\(key)")
             let value = try change(latest["value"])
-            _ = try await api.request("/api/state", method: "PUT", body: .object(["key": .string(key), "value": value]))
+            let receipt = try await api.request("/api/state", method: "PUT", body: .object(["key": .string(key), "value": value]))
+            guard receipt["ok"].bool else { throw ServiceError(message: "The server did not confirm this save.") }
+            if verifySavedValue {
+                let saved = try await api.request("/api/state?key=\(key)")
+                guard saved["value"] == value else { throw ServiceError(message: "The saved profile could not be verified. Please try changing the avatar again.") }
+            }
             documents[key] = value; if key == "notes" { WidgetSync.notes(value) }; return true
         } catch { if reportErrors { self.error = error.localizedDescription }; return false }
     }

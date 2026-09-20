@@ -6,6 +6,8 @@ struct NativeChatHome: View {
     @EnvironmentObject private var store: AppStore
     @State private var open = false
     @State private var openedOnce = false
+    @State private var deletingConversation: JSONValue?
+    @State private var deleting = false
     var body: some View {
         NavigationStack {
             List {
@@ -21,10 +23,16 @@ struct NativeChatHome: View {
                                 Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
                             }
                         }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { deletingConversation = item } label: { Label("Delete", systemImage: "trash") }
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) { deletingConversation = item } label: { Label("Delete conversation", systemImage: "trash") }
+                        }
                     }
                 }
             }.scrollContentBackground(.hidden).background { Background() }
-            .disabled(chat.busy || chat.callActive)
+            .disabled(chat.busy || chat.callActive || deleting)
             .navigationTitle("Chat").toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
@@ -37,6 +45,23 @@ struct NativeChatHome: View {
                 if !openedOnce { openedOnce = true }
             }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { _ in open = true }
+            .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
+                Button("Delete conversation", role: .destructive) {
+                    guard let item = deletingConversation else { return }
+                    deletingConversation = nil
+                    deleting = true
+                    Task {
+                        defer { deleting = false }
+                        await chat.removeConversation(item)
+                    }
+                }
+                Button("Cancel", role: .cancel) { deletingConversation = nil }
+            } message: {
+                Text("This permanently deletes the conversation and cannot be undone.")
+            }
+            .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
+                Button("OK") { chat.error = nil }
+            } message: { Text(chat.error ?? "") }
         }
     }
 }

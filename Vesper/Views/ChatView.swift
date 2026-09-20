@@ -160,7 +160,7 @@ struct ChatView: View {
     @FocusState private var focused: Bool
     private var chatContent: some View {
         VStack(spacing: 0) {
-            header.background(.regularMaterial).zIndex(1)
+            header.zIndex(1)
             if !chat.memoryStatus.isEmpty { Text(chat.memoryStatus).font(.caption2).foregroundStyle(VesperTheme.muted).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -294,7 +294,7 @@ struct ChatView: View {
                     let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
                     let resized = UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
                     guard let jpeg = resized.jpegData(compressionQuality: 0.85) else { throw ServiceError(message: "Could not prepare this photo.") }
-                    let saved = await store.mutate("profile") { current in
+                    let saved = await store.mutate("profile", verifySavedValue: true) { current in
                         var profile = current
                         profile["\(role)Avatar"] = .string("data:image/jpeg;base64," + jpeg.base64EncodedString())
                         return profile
@@ -407,7 +407,6 @@ struct ChatView: View {
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
             AppearancePicker()
-            Button { focused = false; speech.stop(); history = true; Task { await chat.loadConversations() } } label: { Image(systemName: "archivebox") }.accessibilityLabel("Conversations and favorites")
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
     }
     private func profileAvatar(_ role: String, fallbackName: String) -> some View {

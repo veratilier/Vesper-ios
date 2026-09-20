@@ -137,10 +137,16 @@ import AVFoundation
         do { try await loadConversation(conversation.id); return true }
         catch {
             if (error as? ServiceError)?.statusCode == 404 {
-                conversations.removeAll { $0.id == conversation.id }
-                self.error = "This conversation is no longer available. Please choose another chat."
+                self.error = "Could not load this conversation (HTTP 404). This does not confirm deletion. The conversation remains in your list. Check the history service."
             } else { self.error = error.localizedDescription }
             return false
+        }
+    }
+    static func validateHistoryRecord(_ response: JSONValue, expectedID: String) throws {
+        let record = response["conversation"]
+        let returnedID = record["vesperConversationId"].string.isEmpty ? record["id"].string : record["vesperConversationId"].string
+        guard !expectedID.isEmpty, returnedID == expectedID else {
+            throw ServiceError(message: "The history service did not return the requested conversation. Your current chat and draft have been kept.")
         }
     }
     private func loadConversation(_ id: String) async throws {
@@ -149,6 +155,7 @@ import AVFoundation
         defer { busy = false }
         // Validate the record before discarding the current chat or its draft.
         let r = try await api.request("/conversations/\(id)?latest=1&limit=200", history: true)
+        try Self.validateHistoryRecord(r, expectedID: id)
         composer.switchConversation(from: conversationID, to: id)
         disconnect(); conversationID = id; threadID = nil; turnID = nil
         jumpMessageID = nil; events = []; thinkingSummary = ""
@@ -181,8 +188,9 @@ import AVFoundation
             let id = response["value"]["mainConversationId"].string
             if !id.isEmpty {
                 do { try await loadConversation(id); return true }
-                catch let failure as ServiceError where failure.statusCode == 404 {
-                    // Recover a stale pointer only after a confirmed missing record.
+                catch {
+                    // A route-level 404 or connection failure does not prove the room was deleted.
+                    throw error
                 }
             }
             let listing = try await store.api.request("/conversations", history: true)

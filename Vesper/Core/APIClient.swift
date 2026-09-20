@@ -70,7 +70,20 @@ struct APIClient {
         r.cachePolicy = .reloadIgnoringLocalCacheData
         r.setValue(history ? "Bearer \(token)" : token, forHTTPHeaderField: history ? "Authorization" : "x-vesper-device-token")
         if let body { r.httpBody = try JSONEncoder().encode(body); r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        let (data, response) = try await URLSession.shared.data(for: r)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: r)
+        } catch let failure as URLError {
+            switch failure.code {
+            case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                 .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+                 .clientCertificateRejected, .clientCertificateRequired:
+                throw ServiceError(message: "Secure connection to \(url.host ?? "the server") failed (TLS, code \(failure.code.rawValue)). Check the server certificate and the device network/VPN. This does not confirm that any conversation was deleted.")
+            default:
+                throw failure
+            }
+        }
         let value = (try? JSONDecoder().decode(JSONValue.self, from: data)) ?? .null
         guard let response = response as? HTTPURLResponse else { throw ServiceError(message: "No HTTP response from the server.") }
         guard (200..<300).contains(response.statusCode) else {

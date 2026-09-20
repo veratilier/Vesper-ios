@@ -4,6 +4,13 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    @MainActor func testHistoryRecordMustMatchBeforeSwitchingChat() throws {
+        XCTAssertThrowsError(try ChatSession.validateHistoryRecord(.object(["conversation": .null]), expectedID: "wanted"))
+        XCTAssertThrowsError(try ChatSession.validateHistoryRecord(.object(["conversation": .object(["id": .string("other")])]), expectedID: "wanted"))
+        XCTAssertNoThrow(try ChatSession.validateHistoryRecord(.object(["conversation": .object(["id": .string("wanted")])]), expectedID: "wanted"))
+        XCTAssertNoThrow(try ChatSession.validateHistoryRecord(.object(["conversation": .object(["vesperConversationId": .string("wanted")])]), expectedID: "wanted"))
+    }
+
     @MainActor func testUnplayableSelectionDoesNotLeavePreviousSongMetadata() {
         let player = MusicPlayer()
         let first: JSONValue = .object(["id": .string("first"), "title": .string("First")])

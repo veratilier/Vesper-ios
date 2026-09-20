@@ -60,7 +60,7 @@ struct RootView: View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
                     NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
-                    appLibrary.tabItem { Label("Vesper", systemImage: "heart") }.tag(2)
+                    appLibrary.tabItem { Label("Vesper", systemImage: "square.grid.2x2").environment(\.symbolVariants, .none) }.tag(2)
                     shell(.journal).tabItem { Label("Journal", systemImage: "book.closed") }.tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
                 }.onChange(of: nativeTab) { _, tab in

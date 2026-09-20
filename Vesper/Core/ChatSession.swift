@@ -102,45 +102,80 @@ import AVFoundation
             await loadConversations()
         } catch { self.error = error.localizedDescription }
     }
-    func open(_ conversation: JSONValue) async {
-        guard !busy, let api else { return }
-        composer.switchConversation(from: conversationID, to: conversation.id)
-        jumpMessageID = nil
-        disconnect(); conversationID = conversation.id; threadID = nil; messages = []; events = []; thinkingSummary = ""; tombstones = []
+    @discardableResult
+    func open(_ conversation: JSONValue) async -> Bool {
+        guard !busy, !callActive, !openingMainRoom else { return false }
+        self.error = nil
+        do { try await loadConversation(conversation.id); return true }
+        catch {
+            if (error as? ServiceError)?.statusCode == 404 {
+                conversations.removeAll { $0.id == conversation.id }
+                self.error = "This conversation is no longer available. Please choose another chat."
+            } else { self.error = error.localizedDescription }
+            return false
+        }
+    }
+    private func loadConversation(_ id: String) async throws {
+        guard let api, !id.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         busy = true
         defer { busy = false }
-        do {
-            let r = try await api.request("/conversations/\(conversationID)?latest=1&limit=200", history: true)
-            let t = r["conversation"]["codexThreadId"].string
-            threadID = t.isEmpty ? nil : t
-            tombstones = r["tombstones"].array
-            messages = r["messages"].array
-            hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
-            status = "History loaded"
-            if let threadID {
-                do {
-                    try await connect()
-                    let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
-                    messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
-                    status = "History loaded"
-                } catch {
-                    self.error = "Saved history is visible, but the full conversation could not be loaded: " + error.localizedDescription
-                }
+        // Validate the record before discarding the current chat or its draft.
+        let r = try await api.request("/conversations/\(id)?latest=1&limit=200", history: true)
+        composer.switchConversation(from: conversationID, to: id)
+        disconnect(); conversationID = id; threadID = nil; turnID = nil
+        jumpMessageID = nil; events = []; thinkingSummary = ""
+        let t = r["conversation"]["codexThreadId"].string
+        threadID = t.isEmpty ? nil : t
+        tombstones = r["tombstones"].array
+        messages = r["messages"].array
+        hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
+        status = "History loaded"
+        if let threadID {
+            do {
+                try await connect()
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
+                messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+            } catch {
+                self.error = "Saved history is visible, but the full conversation could not be loaded: " + error.localizedDescription
             }
-        } catch { self.error = error.localizedDescription }
+        }
     }
-    func openMainRoom() async {
-        guard !busy, let store = appStore else { return }
+    @Published private(set) var openingMainRoom = false
+    @discardableResult
+    func openMainRoom() async -> Bool {
+        guard !busy, !callActive, !openingMainRoom, let store = appStore else { return false }
+        openingMainRoom = true
+        defer { openingMainRoom = false }
+        self.error = nil
         do {
             let response = try await store.api.request("/api/state?key=profile")
-            store.documents["profile"] = response["value"]
-        } catch { self.error = error.localizedDescription; return }
-        let id = store.document("profile")["mainConversationId"].string
-        if !id.isEmpty { await open(.object(["id": .string(id)])); return }
-        if messages.isEmpty && !conversations.isEmpty { await open(conversations[0]) }
-        if messages.isEmpty && !conversations.contains(where: { $0.id == conversationID }) { guard await createConversation() else { return } }
-        let roomID = conversationID
-        _ = await store.mutate("profile") { document in var next = document; if next["mainConversationId"].string.isEmpty { next["mainConversationId"] = .string(roomID) }; return next }
+            // This read is only for the room pointer; never overwrite a newer avatar save.
+            let id = response["value"]["mainConversationId"].string
+            if !id.isEmpty {
+                do { try await loadConversation(id); return true }
+                catch let failure as ServiceError where failure.statusCode == 404 {
+                    // Recover a stale pointer only after a confirmed missing record.
+                }
+            }
+            let response = try await store.api.request("/conversations", history: true)
+            conversations = response["conversations"].array
+            if let room = conversations.first(where: { $0.id != id }) {
+                try await loadConversation(room.id)
+            } else {
+                guard await createConversation() else { return false }
+            }
+            let roomID = conversationID
+            let saved = await store.mutate("profile") { document in
+                var next = document
+                let current = next["mainConversationId"].string
+                guard current.isEmpty || current == id else {
+                    throw ServiceError(message: "Main room changed on another device. Please open it again.")
+                }
+                next["mainConversationId"] = .string(roomID)
+                return next
+            }
+            return saved
+        } catch { self.error = error.localizedDescription; return false }
     }
     func loadOlder() async {
         guard !loadingOlder, hasOlderMessages, let api else { return }

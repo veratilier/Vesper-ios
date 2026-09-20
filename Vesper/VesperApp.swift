@@ -91,8 +91,8 @@ struct RootView: View {
                         }
                     }.padding(18)
                 }
-            }.navigationTitle("Vesper")
-                .navigationDestination(for: Destination.self) { page in content(page).background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
+            }.transparentNavigationTop().navigationTitle("Vesper")
+                .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
         }
     }
@@ -146,7 +146,12 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
             navigate(.chat)
-            Task { await chat.open(.object(["id": .string(id)])); if let messageID = event.userInfo?["messageId"] as? String { await chat.reveal(messageID) } }
+            Task {
+                chat.configure(store)
+                guard await chat.open(.object(["id": .string(id)])) else { return }
+                if let messageID = event.userInfo?["messageId"] as? String { await chat.reveal(messageID) }
+                NotificationCenter.default.post(name: .init("VesperConversationOpened"), object: nil)
+            }
         }
          .task(id: store.token) { await refreshUsage() }
         .onChange(of: store.token) { _, _ in WidgetSync.clear() }
@@ -215,6 +220,7 @@ struct RootView: View {
                 if page == .home && navigationStyle != "native" { VStack(spacing: 0) { homeHeader; content(page) } }
                 else { content(page) }
             }
+            .transparentNavigationTop()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(page == .chat || (page == .home && navigationStyle != "native") ? .hidden : .visible, for: .navigationBar)
             .toolbar {

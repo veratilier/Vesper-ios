@@ -137,3 +137,19 @@ struct EditorSheet<Content: View>: View {
         }
     }
 }
+
+extension View {
+    /// Keep the wallpaper visible behind top navigation, including the iOS 26 scroll edge.
+    @ViewBuilder func transparentNavigationTop() -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.toolbarBackground(.hidden, for: .navigationBar)
+                .scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            self.toolbarBackground(.hidden, for: .navigationBar)
+        }
+        #else
+        self.toolbarBackground(.hidden, for: .navigationBar)
+        #endif
+    }
+}

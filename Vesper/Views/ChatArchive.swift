@@ -11,12 +11,12 @@ struct NativeChatHome: View {
     var body: some View {
         NavigationStack {
             List {
-                Button { Task { await chat.openMainRoom(); open = true } } label: { Label("Main room", systemImage: "house") }
+                Button { Task { if await chat.openMainRoom() { open = true } } } label: { Label("Main room", systemImage: "house") }
                 Button { Task { if await chat.createConversation() { open = true } } } label: { Label("New Chat", systemImage: "plus") }
                 NavigationLink { ChatSearchView { open = true } } label: { Label("Search messages", systemImage: "magnifyingglass") }
                 Section("Conversations") {
                     ForEach(chat.conversations) { item in
-                        Button { Task { await chat.open(item); open = true } } label: {
+                        Button { Task { if await chat.open(item) { open = true } } } label: {
                             VStack(alignment: .leading, spacing: 7) {
                                 Text(item["title"].string).font(.headline)
                                 Text(item["preview"].string).lineLimit(2).font(.subheadline)
@@ -31,8 +31,8 @@ struct NativeChatHome: View {
                         }
                     }
                 }
-            }.scrollContentBackground(.hidden).background { Background() }
-            .disabled(chat.busy || chat.callActive || deleting)
+            }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
+            .disabled(chat.busy || chat.openingMainRoom || chat.callActive || deleting)
             .navigationTitle("Chat").toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
@@ -44,7 +44,7 @@ struct NativeChatHome: View {
                 chat.configure(store); await chat.loadConversations()
                 if !openedOnce { openedOnce = true }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { _ in open = true }
+            .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
             .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) {
                     guard let item = deletingConversation else { return }
@@ -85,7 +85,9 @@ struct ChatSearchView: View {
             if busy { ProgressView() }
             ForEach(results) { message in
                 Button { Task {
-                    if chat.conversationID != message["conversationId"].string { await chat.open(.object(["id": message["conversationId"]])) }
+                    if chat.conversationID != message["conversationId"].string {
+                        guard await chat.open(.object(["id": message["conversationId"]])) else { error = chat.error ?? "Could not open this conversation."; chat.error = nil; return }
+                    }
                     await chat.reveal(message.id); dismiss(); selected()
                 } } label: {
                     VStack(alignment: .leading, spacing: 8) {
@@ -97,7 +99,7 @@ struct ChatSearchView: View {
             }
             if hasMore { Button("More results") { Task { await search(more: true) } }.disabled(busy) }
             if !busy && results.isEmpty && !query.isEmpty && error.isEmpty { Text("No matching messages.").foregroundStyle(VesperTheme.muted) }
-        }.scrollContentBackground(.hidden).background { Background() }.navigationTitle("Search")
+        }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }.navigationTitle("Search")
         .searchable(text: $query, prompt: "Words from a conversation")
         .onSubmit(of: .search) { Task { await search() } }
         .onChange(of: scope) { _, _ in Task { await search() } }

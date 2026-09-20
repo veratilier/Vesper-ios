@@ -93,14 +93,42 @@ import AVFoundation
     }
     func removeConversation(_ item: JSONValue) async {
         guard !busy, !callActive, let api else { return }
+        let receipt: JSONValue
         do {
-            _ = try await api.request("/conversations/\(item.id)", method: "DELETE", history: true)
-            if conversationID == item.id { newConversation() }
-            if let store = appStore, store.document("profile")["mainConversationId"].string == item.id {
-                _ = await store.mutate("profile") { document in var next = document; next["mainConversationId"] = .null; return next }
+            receipt = try await api.request("/conversations/\(item.id)", method: "DELETE", history: true)
+        } catch {
+            self.error = "Deletion could not be confirmed. Refresh the list before trying again.\n" + error.localizedDescription
+            return
+        }
+        guard receipt["ok"].bool else {
+            self.error = "The server did not confirm deletion. Refresh the conversation list."
+            return
+        }
+        // A legacy server only archives; do not describe that as permanent deletion.
+        let permanentlyDeleted = receipt["permanent"].bool
+        guard permanentlyDeleted || receipt["archived"] != .null || receipt["deleted"] != .null else {
+            self.error = "The server returned an unrecognized deletion result. Refresh the conversation list."
+            return
+        }
+        conversations.removeAll { $0.id == item.id }
+        if conversationID == item.id { newConversation() }
+        if let store = appStore, store.document("profile")["mainConversationId"].string == item.id {
+            _ = await store.mutate("profile") { document in
+                var next = document
+                if next["mainConversationId"].string == item.id { next["mainConversationId"] = .null }
+                return next
             }
-            await loadConversations()
-        } catch { self.error = error.localizedDescription }
+        }
+        do {
+            let listing = try await api.request("/conversations", history: true)
+            conversations = listing["conversations"].array.filter { $0.id != item.id }
+            if !permanentlyDeleted {
+                self.error = "The server removed this conversation from the list but did not confirm permanent deletion. Update the history service."
+            }
+        } catch {
+            self.error = (permanentlyDeleted ? "Conversation deleted." : "Conversation removed from the list; permanent deletion was not confirmed.")
+                + " The list could not refresh.\n" + error.localizedDescription
+        }
     }
     @discardableResult
     func open(_ conversation: JSONValue) async -> Bool {
@@ -845,3 +873,4 @@ enum NativeToolCatalog {
         }
     }
 }
+

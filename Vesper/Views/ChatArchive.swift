@@ -57,7 +57,7 @@ struct NativeChatHome: View {
                 }
                 Button("Cancel", role: .cancel) { deletingConversation = nil }
             } message: {
-                Text("This permanently deletes the conversation and cannot be undone.")
+                Text("This deletes the conversation from Vesper history and cannot be undone. Copies stored separately by Codex are not deleted.")
             }
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
@@ -148,3 +148,4 @@ struct ChatSearchView: View {
         } catch { self.error = "Could not search saved history: " + error.localizedDescription }
     }
 }
+

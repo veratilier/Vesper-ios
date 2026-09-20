@@ -127,6 +127,7 @@ private struct CollectionCard<Content: View>: View {
 
 struct JournalView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var showCalendarInfo = false
     @State private var month = Date()
     @State private var selected: String?
     @State private var activity: JSONValue = .null
@@ -143,11 +144,15 @@ struct JournalView: View {
     private var offset: Int { calendar.component(.weekday, from: firstDay) - 1 }
     private var dayCount: Int { calendar.range(of: .day, in: .month, for: month)!.count }
     var body: some View {
-        Page(title: "Journal", subtitle: selected ?? "Conversations and moments, day by day.") {
-            if let key = selected { dayDetails(key) } else { monthGrid }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+            monthGrid
+            if let key = selected { dayDetails(key) }
             if activityError { Button("Chat statistics unavailable · Retry") { Task { await loadActivity() } }.font(.caption) }
             else if !ready { ProgressView("Loading chat history…") }
+            }.padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 20)
         }
+        .transparentNavigationTop()
         .task(id: monthKey) { await loadActivity() }
         .refreshable { await store.refresh(); await loadActivity() }
         .sheet(isPresented: $editing) {
@@ -173,7 +178,11 @@ struct JournalView: View {
                 }
             }
             HStack(spacing: 6) { Text("Less"); ForEach(0..<5) { level in RoundedRectangle(cornerRadius: 3).fill(heatColor(level)).frame(width: 16, height: 16) }; Text("More") }.font(.caption)
-            Text("Beijing time · Dots mark journal entries. Autonomous notes are counted separately.").font(.caption).foregroundStyle(VesperTheme.muted)
+            Button { showCalendarInfo = true } label: { Label("About this calendar", systemImage: "info.circle").font(.caption) }
+                .popover(isPresented: $showCalendarInfo) {
+                    Text("Beijing time · Dots mark journal entries. Autonomous notes are counted separately.")
+                        .font(.subheadline).padding(20).frame(maxWidth: 300).presentationCompactAdaptation(.popover)
+                }
         }
     }
     private func dayCell(_ day: Int) -> some View {
@@ -196,7 +205,7 @@ struct JournalView: View {
     }
     private func dayDetails(_ key: String) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            Button { selected = nil } label: { Label("Back to calendar", systemImage: "chevron.left").frame(minHeight: 44) }
+            Text(key).font(.headline)
             GlassCard { VStack(alignment: .leading, spacing: 8) {
                 Text(ready ? "\(Int(activity["days"][key]["total"].number)) chat messages" : "— chat messages").font(.headline)
                 Text(ready ? "Vera \(Int(activity["days"][key]["user"].number)) · Rowan \(Int(activity["days"][key]["agent"].number))" : "Counts unavailable").font(.caption)
@@ -213,7 +222,7 @@ struct JournalView: View {
         }
     }
     private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.06, 0.22, 0.40, 0.62, 0.85][level]) }
-    private func moveMonth(_ amount: Int) { month = calendar.date(byAdding: .month, value: amount, to: firstDay)!; activity = .null }
+    private func moveMonth(_ amount: Int) { selected = nil; month = calendar.date(byAdding: .month, value: amount, to: firstDay)!; activity = .null }
     private func loadActivity() async {
         let requested = monthKey
         do {

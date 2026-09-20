@@ -45,51 +45,85 @@ struct WakeView: View {
     @State private var busy = false
     @State private var status = ""
     private var supported: Bool { runtime["permissionVersion"].number >= 1 }
+    private var jobs: [JSONValue] { runtime["jobs"].array.sorted { $0["created"].number > $1["created"].number } }
     var body: some View {
-        Page(title: "Autonomous Wake", subtitle: "Choose what Rowan may do and share.") {
-            GlassCard { VStack(alignment: .leading, spacing: 18) {
-                if !supported { Text("The app has been updated, but the connected wake service has not reported permission support. Update and restart the VPS wake service, then tap Refresh service. Your existing wake settings have not been changed.").font(.caption) }
+        List {
+            Section {
                 Toggle("Automatic wake-up", isOn: $enabled)
+                HStack { Text("Latest run"); Spacer(); Text(jobs.first?["status"].string ?? "No runs yet").foregroundStyle(VesperTheme.muted) }
                 Picker("Interval", selection: $interval) {
                     Text("Adaptive").tag(0)
                     ForEach([60,120,240,360,720,1440], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
-                Text("Active chats and quiet requests may postpone a wake-up. With Desire reading off, Adaptive uses 120 minutes.").font(.caption).foregroundStyle(VesperTheme.muted)
-                if supported {
-                Text("Messages Rowan may send").font(.headline)
-                ForEach(runtime["messageOptions"].array.map { $0.string }, id: \.self) { name in
-                    Toggle(name.capitalized, isOn: permission(name, messages: true))
-                }
-                Text("Allowed tools").font(.headline)
-                ForEach(runtime["toolOptions"].array.map { $0.string }, id: \.self) { name in
-                    Toggle(isOn: permission(name, messages: false)) {
-                        Text(name.replacingOccurrences(of: "_", with: " ")).font(.subheadline)
-                    }
-                }
-                Text("External MCP access stays read-only. Turning on a tool does not authorize purchases, deletion or account changes.").font(.caption).foregroundStyle(VesperTheme.muted)
-                Button { Task { await save() } } label: {
-                    Text(busy ? "Saving…" : "Save permissions").font(.body.weight(.semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 20).frame(minHeight: 44).background(VesperTheme.ink, in: Capsule())
-                }.buttonStyle(.plain)
-                }
-            }.disabled(!supported || busy) }
-            if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
-            Button("Refresh service") { Task { await load() } }.disabled(busy)
-            Text("Recent activity").font(VesperTheme.title(30))
-            if runtime["jobs"].array.isEmpty { EmptyCard(title: "No activity to show", message: "Runs and tool steps will appear here.") }
-            ForEach(runtime["jobs"].array) { job in
-                NavigationLink { WakeRunDetail(job: job) } label: {
-                    GlassCard { HStack {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(job["status"].string).font(.headline)
-                            Text(Date(timeIntervalSince1970: job["created"].number).formatted()).font(.caption)
-                            Text("\(job["calls"].array.count) steps").font(.caption)
-                        }
-                        Spacer(); Image(systemName: "chevron.right")
-                    }.foregroundStyle(VesperTheme.ink) }
-                }.buttonStyle(.plain)
+            } footer: {
+                Text("Active chats and quiet requests may postpone a wake-up. With Desire reading off, Adaptive uses 120 minutes.")
             }
-        }.task { await load() }.refreshable { await load() }
+            .disabled(!supported || busy)
+            if !supported {
+                Section { Text("Refresh the service to check permission support. If unavailable, update the VPS wake service.").font(.caption) }
+            }
+            Section("Permissions") {
+                NavigationLink {
+                    permissionPage(messages: true)
+                } label: {
+                    HStack { Text("Message types"); Spacer(); Text("\(allowedMessages.count) enabled").foregroundStyle(VesperTheme.muted) }
+                }
+                NavigationLink {
+                    permissionPage(messages: false)
+                } label: {
+                    HStack { Text("Allowed tools"); Spacer(); Text("\(allowedTools.count) enabled").foregroundStyle(VesperTheme.muted) }
+                }
+            }.disabled(!supported || busy)
+            if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
+            Section("Recent activity") {
+                if jobs.isEmpty { Text("No activity to show").foregroundStyle(VesperTheme.muted) }
+                ForEach(Array(jobs.prefix(3))) { job in
+                    NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
+                }
+                NavigationLink("View all activity") {
+                    List {
+                        ForEach(jobs) { job in
+                            NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
+                        }
+                    }.scrollContentBackground(.hidden).background { Background() }
+                        .navigationTitle("Activity").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+                }
+            }
+            Section { Button("Refresh service") { Task { await load() } }.disabled(busy) }
+        }.scrollContentBackground(.hidden).background { Background() }
+            .navigationTitle("Autonomous Wake").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { saveButton } }
+            .task { if runtime == .null { await load() } }.refreshable { await load() }
+    }
+    private var saveButton: some View {
+        Button(busy ? "Saving…" : "Save") { Task { await save() } }.disabled(!supported || busy)
+    }
+    private func permissionPage(messages: Bool) -> some View {
+        List {
+            Section {
+                ForEach(runtime[messages ? "messageOptions" : "toolOptions"].array.map { $0.string }, id: \.self) { name in
+                    Toggle(name.replacingOccurrences(of: "_", with: " ").capitalized, isOn: permission(name, messages: messages))
+                }
+            } footer: {
+                Text(messages ? "Choose the kinds of messages Rowan may send." : "External MCP access stays read-only. Tool access does not authorize purchases, deletion or account changes.")
+            }
+        }.disabled(busy).scrollContentBackground(.hidden).background { Background() }
+            .navigationTitle(messages ? "Message types" : "Allowed tools").navigationBarTitleDisplayMode(.inline)
+            .transparentNavigationTop()
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { saveButton } }
+            .safeAreaInset(edge: .bottom) {
+                if !status.isEmpty { Text(status).font(.caption).padding(12).frame(maxWidth: .infinity).background(VesperTheme.surface) }
+            }
+    }
+    private func runRow(_ job: JSONValue) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(job["status"].string.capitalized).font(.subheadline.weight(.medium))
+                Text(Date(timeIntervalSince1970: job["created"].number).formatted()).font(.caption).foregroundStyle(VesperTheme.muted)
+            }
+            Spacer()
+            Text("\(job["calls"].array.count) steps").font(.caption).foregroundStyle(VesperTheme.muted)
+        }.padding(.vertical, 3)
     }
     private func permission(_ name: String, messages: Bool) -> Binding<Bool> {
         Binding(get: { (messages ? allowedMessages : allowedTools).contains(name) }, set: { value in

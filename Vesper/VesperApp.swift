@@ -78,15 +78,17 @@ struct RootView: View {
             ZStack {
                 Background()
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 22) {
                         ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .pandora]) { page in
                             NavigationLink(value: page) {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Text(page.rawValue).font(.headline)
-                                    Spacer(minLength: 12)
-                                    HStack { Image(systemName: page.icon).font(.system(size: 28)).foregroundStyle(VesperTheme.muted); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-                                }.padding(20).frame(maxWidth: .infinity, minHeight: 138, alignment: .leading)
-                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+                                VStack(spacing: 8) {
+                                    Image(systemName: page.icon).font(.system(size: 25, weight: .medium))
+                                        .frame(width: 56, height: 56)
+                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                                    Text(page.rawValue).font(.caption).multilineTextAlignment(.center)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }.frame(maxWidth: .infinity, alignment: .top)
+
                             }.buttonStyle(.plain)
                         }
                     }.padding(18)
@@ -274,7 +276,6 @@ struct OpeningView: View {
     @State private var visible = false
     @State private var ready = false
     @State private var entering = false
-    @State private var curtainProgress = 0.0
     @AppStorage("vesperPalette") private var palette = "blue"
     var body: some View {
         GeometryReader { geometry in
@@ -282,29 +283,21 @@ struct OpeningView: View {
                 Color(red: 0.92, green: 0.94, blue: 0.96)
                 Image(palette == "blue" ? "OpeningScene" : (VesperPalette(rawValue: palette) ?? .blue).background).resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped().opacity(visible ? 1 : 0)
-                TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion)) { timeline in
-                    CurtainFabric(progress: curtainProgress, time: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate, dark: palette == "black")
-                }
                 VStack(spacing: 12) {
                     Text("Vesper").font(VesperTheme.title(72))
                     Text("Somewhere we belong.").font(.system(size: 15, design: .serif).italic())
                 }.foregroundStyle(VesperTheme.ink).shadow(color: .black.opacity(0.08), radius: 8)
                     .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready && !entering ? 1 : 0)
-                VStack { Spacer(); Button { entering = true } label: {
+                VStack { Spacer(); Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
                         .background(.ultraThinMaterial, in: Capsule())
                         .overlay(Capsule().stroke(.white.opacity(0.7)))
                 }.buttonStyle(.plain).padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0).disabled(!ready || entering) }
             }
-        }.ignoresSafeArea().task(id: entering) {
-            guard entering else { return }
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 1.9)) { curtainProgress = 1 }
-            if !reduceMotion { do { try await Task.sleep(for: .milliseconds(1900)) } catch { return } }
-            guard !Task.isCancelled else { return }; enter()
-        }.task {
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.85)) { visible = true }
-            if !reduceMotion { try? await Task.sleep(for: .milliseconds(850)) }
+        }.ignoresSafeArea().task {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.45)) { visible = true }
+            if !reduceMotion { try? await Task.sleep(for: .milliseconds(200)) }
             guard !Task.isCancelled else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { ready = true }
         }

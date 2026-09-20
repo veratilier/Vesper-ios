@@ -150,6 +150,19 @@ import AVFoundation
             return false
         }
     }
+    @discardableResult
+    func openSearchResult(_ message: JSONValue) async -> Bool {
+        guard !busy, !callActive else { return false }
+        error = nil
+        do {
+            try await loadConversation(message["conversationId"].string, around: message.id)
+            await reveal(message.id)
+            guard messages.contains(where: { $0.id == message.id }) else {
+                throw ServiceError(message: "The matching message could not be loaded. Update the history service and search again.")
+            }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
     static func validateHistoryRecord(_ response: JSONValue, expectedID: String) throws {
         let record = response["conversation"]
         let returnedID = record["vesperConversationId"].string.isEmpty ? record["id"].string : record["vesperConversationId"].string
@@ -157,14 +170,17 @@ import AVFoundation
             throw ServiceError(message: "The history service did not return the requested conversation. Your current chat and draft have been kept.")
         }
     }
-    private func loadConversation(_ id: String) async throws {
+    private func loadConversation(_ id: String, around messageID: String? = nil) async throws {
         guard let api, !id.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         busy = true
         defer { busy = false }
         // Validate the record before discarding the current chat or its draft.
         let r: JSONValue
+        var parameters = URLComponents()
+        parameters.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200")]
+        if let messageID { parameters.queryItems?.append(URLQueryItem(name: "around", value: messageID)) }
         do {
-            r = try await api.request("/conversations/\(id)?latest=1&limit=200", history: true)
+            r = try await api.request("/conversations/\(id)?" + (parameters.percentEncodedQuery ?? ""), history: true)
         } catch let failure as ServiceError where failure.statusCode == 404 {
             // Older history routers may match the raw URL, including the query.
             // Retry only this read without pagination; never recreate or remove a room.

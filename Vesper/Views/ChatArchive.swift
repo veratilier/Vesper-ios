@@ -100,22 +100,24 @@ struct ChatSearchView: View {
             if busy { ProgressView() }
             ForEach(results) { message in
                 Button { Task {
-                    if chat.conversationID != message["conversationId"].string {
-                        guard await chat.open(.object(["id": message["conversationId"]])) else { error = chat.error ?? "Could not open this conversation."; chat.error = nil; return }
-                    }
-                    await chat.reveal(message.id); dismiss(); selected()
+                    guard await chat.openSearchResult(message) else { error = chat.error ?? "Could not open this message."; chat.error = nil; return }
+                    dismiss(); selected()
                 } } label: {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(message["title"].string).font(.headline)
-                        Text(snippet(message["content"].string)).font(.subheadline).lineLimit(4)
+                        Text(highlightedSnippet(message["content"].string)).font(.subheadline).lineLimit(4)
                         Text(ChatPresentation.time(message["createdAt"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
                     }
                 }.disabled(chat.busy)
             }
             if hasMore { Button("More results") { Task { await search(more: true) } }.disabled(busy) }
-            if !busy && results.isEmpty && !query.isEmpty && error.isEmpty { Text("No matching messages.").foregroundStyle(VesperTheme.muted) }
+            if !busy && results.isEmpty && !query.isEmpty && error.isEmpty && searchNotice.isEmpty { Text("No matching messages.").foregroundStyle(VesperTheme.muted) }
         }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }.navigationTitle("Search")
         .searchable(text: $query, prompt: "Words from a conversation")
+        .task(id: query + "\u{0}" + scope) {
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            await search()
+        }
         .onSubmit(of: .search) { Task { await search() } }
         .onChange(of: scope) { _, _ in Task { await search() } }
     }
@@ -124,11 +126,23 @@ struct ChatSearchView: View {
         let start = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
         return (start > text.startIndex ? "…" : "") + String(text[start...].prefix(240))
     }
+    private func highlightedSnippet(_ text: String) -> AttributedString {
+        var result = AttributedString(snippet(text))
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !term.isEmpty, let range = result.range(of: term, options: .caseInsensitive) {
+            result[range].foregroundColor = .blue
+            result[range].font = .body.bold()
+        }
+        return result
+    }
     private func search(more: Bool = false) async {
-        guard !busy else { return }; busy = true; defer { busy = false }
+        if more && busy { return }
         let requested = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !requested.isEmpty else { results = []; hasMore = false; error = ""; searchNotice = ""; return }
         let requestedScope = scope
+        busy = true
+        defer { if requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope { busy = false } }
+        if !more { results = []; hasMore = false; error = ""; searchNotice = "" }
+        guard !requested.isEmpty else { results = []; hasMore = false; error = ""; searchNotice = ""; return }
         do {
             var params = URLComponents(); params.queryItems = [URLQueryItem(name: "q", value: requested), URLQueryItem(name: "conversationId", value: scope == "This chat" ? chat.conversationID : ""), URLQueryItem(name: "offset", value: String(more ? results.count : 0))]
             let response = try await store.api.request("/search?" + (params.percentEncodedQuery ?? ""), history: true)
@@ -136,8 +150,12 @@ struct ChatSearchView: View {
             results = more ? results + response["results"].array : response["results"].array
             hasMore = response["hasMore"].bool; error = ""; searchNotice = ""
         } catch let failure as ServiceError where failure.statusCode == 404 {
+            guard !Task.isCancelled, requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
             await legacySearch(requested, scope: requestedScope)
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            guard !Task.isCancelled, requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
+            self.error = error.localizedDescription
+        }
     }
     private func legacySearch(_ requested: String, scope requestedScope: String) async {
         do {
@@ -145,9 +163,12 @@ struct ChatSearchView: View {
             let conversations = response["conversations"].array.filter { requestedScope != "This chat" || $0.id == chat.conversationID }
             var matches: [JSONValue] = []
             var limited = false
+            var failed = 0
             for conversation in conversations {
                 guard requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
-                let page = try await store.api.request("/conversations/" + conversation.id, history: true)
+                let page: JSONValue
+                do { page = try await store.api.request("/conversations/" + conversation.id, history: true) }
+                catch { failed += 1; continue }
                 let messages = page["messages"].array
                 if messages.count >= 1000 || page["hasMore"].bool { limited = true }
                 for message in messages where message["content"].string.localizedCaseInsensitiveContains(requested) {
@@ -159,6 +180,10 @@ struct ChatSearchView: View {
             }
             guard requested == query.trimmingCharacters(in: .whitespacesAndNewlines), requestedScope == scope else { return }
             results = matches; hasMore = false; error = ""
+            if failed > 0 {
+                searchNotice = "\(failed) conversation(s) could not be read. These results are incomplete."
+                return
+            }
             searchNotice = limited ? "Compatibility search: the server may return only the first 1,000 messages per chat. Update the history service for complete search." : "Compatibility search of saved chats. Update the history service to enable the dedicated search endpoint."
         } catch { self.error = "Could not search saved history: " + error.localizedDescription }
     }

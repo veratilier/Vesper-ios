@@ -1,6 +1,264 @@
 import SwiftUI
 
+/// Uses the Memory service directly; never copies records into Vesper's legacy database.
+@MainActor
+final class SharedMemoryLibrary: ObservableObject {
+    static let origin = "https://memory.r-vera.com"
+    @Published var signedIn = false
+    private let session: URLSession
+    init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        session = URLSession(configuration: configuration)
+    }
+    func request(_ path: String, body: JSONValue? = nil) async throws -> JSONValue {
+        var request = URLRequest(url: URL(string: Self.origin + path)!)
+        if let body {
+            request.httpMethod = "POST"
+            request.setValue(Self.origin, forHTTPHeaderField: "Origin")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(body)
+        }
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw LibraryError("服务没有返回有效响应。") }
+        if response.statusCode == 401 { signedIn = false; throw LibraryError("请登录记忆库。") }
+        let value = try JSONDecoder().decode(JSONValue.self, from: data)
+        guard (200..<300).contains(response.statusCode) else {
+            let messages = ["stale_version": "这条记忆已有新版本，请查看最新版后再纠正。", "source_id_conflict": "来源标识已有不同内容，请使用纠正入口。", "invalid_arguments": "请检查原文、来源、链接和时间。"]
+            throw LibraryError(messages[value["error"].string] ?? "请求未成功（\(response.statusCode)），原有记忆未被移除。")
+        }
+        return value
+    }
+    func login(username: String, password: String) async throws {
+        var form = URLComponents()
+        form.queryItems = [URLQueryItem(name: "username", value: username), URLQueryItem(name: "password", value: password)]
+        var request = URLRequest(url: URL(string: Self.origin + "/login")!)
+        request.httpMethod = "POST"
+        request.setValue(Self.origin, forHTTPHeaderField: "Origin")
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = (form.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
+        let (_, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse, (200..<400).contains(response.statusCode) else {
+            throw LibraryError("登录未成功，请检查账号密码，或稍后再试。")
+        }
+        _ = try await self.request("/api/session")
+        signedIn = true
+    }
+    func logout() async throws {
+        var request = URLRequest(url: URL(string: Self.origin + "/logout")!)
+        request.httpMethod = "POST"
+        request.setValue(Self.origin, forHTTPHeaderField: "Origin")
+        let (_, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse, (200..<400).contains(response.statusCode) else { throw LibraryError("退出未完成，请重试。") }
+        session.configuration.httpCookieStorage?.cookies?.forEach { session.configuration.httpCookieStorage?.deleteCookie($0) }
+        signedIn = false
+    }
+    struct LibraryError: LocalizedError {
+        let message: String
+        init(_ message: String) { self.message = message }
+        var errorDescription: String? { message }
+    }
+}
+
+private let libraryKinds = ["episode", "preference", "agreement", "reflection", "dream"]
+private func libraryKind(_ value: String) -> String {
+    ["episode": "经历", "preference": "偏好", "agreement": "约定", "reflection": "感受 · 非事实", "dream": "梦 · 非事实"][value] ?? value
+}
+
 struct MemoryView: View {
+    @StateObject private var library = SharedMemoryLibrary()
+    @State private var username = ""
+    @State private var password = ""
+    @State private var query = ""
+    @State private var kind = ""
+    @State private var oldVersions = false
+    @State private var nonfacts = false
+    @State private var rows: [JSONValue] = []
+    @State private var offset = 0
+    @State private var total = 0
+    @State private var generation = 0
+    @State private var busy = false
+    @State private var status = ""
+    @State private var adding = false
+    var body: some View {
+        Page(title: "Memory", subtitle: "有迹可循的记忆库") {
+            HStack {
+                NavigationLink("旧 Vesper 记忆") { LegacyMemoryView() }
+                Spacer()
+                if library.signedIn { Button("退出") { Task {
+                    do { try await library.logout(); rows = []; status = "" } catch { status = error.localizedDescription }
+                } }.disabled(busy) }
+            }.font(.caption)
+            if !library.signedIn {
+                Text("登录后，与独立记忆库共用原文、搜索和版本记录。旧 Vesper 记忆仍在上方入口中。").font(.callout)
+                TextField("记忆库账号", text: $username).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField("密码", text: $password).textContentType(.password)
+                Button("登录记忆库") { Task {
+                    busy = true
+                    do { try await library.login(username: username, password: password); password = ""; await load() }
+                    catch { status = error.localizedDescription }
+                    busy = false
+                } }.buttonStyle(.borderedProminent).disabled(busy || username.isEmpty || password.isEmpty)
+                Text("密码不会保存；退出应用后可能需要重新登录。").font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    TextField("搜索原文或来源", text: $query).submitLabel(.search).onSubmit { refresh() }
+                    Button { refresh() } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("搜索记忆")
+                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("新增记忆")
+                }
+                DisclosureGroup("筛选") {
+                    Picker("类型", selection: $kind) { Text("全部").tag(""); ForEach(libraryKinds, id: \.self) { Text(libraryKind($0)).tag($0) } }
+                    Toggle("包含已替代版本", isOn: $oldVersions)
+                    Toggle("搜索包含梦与感受", isOn: $nonfacts)
+                    Button("应用筛选") { refresh() }
+                }
+                ForEach(rows) { row in
+                    NavigationLink { LibraryRecordView(library: library, id: row.id) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(row["body"].string).lineLimit(3).foregroundStyle(.primary)
+                            Text(row["source"].string).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            HStack {
+                                Text(libraryKind(row["kind"].string))
+                                Text("v\(Int(row["version"].number))" + (row["active"].number == 1 ? "" : " · 已替代"))
+                                Spacer()
+                                Text(row["occurred_at"].string.isEmpty ? "发生时间未知" : ChatPresentation.time(row["occurred_at"].string))
+                            }.font(.caption2).foregroundStyle(.secondary)
+                            if !row["reason"].string.isEmpty {
+                                Text(row["reason"].string == "semantic_similarity" ? "语义相似" : "命中：" + row["matched_terms"].array.map(\.string).joined(separator: " · ")).font(.caption2)
+                            }
+                            Divider()
+                        }.padding(.vertical, 6)
+                    }.buttonStyle(.plain)
+                }
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && total > 40 {
+                    HStack {
+                        Button("上一页") { offset = max(0, offset - 40); Task { await load() } }.disabled(offset == 0 || busy)
+                        Spacer(); Text("\(offset + 1)–\(min(offset + rows.count, total)) / \(total)").font(.caption); Spacer()
+                        Button("下一页") { offset += 40; Task { await load() } }.disabled(offset + 40 >= total || busy)
+                    }
+                }
+            }
+            if busy { ProgressView() }
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
+        }
+        .onAppear { if library.signedIn { refresh() } }
+        .sheet(isPresented: $adding) { LibraryEditor(library: library, record: nil) { refresh() } }
+        .refreshable { if library.signedIn { await load() } }
+    }
+    private func refresh() { offset = 0; Task { await load() } }
+    private func load() async {
+        generation += 1; let ticket = generation
+        busy = true
+        defer { if ticket == generation { busy = false } }
+        do {
+            let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let response: JSONValue
+            if text.isEmpty {
+                var params = URLComponents()
+                params.queryItems = [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "40"), URLQueryItem(name: "include_superseded", value: String(oldVersions))]
+                if !kind.isEmpty { params.queryItems?.append(URLQueryItem(name: "kind", value: kind)) }
+                response = try await library.request("/api/memories?" + (params.percentEncodedQuery ?? ""))
+            } else {
+                var body: [String: JSONValue] = ["query": .string(text), "limit": .number(20), "include_superseded": .bool(oldVersions), "include_nonfacts": .bool(nonfacts)]
+                if !kind.isEmpty { body["kind"] = .string(kind) }
+                response = try await library.request("/api/search", body: .object(body))
+            }
+            guard ticket == generation else { return }
+            rows = response[text.isEmpty ? "items" : "hits"].array
+            total = text.isEmpty ? Int(response["total"].number) : rows.count
+            status = text.isEmpty ? "共 \(total) 条记忆" : ([response["message"].string] + response["warnings"].array.map(\.string)).joined(separator: " · ")
+        } catch { if ticket == generation { status = error.localizedDescription } }
+    }
+}
+
+private struct LibraryRecordView: View {
+    @ObservedObject var library: SharedMemoryLibrary
+    let id: String
+    @State private var record: JSONValue = .null
+    @State private var status = ""
+    @State private var editing = false
+    var body: some View {
+        Page(title: "记忆原文") {
+            if record != .null {
+                Text(libraryKind(record["kind"].string)).font(.caption)
+                Text(record["body"].string).textSelection(.enabled)
+                Text("来源：" + record["source"].string).font(.callout)
+                Text("发生：" + (record["occurred_at"].string.isEmpty ? "未知" : record["occurred_at"].string)).font(.caption)
+                Text("记录：" + record["recorded_at"].string).font(.caption)
+                if let url = URL(string: record["source_url"].string), ["https", "http"].contains(url.scheme ?? "") { Link("打开来源", destination: url) }
+                Text("有来源的记录不等于经过核验的事实。梦和感受属于主观记录。").font(.caption).foregroundStyle(.secondary)
+                if record["active"].number == 1 { Button("纠正这条记忆") { editing = true }.buttonStyle(.bordered) }
+                Text("版本轨迹").font(.headline)
+                ForEach(record["versions"].array) { version in
+                    NavigationLink { LibraryRecordView(library: library, id: version.id) } label: {
+                        VStack(alignment: .leading) {
+                            Text("v\(Int(version["version"].number)) · " + (version["active"].number == 1 ? "当前版本" : "已替代"))
+                            Text(version["correction_reason"].string).font(.caption)
+                        }
+                    }.disabled(version.id == id)
+                }
+            }
+            if !status.isEmpty { Text(status).font(.caption) }
+        }.task { await load() }
+        .sheet(isPresented: $editing) { LibraryEditor(library: library, record: record) { Task { await load() } } }
+    }
+    private func load() async {
+        do { record = try await library.request("/api/memories/" + id); status = "" }
+        catch { status = error.localizedDescription }
+    }
+}
+
+private struct LibraryEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var library: SharedMemoryLibrary
+    let record: JSONValue?
+    let saved: () -> Void
+    @State private var bodyText = ""
+    @State private var source = ""
+    @State private var sourceURL = ""
+    @State private var kind = "episode"
+    @State private var reason = ""
+    @State private var hasDate = false
+    @State private var occurredDate = Date()
+    @State private var busy = false
+    @State private var error = ""
+    var body: some View {
+        EditorSheet(title: record == nil ? "新增记忆" : "纠正记忆", busy: busy, save: { Task { await save() } }) {
+            FormField(label: "原文", text: $bodyText, multiline: true)
+            FormField(label: "来源说明", text: $source)
+            Picker("类型", selection: $kind) { ForEach(libraryKinds, id: \.self) { Text(libraryKind($0)).tag($0) } }
+            FormField(label: "来源链接（可留空）", text: $sourceURL)
+            Toggle("已知发生时间", isOn: $hasDate)
+            if hasDate { DatePicker("发生时间", selection: $occurredDate) }
+            if record != nil { FormField(label: "纠正原因（保留旧版本）", text: $reason) }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+        }.onAppear {
+            if let record {
+                bodyText = record["body"].string; source = record["source"].string
+                sourceURL = record["source_url"].string; kind = record["kind"].string
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = formatter.date(from: record["occurred_at"].string) ?? ISO8601DateFormatter().date(from: record["occurred_at"].string) { occurredDate = date; hasDate = true }
+            }
+        }.interactiveDismissDisabled(busy)
+    }
+    private func save() async {
+        guard !busy else { return }
+        guard !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, record == nil || !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "请填写原文、来源和必要的纠正原因。"; return }
+        busy = true; defer { busy = false }
+        do {
+            var payload: [String: JSONValue] = ["body": .string(bodyText), "source": .string(source), "kind": .string(kind), "source_url": sourceURL.isEmpty ? .null : .string(sourceURL), "occurred_at": hasDate ? .string(ISO8601DateFormatter().string(from: occurredDate)) : .null]
+            if record != nil { payload["correction_reason"] = .string(reason) }
+            let path = record.map { "/api/memories/" + $0.id + "/correct" } ?? "/api/memories"
+            let response = try await library.request(path, body: .object(payload))
+            guard !response.id.isEmpty else { throw SharedMemoryLibrary.LibraryError("保存结果缺少记录标识，尚未确认成功。") }
+            saved(); dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+
+struct LegacyMemoryView: View {
     @EnvironmentObject private var store: AppStore
     @State private var items: [JSONValue] = []
     @State private var evidence: [JSONValue] = []
@@ -215,3 +473,4 @@ private struct MemoryRelationGraph: View {
         return CGPoint(x: size.width/2 + CGFloat(cos(angle))*radius, y: size.height/2 + CGFloat(sin(angle))*radius)
     }
 }
+

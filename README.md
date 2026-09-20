@@ -31,7 +31,7 @@ app installed until the native version has passed your device checks.
 | Music | Existing cloud library, AVPlayer playback, seek, previous/next, background audio and system media controls |
 | Desire | Independent Vesper state, six-value flower, history |
 | Album | Existing photos, category filter, full-size viewer and sharing |
-| Memory | Search, type filter, core memory creation and pinning |
+| Memory | Native shared Memory library: login, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
 | Settings | Device pairing, local agent instructions, existing MCP connection list, document export |
 | Autonomous Wake | Existing VPS switch, interval, prompt editor and activity history, gated by server config version |
@@ -85,3 +85,7 @@ Choose a simulator name actually installed in your Xcode. Before shipping, check
 small/large iPhones, iPad, Dynamic Type, Chinese keyboard, interactive keyboard
 dismissal, expired credentials, connection interruption, and wake config versions
 1 and 2. Do not report physical-device tests from simulator or source checks.
+
+## Shared Memory library
+
+Memory connects directly to `https://memory.r-vera.com` and uses the same records and correction/search logic as its management page and MCP. Sign in using the Memory account, separately from the Vesper device token. The native client uses a private ephemeral URLSession; passwords are not retained and a new app session may require login. No WebView or database migration is used. Existing Vesper memories remain under the explicitly labelled legacy entry and are not silently imported or rewritten. Existing chat-side Vesper memory tools are unchanged; shared-library MCP access must be connected separately in the chat host. CI does not verify a real account or real-device login.

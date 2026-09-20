@@ -87,7 +87,15 @@ import AVFoundation
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         do {
-            _ = try await api.request("/conversations/\(item.id)", method: "PATCH", body: .object(["title": .string(String(name.prefix(120)))]), history: true)
+            let requestedTitle = String(name.prefix(120))
+            let receipt = try await api.request("/conversations/\(item.id)", method: "PATCH", body: .object(["title": .string(requestedTitle)]), history: true)
+            try Self.validateHistoryRecord(receipt, expectedID: item.id)
+            guard receipt["conversation"]["title"].string == requestedTitle else {
+                throw ServiceError(message: "The history service did not confirm the new name.")
+            }
+            if let index = conversations.firstIndex(where: { $0.id == item.id }) {
+                conversations[index]["title"] = .string(requestedTitle)
+            }
             await loadConversations()
         } catch { self.error = error.localizedDescription }
     }
@@ -154,7 +162,14 @@ import AVFoundation
         busy = true
         defer { busy = false }
         // Validate the record before discarding the current chat or its draft.
-        let r = try await api.request("/conversations/\(id)?latest=1&limit=200", history: true)
+        let r: JSONValue
+        do {
+            r = try await api.request("/conversations/\(id)?latest=1&limit=200", history: true)
+        } catch let failure as ServiceError where failure.statusCode == 404 {
+            // Older history routers may match the raw URL, including the query.
+            // Retry only this read without pagination; never recreate or remove a room.
+            r = try await api.request("/conversations/\(id)", history: true)
+        }
         try Self.validateHistoryRecord(r, expectedID: id)
         composer.switchConversation(from: conversationID, to: id)
         disconnect(); conversationID = id; threadID = nil; turnID = nil

@@ -8,6 +8,9 @@ struct NativeChatHome: View {
     @State private var openedOnce = false
     @State private var deletingConversation: JSONValue?
     @State private var deleting = false
+    @State private var renamingConversation: JSONValue?
+    @State private var conversationTitle = ""
+    @State private var renaming = false
     var body: some View {
         NavigationStack {
             List {
@@ -24,15 +27,17 @@ struct NativeChatHome: View {
                             }
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
                             Button(role: .destructive) { deletingConversation = item } label: { Label("Delete", systemImage: "trash") }
                         }
                         .contextMenu {
+                            Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename conversation", systemImage: "pencil") }
                             Button(role: .destructive) { deletingConversation = item } label: { Label("Delete conversation", systemImage: "trash") }
                         }
                     }
                 }
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
-            .disabled(chat.busy || chat.openingMainRoom || chat.callActive || deleting)
+            .disabled(chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming)
             .navigationTitle("Chat").toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
@@ -58,6 +63,16 @@ struct NativeChatHome: View {
                 Button("Cancel", role: .cancel) { deletingConversation = nil }
             } message: {
                 Text("This deletes the conversation from Vesper history and cannot be undone. Copies stored separately by Codex are not deleted.")
+            }
+            .alert("Rename conversation", isPresented: Binding(get: { renamingConversation != nil }, set: { if !$0 { renamingConversation = nil } })) {
+                TextField("Name", text: $conversationTitle)
+                Button("Save") {
+                    guard let item = renamingConversation else { return }
+                    let title = conversationTitle
+                    renamingConversation = nil; renaming = true
+                    Task { defer { renaming = false }; await chat.renameConversation(item, title: title) }
+                }.disabled(conversationTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel", role: .cancel) { renamingConversation = nil }
             }
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }

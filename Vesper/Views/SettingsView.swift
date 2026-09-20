@@ -455,7 +455,15 @@ private final class McpOAuthSession: NSObject, ObservableObject, ASWebAuthentica
         guard query.filter({ $0.name == "state" }).count == 1, value("state") == state else {
             throw ServiceError(message: "Authorization session did not match. Please reconnect.")
         }
-        guard value("error").isEmpty else { throw ServiceError(message: "Authorization was not approved. Please reconnect when ready.") }
+        let oauthError = value("error")
+        if !oauthError.isEmpty {
+            let description = value("error_description")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let reason = description.isEmpty
+                ? oauthError.replacingOccurrences(of: "_", with: " ")
+                : description
+            throw ServiceError(message: "Authorization failed: \(reason.prefix(240))")
+        }
         guard query.filter({ $0.name == "code" }).count == 1, !value("code").isEmpty else {
             throw ServiceError(message: "The service returned no authorization code.")
         }

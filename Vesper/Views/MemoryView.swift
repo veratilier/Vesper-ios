@@ -3,55 +3,13 @@ import SwiftUI
 /// Uses the Memory service directly; never copies records into Vesper's legacy database.
 @MainActor
 final class SharedMemoryLibrary: ObservableObject {
-    static let origin = "https://memory.r-vera.com"
-    @Published var signedIn = false
-    private let session: URLSession
-    init() {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: configuration)
-    }
+    var api: APIClient?
     func request(_ path: String, body: JSONValue? = nil) async throws -> JSONValue {
-        var request = URLRequest(url: URL(string: Self.origin + path)!)
-        if let body {
-            request.httpMethod = "POST"
-            request.setValue(Self.origin, forHTTPHeaderField: "Origin")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(body)
-        }
-        let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw LibraryError("服务没有返回有效响应。") }
-        if response.statusCode == 401 { signedIn = false; throw LibraryError("请登录记忆库。") }
-        let value = try JSONDecoder().decode(JSONValue.self, from: data)
-        guard (200..<300).contains(response.statusCode) else {
-            let messages = ["stale_version": "这条记忆已有新版本，请查看最新版后再纠正。", "source_id_conflict": "来源标识已有不同内容，请使用纠正入口。", "invalid_arguments": "请检查原文、来源、链接和时间。"]
-            throw LibraryError(messages[value["error"].string] ?? "请求未成功（\(response.statusCode)），原有记忆未被移除。")
-        }
-        return value
-    }
-    func login(username: String, password: String) async throws {
-        var form = URLComponents()
-        form.queryItems = [URLQueryItem(name: "username", value: username), URLQueryItem(name: "password", value: password)]
-        var request = URLRequest(url: URL(string: Self.origin + "/login")!)
-        request.httpMethod = "POST"
-        request.setValue(Self.origin, forHTTPHeaderField: "Origin")
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = (form.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
-        let (_, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse, (200..<400).contains(response.statusCode) else {
-            throw LibraryError("登录未成功，请检查账号密码，或稍后再试。")
-        }
-        _ = try await self.request("/api/session")
-        signedIn = true
-    }
-    func logout() async throws {
-        var request = URLRequest(url: URL(string: Self.origin + "/logout")!)
-        request.httpMethod = "POST"
-        request.setValue(Self.origin, forHTTPHeaderField: "Origin")
-        let (_, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse, (200..<400).contains(response.statusCode) else { throw LibraryError("退出未完成，请重试。") }
-        session.configuration.httpCookieStorage?.cookies?.forEach { session.configuration.httpCookieStorage?.deleteCookie($0) }
-        signedIn = false
+        guard let api else { throw LibraryError("请先在设置中连接 Vesper。") }
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return try await api.request("/api/shared-memory?" + (components.percentEncodedQuery ?? ""),
+                                     method: body == nil ? "GET" : "POST", body: body)
     }
     struct LibraryError: LocalizedError {
         let message: String
@@ -67,8 +25,7 @@ private func libraryKind(_ value: String) -> String {
 
 struct MemoryView: View {
     @StateObject private var library = SharedMemoryLibrary()
-    @State private var username = ""
-    @State private var password = ""
+    @EnvironmentObject private var store: AppStore
     @State private var query = ""
     @State private var kind = ""
     @State private var oldVersions = false
@@ -84,23 +41,8 @@ struct MemoryView: View {
         Page(title: "Memory", subtitle: "有迹可循的记忆库") {
             HStack {
                 NavigationLink("旧 Vesper 记忆") { LegacyMemoryView() }
-                Spacer()
-                if library.signedIn { Button("退出") { Task {
-                    do { try await library.logout(); rows = []; status = "" } catch { status = error.localizedDescription }
-                } }.disabled(busy) }
             }.font(.caption)
-            if !library.signedIn {
-                Text("登录后，与独立记忆库共用原文、搜索和版本记录。旧 Vesper 记忆仍在上方入口中。").font(.callout)
-                TextField("记忆库账号", text: $username).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("密码", text: $password).textContentType(.password)
-                Button("登录记忆库") { Task {
-                    busy = true
-                    do { try await library.login(username: username, password: password); password = ""; await load() }
-                    catch { status = error.localizedDescription }
-                    busy = false
-                } }.buttonStyle(.borderedProminent).disabled(busy || username.isEmpty || password.isEmpty)
-                Text("密码不会保存；退出应用后可能需要重新登录。").font(.caption).foregroundStyle(.secondary)
-            } else {
+            Group {
                 HStack {
                     TextField("搜索原文或来源", text: $query).submitLabel(.search).onSubmit { refresh() }
                     Button { refresh() } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("搜索记忆")
@@ -141,9 +83,9 @@ struct MemoryView: View {
             if busy { ProgressView() }
             if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
         }
-        .onAppear { if library.signedIn { refresh() } }
+        .onAppear { library.api = store.api; refresh() }
         .sheet(isPresented: $adding) { LibraryEditor(library: library, record: nil) { refresh() } }
-        .refreshable { if library.signedIn { await load() } }
+        .refreshable { library.api = store.api; await load() }
     }
     private func refresh() { offset = 0; Task { await load() } }
     private func load() async {
@@ -473,4 +415,5 @@ private struct MemoryRelationGraph: View {
         return CGPoint(x: size.width/2 + CGFloat(cos(angle))*radius, y: size.height/2 + CGFloat(sin(angle))*radius)
     }
 }
+
 

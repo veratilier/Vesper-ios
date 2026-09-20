@@ -31,7 +31,7 @@ app installed until the native version has passed your device checks.
 | Music | Existing cloud library, AVPlayer playback, seek, previous/next, background audio and system media controls |
 | Desire | Independent Vesper state, six-value flower, history |
 | Album | Existing photos, category filter, full-size viewer and sharing |
-| Memory | Native shared Memory library: login, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
+| Memory | Native shared Memory library: existing-device authentication, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
 | Settings | Device pairing, local agent instructions, existing MCP connection list, document export |
 | Autonomous Wake | Existing VPS switch, interval, prompt editor and activity history, gated by server config version |
@@ -88,4 +88,4 @@ dismissal, expired credentials, connection interruption, and wake config version
 
 ## Shared Memory library
 
-Memory connects directly to `https://memory.r-vera.com` and uses the same records and correction/search logic as its management page and MCP. Sign in using the Memory account, separately from the Vesper device token. The native client uses a private ephemeral URLSession; passwords are not retained and a new app session may require login. No WebView or database migration is used. Existing Vesper memories remain under the explicitly labelled legacy entry and are not silently imported or rewritten. Existing chat-side Vesper memory tools are unchanged; shared-library MCP access must be connected separately in the chat host. CI does not verify a real account or real-device login.
+Memory uses the existing Vesper device connection via `/api/shared-memory`; no separate Memory login or password is required. Deploy the Vesper-web shared-memory endpoint and its SHARED_MEMORY_DB binding first (see that repository's docs/shared-memory.md). The backend accesses the same memory-db used by the independent Memory page/MCP. Nothing is packaged as a stale data snapshot. Existing Vesper records remain under the legacy entry, with no automatic import or deletion. Chat-side automatic memory retrieval is unchanged. Real-account and physical-device verification is separate from CI.

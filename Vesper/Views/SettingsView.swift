@@ -1,5 +1,8 @@
 import SwiftUI
 import UserNotifications
+import AuthenticationServices
+import CryptoKit
+import Security
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
@@ -332,6 +335,7 @@ private struct McpEditor: View {
     @State private var busy = false
     @State private var status = ""
     @State private var deleting = false
+    @StateObject private var oauth = McpOAuthSession()
     var body: some View {
         NavigationStack {
             Form {
@@ -339,18 +343,18 @@ private struct McpEditor: View {
                 TextField("HTTPS MCP URL", text: $url).keyboardType(.URL)
                 Toggle("Enabled", isOn: $enabled)
                 Picker("Authentication", selection: $auth) { Text("None").tag("none"); Text("Bearer token").tag("bearer"); Text("OAuth").tag("oauth") }
-                if auth != "none" { SecureField(existing ? "Token (blank keeps saved token)" : "Access token", text: $token) }
+                if auth == "bearer" { SecureField(existing ? "Token (blank keeps saved token)" : "Access token", text: $token) }
                 if auth == "oauth" {
-                    Text("Authorize OAuth services in Vesper’s web settings, then return and refresh. Existing authorization is preserved when the token field is blank.").font(.caption)
-                    Link("Open web settings for authorization", destination: URL(string: "https://vesper.r-vera.com")!)
+                    Text("Connect to open the service’s authorization page. After approval, Vesper will test and save the connection automatically.").font(.caption)
+                    Button("Connect & authorize") { Task { await save(authorize: true) } }.disabled(busy)
                 }
                 if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.red) }
                 if existing { Section { Button("Remove server", role: .destructive) { deleting = true }.disabled(busy) } }
-            }.textInputAutocapitalization(.never).autocorrectionDisabled().scrollContentBackground(.hidden).background { Background() }
+            }.disabled(busy).textInputAutocapitalization(.never).autocorrectionDisabled().scrollContentBackground(.hidden).background { Background() }
                 .navigationTitle(existing ? "Edit MCP" : "Add MCP").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(busy) }
-                    ToolbarItem(placement: .confirmationAction) { Button(busy ? "Connecting…" : "Save & test") { Task { await save() } }.disabled(busy) }
+                    ToolbarItem(placement: .confirmationAction) { Button(busy ? "Connecting…" : (auth == "oauth" && !item["authorized"].bool ? "Connect & authorize" : "Save & test")) { Task { await save() } }.disabled(busy) }
                 }
                 .confirmationDialog("Remove this MCP connection?", isPresented: $deleting, titleVisibility: .visible) {
                     Button("Remove", role: .destructive) { Task { await remove() } }
@@ -358,11 +362,16 @@ private struct McpEditor: View {
         }.onAppear { name = item["name"].string; url = item["url"].string; auth = item["authMode"].string; enabled = item["enabled"].bool }
             .interactiveDismissDisabled(busy)
     }
-    private func save() async {
+    @MainActor private func save(authorize: Bool = false) async {
+        guard !busy else { return }
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { status = "Enter a name."; return }
         do { _ = try APIClient.validatedURL(url, path: "") } catch { status = error.localizedDescription; return }
-        if existing, url.trimmingCharacters(in: .whitespacesAndNewlines) != item["url"].string, auth != "none", token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { status = "Enter credentials for the new URL before saving."; return }
-        busy = true; defer { busy = false }
+        if existing, url.trimmingCharacters(in: .whitespacesAndNewlines) != item["url"].string, auth == "bearer", token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { status = "Enter credentials for the new URL before saving."; return }
+        busy = true; status = ""; defer { busy = false }
+        if auth == "oauth", authorize || !item["authorized"].bool || item["authMode"].string != "oauth" || url.trimmingCharacters(in: .whitespacesAndNewlines) != item["url"].string {
+            do { token = try await oauth.authorize(api: store.api, resource: url.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            catch { status = error.localizedDescription; return }
+        }
         var body: JSONValue = .object(["id": .string(item.id), "name": .string(name), "url": .string(url.trimmingCharacters(in: .whitespacesAndNewlines)), "enabled": .bool(enabled), "authMode": .string(auth)])
         if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { body["token"] = .string(token.trimmingCharacters(in: .whitespacesAndNewlines)) }
         if auth == "none" { body["clearToken"] = .bool(true) }
@@ -374,6 +383,88 @@ private struct McpEditor: View {
         guard let id = item.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return }
         do { _ = try await store.api.request("/api/mcp/connections?id=\(id)", method: "DELETE"); dismiss() }
         catch { status = error.localizedDescription }
+    }
+}
+
+
+@MainActor
+private final class McpOAuthSession: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+    private var session: ASWebAuthenticationSession?
+    private var anchor: ASPresentationAnchor?
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        anchor ?? ASPresentationAnchor()
+    }
+
+    private func randomValue() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw ServiceError(message: "Could not start a secure authorization session.")
+        }
+        return base64URL(Data(bytes))
+    }
+    private func base64URL(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    func authorize(api: APIClient, resource: String) async throws -> String {
+        let redirect = try APIClient.validatedURL(api.baseURL, path: "/mcp/oauth/callback?native=1").absoluteString
+        let metadata = try await api.request("/api/mcp/oauth/discover", method: "POST", body: .object([
+            "url": .string(resource), "redirectUri": .string(redirect)
+        ]))
+        guard !metadata["clientId"].string.isEmpty else {
+            throw ServiceError(message: "This service requires a registered OAuth client ID. Automatic registration is unavailable.")
+        }
+        let verifier = try randomValue()
+        let state = try randomValue()
+        guard var authorization = URLComponents(string: metadata["authorizationUrl"].string),
+              authorization.scheme == "https", authorization.host != nil,
+              authorization.user == nil, authorization.password == nil else {
+            throw ServiceError(message: "The service returned an invalid authorization address.")
+        }
+        let values = ["response_type": "code", "client_id": metadata["clientId"].string,
+                      "redirect_uri": redirect, "state": state, "code_challenge_method": "S256",
+                      "code_challenge": base64URL(Data(SHA256.hash(data: Data(verifier.utf8)))),
+                      "scope": metadata["scopes"].string, "resource": metadata["resource"].string]
+        authorization.queryItems = (authorization.queryItems ?? []).filter { values[$0.name] == nil }
+            + values.filter { !$0.value.isEmpty }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let address = authorization.url else { throw ServiceError(message: "Invalid authorization address.") }
+        anchor = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }.flatMap { $0.windows }.first { $0.isKeyWindow }
+        guard anchor != nil else { throw ServiceError(message: "Open Vesper before connecting this service.") }
+        defer { session = nil; anchor = nil }
+        let callback: URL = try await withCheckedThrowingContinuation { continuation in
+            let browser = ASWebAuthenticationSession(url: address, callbackURLScheme: "vesper") { url, error in
+                if let error {
+                    if (error as NSError).code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                        continuation.resume(throwing: ServiceError(message: "Authorization cancelled. Your entries are still here."))
+                    } else { continuation.resume(throwing: error) }
+                } else if let url { continuation.resume(returning: url) }
+                else { continuation.resume(throwing: ServiceError(message: "Authorization returned no result.")) }
+            }
+            browser.presentationContextProvider = self
+            self.session = browser
+            if !browser.start() { continuation.resume(throwing: ServiceError(message: "Could not open the authorization window.")) }
+        }
+        guard callback.scheme == "vesper", callback.host == "oauth", callback.path == "/callback",
+              let parts = URLComponents(url: callback, resolvingAgainstBaseURL: false) else {
+            throw ServiceError(message: "Unexpected authorization callback.")
+        }
+        let query = parts.queryItems ?? []
+        func value(_ key: String) -> String { query.first { $0.name == key }?.value ?? "" }
+        guard query.filter({ $0.name == "state" }).count == 1, value("state") == state else {
+            throw ServiceError(message: "Authorization session did not match. Please reconnect.")
+        }
+        guard value("error").isEmpty else { throw ServiceError(message: "Authorization was not approved. Please reconnect when ready.") }
+        guard query.filter({ $0.name == "code" }).count == 1, !value("code").isEmpty else {
+            throw ServiceError(message: "The service returned no authorization code.")
+        }
+        let result = try await api.request("/api/mcp/oauth", method: "POST", body: .object([
+            "tokenUrl": metadata["tokenUrl"], "clientId": metadata["clientId"], "clientSecret": metadata["clientSecret"],
+            "code": .string(value("code")), "verifier": .string(verifier), "redirectUri": .string(redirect), "resource": metadata["resource"]
+        ]))
+        guard !result["accessToken"].string.isEmpty else { throw ServiceError(message: "Authorization returned no access token.") }
+        return result["accessToken"].string
     }
 }
 

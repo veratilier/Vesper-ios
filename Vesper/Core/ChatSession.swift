@@ -113,6 +113,7 @@ private enum ChatCallback {
     @Published private(set) var unconfirmedSend = false
     private var pendingTurn: JSONValue?
     private var pendingDraftID: String?
+    private var sending = false
     private let makeSocket: (URL) -> any ChatSocket
     private let delay: (Double) async throws -> Void
     private let heartbeatInterval: Double
@@ -158,7 +159,7 @@ private enum ChatCallback {
         recoveryID = UUID(); recoveryTask?.cancel(); recoveryTask = nil
     }
     private func scheduleRecovery(immediate: Bool = false) {
-        guard wantsConnection, foreground, online, recoveryTask == nil else { return }
+        guard wantsConnection, foreground, online, recoveryTask == nil, !connectionNeedsRetry || immediate else { return }
         reconnecting = true; connectionNeedsRetry = false; status = "Reconnecting…"
         let recovery = UUID(); recoveryID = recovery
         recoveryTask = Task { [weak self] in
@@ -450,7 +451,7 @@ private enum ChatCallback {
         guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
     }
     func disconnect() {
-        wantsConnection = false; intent = UUID(); stopRecovery()
+        wantsConnection = false; intent = UUID(); sending = false; stopRecovery()
         reconnecting = false; connectionNeedsRetry = false
         pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
         closeTransport()
@@ -484,11 +485,12 @@ private enum ChatCallback {
     private func rpc(_ method: String, _ params: JSONValue = .object([:])) async throws -> JSONValue {
         try checkCallback()
         let expected = generation
+        let timeout = requestTimeout
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
             timeouts[id] = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(self.requestTimeout))
+                try? await Task.sleep(for: .seconds(timeout))
                 guard !Task.isCancelled, let self, let c = self.pending.removeValue(forKey: id) else { return }
                 self.timeouts.removeValue(forKey: id); c.resume(throwing: URLError(.timedOut))
                 if let ws = self.socket { self.connectionFailed(URLError(.timedOut), socket: ws, generation: expected) }
@@ -503,6 +505,7 @@ private enum ChatCallback {
     func connect() async throws {
         try checkCallback()
         wantsConnection = true
+        guard !connectionNeedsRetry else { throw ServiceError(message: "Chat disconnected. Retry") }
         guard foreground, online else { scheduleRecovery(); throw URLError(.notConnectedToInternet) }
         if let connectionTask { try await connectionTask.value; return }
         if initialized { return }
@@ -651,11 +654,13 @@ private enum ChatCallback {
         } catch { modelError = error.localizedDescription; if !initialized { scheduleRecovery() } }
     }
     func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil) async -> Bool {
-        guard !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
+        guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
         busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
         let messageID = pendingDraftID ?? UUID().uuidString
         pendingDraftID = messageID
         let sendIntent = intent
+        sending = true
+        defer { if sendIntent == intent { sending = false } }
         do {
             var attachments: [JSONValue] = []
             // Call frames are sent inline below; they do not need permanent chat uploads.
@@ -734,7 +739,6 @@ private enum ChatCallback {
                 params["effort"] = .string(effort)
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
-            guard sendIntent == intent else { throw CancellationError() }
             let result = try await submitTurn(params)
             guard sendIntent == intent else { throw CancellationError() }
             pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false

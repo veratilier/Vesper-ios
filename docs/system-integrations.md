@@ -1,0 +1,31 @@
+# In-app calls, Calendar and Reminders
+
+Calls use an in-app invitation while Vesper is open and connected. Accept opens the call screen; Start call activates audio. Decline leaves the microphone off. InAppCalls owns audio activation, mute and end; audio interruptions end the session. Existing speech, voice playback and transcript records remain. There is no system incoming-call screen or closed-app incoming-call delivery.
+
+Chat replies and attachments do not schedule message notifications. Anniversary notifications remain independent.
+
+Settings → Calendar & Reminders reads the next seven days of events and incomplete reminders. Tap a writable event to open the system event editor, including recurrence handling. Tap a reminder to edit its title, notes and optional due date. Changes save to the existing item, not a duplicate. Read-only entries cannot be edited. Data stays in the configured system accounts and is not automatically sent to AI tools.
+
+Device verification: accept/decline, microphone and speech denial, mute/end, audio interruption, transcript saving, edit/cancel/save for events and reminders, and compact voice playback. Simulator compilation does not verify device permissions or audio routing.
+
+Voice calls now use a separate model thread seeded with recent visible chat text. Spoken turns and responses stay out of the parent conversation's message storage; the final call card holds the transcript. This is STT → text model → TTS, not raw-audio model input. Custom TTS preparation is distinct from playback; failures are shown and fall back to a language-matched iPhone voice. Existing historical duplicate text is not deleted. Device audio and server-side thread storage still require verification.
+
+The Speaker button toggles the built-in speaker versus the normal receiver/headset route. Its state and the output label reflect the actual audio route. Speech recognition and TTS no longer reset the call category on every turn. Switching output while listening restarts recognition while retaining the pending words.
+
+During an active call, turning the camera on automatically sends fresh JPEG frames to a separate visual-context model session, starting immediately and waiting five seconds after each processed frame before the next. Spoken turns also include a fresh frame directly. This is automatic sampled vision, not a continuous audiovisual streaming API. Visual observations inform subsequent spoken turns without generating extra spoken replies or normal chat messages. The camera-off action, leaving the foreground, and ending the call stop subsequent frame sends and clear the visual context; an already submitted request cannot be recalled. Camera frames bypass permanent attachment upload and travel inline to the model service; that service's retention rules still apply. The UI reports actual frame submission time and errors. There is no manual share-frame button. Audio routing, automatic frame receipt and camera stop/restart still need device verification.
+
+
+Movie Room includes a ReplayKit Start/Stop screen-sharing control. It captures this app's video frames only (no microphone or app audio), samples while the room is foreground, and submits them through its existing conversation. Leaving the room or backgrounding stops capture. It is not a cross-app broadcast extension, and DRM-protected video may be blank. Device consent and playback capture need verification.
+
+Music observes actual AVPlayer time-control changes, audio interruptions, removed output devices and media-service reset, rather than relying only on the periodic playback clock. Pauses publish Now Playing state immediately; a new selection clears the old item before resolution, failed-item callbacks are identity-checked, and returning to foreground reconciles the UI. Interruptions do not force autoplay.
+
+Days, Desire, Weekly Usage and Notes are separate widgets. App and widget targets both require the App Group `group.com.vera.vesper.native` in their signing profiles. Only display snapshots are shared, never the API token. Desire/notes/usage refresh while the app is active, with an update timestamp; the extension reads the latest cache on its OS-scheduled timeline. These are not guaranteed real-time background server updates. Tap a widget to open the corresponding app section. Enable/register the App Group for both targets in Xcode Signing & Capabilities before device installation; if your signing team cannot support App Groups, these synced widgets cannot work under that profile.
+
+
+## Native playback context and cross-app broadcasts
+
+Every chat send now includes freshly observed native player metadata (song, artist, pause/play, position, observation time). This overrides old shared-song context and explicitly excludes raw audio. The app also synchronizes the existing `musicPlayback` document used by `music_get_status`, throttled to 15 seconds during progress and immediately attempted on track/state changes. Concurrent state saves can delay server synchronization; per-message native context remains fresh.
+
+Movie Room offers the system ReplayKit broadcast picker for `com.vera.vesper.native.broadcast`. The embedded upload extension runs independently of the foreground app, sends sampled frames through the existing authenticated WSS app server and keeps the latest observation in the shared group for Movie Room to display. No raw video/audio stream or automatic screenshots are saved into normal chat history. The system owns start/stop consent; pause/end cancels the current socket task and future samples. Already sent data cannot be recalled. Protected video and system-restricted screens may be unavailable.
+
+Enable App Groups and shared Keychain signing for the app and VesperBroadcast extension. The broadcast uses a separate Keychain item, not a plaintext shared-defaults token. Preparing Movie Room updates its credential; changing credentials requires reopening Movie Room before broadcasting. Register the extension bundle ID under the same signing team. This build does not add Dynamic Island chat or inline text entry; replies appear in Movie Room. Verify cross-app capture, system stop, rotation, reconnect and device memory on an actual iPhone. Linux checks cannot validate ReplayKit or extension signing.

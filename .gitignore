@@ -1,0 +1,14 @@
+.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcresult/
+*.ipa
+*.p12
+*.mobileprovision
+.env*
+Local.xcconfig
+
+# Generated from the original artwork by the Xcode build phase
+Vesper/Resources/Assets.xcassets/AppIconWhite.appiconset/icon.png
+Vesper/Resources/Assets.xcassets/AppIconBlack.appiconset/icon.png

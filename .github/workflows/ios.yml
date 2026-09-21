@@ -1,0 +1,33 @@
+name: iOS build
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate generated project
+        run: |
+          python3 scripts/generate_project.py
+          git diff --exit-code -- Vesper.xcodeproj
+      - name: Select an available iPhone simulator
+        run: |
+          xcrun simctl list devices available -j > /tmp/devices.json
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          devices=json.load(open('/tmp/devices.json'))['devices']
+          phone=next(d for runtime, ds in devices.items() if 'iOS' in runtime for d in ds if d['name'].startswith('iPhone'))
+          print('SIMULATOR_ID='+phone['udid'])
+          PY
+      - name: Build and run contract tests
+        run: xcodebuild test -project Vesper.xcodeproj -scheme Vesper -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO
+      - name: Save test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vesper-TestResults
+          path: TestResults.xcresult

@@ -1,0 +1,347 @@
+import SwiftUI
+
+struct HomeView: View {
+    @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var player: MusicPlayer
+    @EnvironmentObject private var chat: ChatSession
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var desire: JSONValue = .null
+    @State private var desireError = false
+    @State private var refreshingUsage = false
+    @StateObject private var weatherLocation = ChatLocation()
+    @State private var weather: JSONValue = .null
+    @State private var weatherLoading = false
+    @State private var weatherError = false
+    let navigate: (Destination) -> Void
+    private let fields = ["longing", "tenderness", "playfulness", "intensity", "attachment", "possessiveness"]
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day())).font(.system(size: 13)).foregroundStyle(VesperTheme.muted)
+                        Text(greeting + ", Vera").font(VesperTheme.title(32)).minimumScaleFactor(0.65).lineLimit(1)
+                        Text("A place for today, too.").font(.system(size: 14)).foregroundStyle(VesperTheme.muted)
+                    }.padding(.top, 10).padding(.bottom, 4)
+                    weatherRow
+                    if !store.connected {
+                        Button("Connect Vesper in Settings") { navigate(.settings) }.font(.footnote)
+                    }
+                    let width = max(240, min(geometry.size.width, 650) - 32)
+                    let height: CGFloat = typeSize.isAccessibilitySize ? 300 : min(250, max(200, (width - 12) * 0.60 + 12))
+                    if typeSize.isAccessibilitySize {
+                        desireCard(height: height)
+                        usageCard
+                        notesCard(height: 150)
+                        remindersCard(height: height)
+                        musicCard(height: height)
+                    } else {
+                        HStack(alignment: .top, spacing: 12) {
+                            desireCard(height: height).frame(width: (width - 12) * 0.60)
+                            VStack(spacing: 12) { usageCard.frame(height: 80); notesCard(height: height - 92) }
+                        }
+                        HStack(alignment: .top, spacing: 12) {
+                            remindersCard(height: height).frame(width: (width - 12) * 0.40)
+                            musicCard(height: height)
+                        }
+                    }
+                }.padding(.horizontal, 16).padding(.bottom, 20).frame(maxWidth: 650).frame(maxWidth: .infinity)
+            }.refreshable { await store.refresh(); await loadDesire(); await loadUsage(); await refreshWeather() }
+        }.buttonStyle(.plain)
+        .task { await store.refresh(); player.updateLibrary(store.document("music").array); await loadDesire() }
+        .task(id: phase) {
+            guard phase == .active else { return }
+            // This task ends when Home disappears or the app leaves the foreground.
+            while !Task.isCancelled {
+                weatherLocation.locate()
+                await refreshWeather()
+                do { try await Task.sleep(for: .seconds(15 * 60)) }
+                catch { return }
+            }
+        }
+        .onChange(of: weatherCoordinateKey) { _, _ in Task { await refreshWeather() } }
+        .onChange(of: store.document("music")) { _, tracks in player.updateLibrary(tracks.array) }
+        .onChange(of: store.token) { _, _ in Task { await loadDesire() } }
+        .onChange(of: phase) { _, value in if value == .active { Task { await loadDesire() } } }
+    }
+    private var weatherCoordinateKey: String {
+        if let coordinate = weatherLocation.coordinate { return "\(coordinate.latitude),\(coordinate.longitude)" }
+        let environment = store.document("environment")
+        guard case .number(let latitude) = environment["latitude"], case .number(let longitude) = environment["longitude"] else { return "" }
+        return "\(latitude),\(longitude)"
+    }
+    private var weatherRow: some View {
+        Button {
+            if !weatherCoordinateKey.isEmpty { weatherLocation.locateIfAuthorized(); Task { await refreshWeather() } }
+            else { weatherLocation.locate() }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: weatherIcon)
+                if case .number(let temperature) = weather["temperature"] {
+                    Text("\(Int(temperature.rounded()))° · " + weatherDescription)
+                    Text(ChatPresentation.time(weather["updatedAt"].string)).font(.system(size: 10)).opacity(0.7)
+                } else {
+                    Text(weatherLoading || weatherLocation.loading ? "Updating weather…" : weatherError || weatherLocation.error != nil ? "Weather unavailable · Retry" : "Local weather · Tap to enable")
+                }
+                Spacer()
+                Image(systemName: weatherError ? "exclamationmark.arrow.triangle.2.circlepath" : "arrow.clockwise").font(.system(size: 10))
+            }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
+        }.disabled(weatherLoading).padding(.vertical, 2)
+    }
+    private var weatherDescription: String {
+        switch Int(weather["code"].number) {
+        case 0: return "Clear"
+        case 1...3: return "Cloudy"
+        case 45, 48: return "Fog"
+        case 51...67, 80...82: return "Rain"
+        case 71...77, 85, 86: return "Snow"
+        case 95...99: return "Thunderstorms"
+        default: return "Weather"
+        }
+    }
+    private var weatherIcon: String {
+        switch weatherDescription {
+        case "Clear": return "sun.max"
+        case "Rain": return "cloud.rain"
+        case "Snow": return "cloud.snow"
+        case "Thunderstorms": return "cloud.bolt.rain"
+        case "Fog": return "cloud.fog"
+        default: return "cloud.sun"
+        }
+    }
+    private func refreshWeather() async {
+        guard !weatherLoading else { return }
+        let environment = store.document("environment")
+        let latitude: Double, longitude: Double
+        if let coordinate = weatherLocation.coordinate { latitude = coordinate.latitude; longitude = coordinate.longitude }
+        else if case .number(let lat) = environment["latitude"], case .number(let lon) = environment["longitude"] { latitude = lat; longitude = lon }
+        else { return }
+        guard (-90...90).contains(latitude), (-180...180).contains(longitude) else { return }
+        weatherLoading = true; defer { weatherLoading = false }
+        do {
+            guard let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(latitude)&longitude=\(longitude)&current=temperature_2m,weather_code&timezone=auto") else { return }
+            var request = URLRequest(url: url); request.timeoutInterval = 15; request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw ServiceError(message: "Weather unavailable") }
+            let result = try JSONDecoder().decode(JSONValue.self, from: data)
+            guard case .number = result["current"]["temperature_2m"] else { throw ServiceError(message: "Weather unavailable") }
+            weather = .object(["temperature": result["current"]["temperature_2m"], "code": result["current"]["weather_code"], "updatedAt": .string(isoNow())]); weatherError = false
+        } catch { if !Task.isCancelled { weatherError = true } }
+    }
+    private func desireCard(height: CGFloat) -> some View {
+        Button { navigate(.desire) } label: {
+            GeometryReader { geometry in
+                Image("DesireCoast")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .overlay(alignment: .top) {
+                        LinearGradient(colors: [VesperTheme.palette == .black ? .black.opacity(0.5) : .white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 88)
+                    }
+                    .overlay(alignment: .topLeading) {
+                        cardTitle("Desire").padding(12)
+                    }
+            }
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 22))
+            .overlay { RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.85), lineWidth: 1.3) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Desire")
+    }
+    private var usageCard: some View {
+        HomeCard {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text("Usage").font(VesperTheme.title(21)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button { Task { await loadUsage() } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 12)).frame(width: 28, height: 28) }.accessibilityLabel("Refresh usage").disabled(refreshingUsage || store.token.isEmpty)
+                }
+                HStack { Text("Weekly limit"); Spacer(minLength: 2); Text(remainingUsage.map { "\($0)%" } ?? "—") }.font(.system(size: 10))
+                if let remaining = remainingUsage { ProgressView(value: Double(remaining), total: 100).tint(VesperTheme.accent) }
+                else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError == nil ? "Tap refresh" : "Unable to refresh · Retry")).font(.system(size: 9)).foregroundStyle(VesperTheme.muted) }
+            }
+        }
+    }
+    private var latestNote: JSONValue? {
+        let formatter = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func timestamp(_ note: JSONValue) -> Date {
+            for key in ["createdAt", "updatedAt"] {
+                let text = note[key].string
+                if let date = fractional.date(from: text) ?? formatter.date(from: text) { return date }
+            }
+            return .distantPast
+        }
+        return store.document("notes").array.enumerated().sorted { left, right in
+            let lhs = timestamp(left.element), rhs = timestamp(right.element)
+            return lhs == rhs ? left.offset < right.offset : lhs > rhs
+        }.first?.element
+    }
+    private func notesCard(height: CGFloat) -> some View {
+        Button { navigate(.notes) } label: {
+            HomeCard {
+                VStack(alignment: .leading, spacing: 7) {
+                    cardTitle("Notes")
+                    Text(latestNote?["text"].string ?? "A little space for your thoughts.")
+                        .font(.system(size: 10.5)).lineSpacing(2).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                    Spacer(minLength: 0)
+                }
+            }.frame(height: height)
+        }
+    }
+    private func remindersCard(height: CGFloat) -> some View {
+        HomeCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Button { navigate(.reminders) } label: { cardTitle("Reminders") }
+                let todos = store.document("todos").array.filter { !$0["done"].bool }
+                if todos.isEmpty { Text("Something you want to do today? Leave yourself a reminder.").font(.system(size: 12)).lineSpacing(3).foregroundStyle(VesperTheme.muted) }
+                ForEach(Array(todos.prefix(2))) { item in
+                    Button { Task { var changed = item; changed["done"] = .bool(true); _ = await store.upsert("todos", item: changed) } } label: { Label(item["title"].string, systemImage: "circle").font(.system(size: 12)).lineLimit(3).multilineTextAlignment(.leading).frame(minHeight: 44) }.disabled(store.saving)
+                }
+                Spacer(minLength: 0)
+            }
+        }.frame(height: height)
+    }
+    private func musicCard(height: CGFloat) -> some View {
+        HomeCard {
+            VStack(spacing: 5) {
+                Button { navigate(.music) } label: { cardTitle("Music") }
+                Artwork(url: player.track["cover"].string).frame(width: 76, height: 76).clipShape(Circle())
+                Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string).font(.system(size: 11)).lineLimit(1)
+                Text(player.track["artist"].string).font(.system(size: 10)).foregroundStyle(VesperTheme.muted).lineLimit(1)
+                PlaybackControls().font(.system(size: 18)).frame(height: 36)
+                Spacer(minLength: 0)
+            }
+        }.frame(height: height)
+    }
+    private func loadDesire() async {
+        guard !store.token.isEmpty else { desire = .null; return }
+        do { let response = try await store.api.request("/api/desire"); desire = response["data"]; desireError = false }
+        catch { desireError = true }
+    }
+    private func loadUsage() async {
+        guard !refreshingUsage, !store.token.isEmpty else { return }
+        refreshingUsage = true; defer { refreshingUsage = false }
+        chat.configure(store); await chat.loadUsage()
+    }
+    private var remainingUsage: Int? {
+        chat.weeklyRemaining
+    }
+    private var greeting: String { let h = Calendar.current.component(.hour, from: .now); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening" }
+    private func cardTitle(_ value: String) -> some View {
+        HStack { Text(value).font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1); Spacer(minLength: 1); Image(systemName: "chevron.right").font(.system(size: 10)) }
+    }
+}
+private struct HomeCard<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        content.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(VesperTheme.palette == .blue ? Color(red: 0.91, green: 0.94, blue: 0.97).opacity(0.80) : VesperTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.90), lineWidth: 1.3))
+    }
+}
+struct DesireTide: View {
+    let values: [Double?]
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var phase
+    @State private var previous: [Double] = []
+    @State private var target: [Double] = []
+    @State private var changedAt = Date.timeIntervalSinceReferenceDate
+    private let labels = ["想念", "温柔", "玩心", "浓度", "依恋", "占有"]
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            Canvas { context, size in
+                draw(context: context, size: size, time: time)
+            }
+        }
+        .onAppear { previous = normalized; target = normalized }
+        .onChange(of: values) { _, _ in
+            let now = Date.timeIntervalSinceReferenceDate
+            previous = (0..<6).map { value($0, time: now) }; target = normalized; changedAt = now
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("此刻的潮汐")
+        .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "未加载" : "未加载") }.joined(separator: "，"))
+    }
+    private var normalized: [Double] { (0..<6).map { values.indices.contains($0) ? min(100, max(0, values[$0] ?? 0)) : 0 } }
+    private func value(_ i: Int, time: Double) -> Double {
+        guard previous.count == 6, target.count == 6 else { return normalized[i] }
+        let t = reduceMotion ? 1 : min(1, max(0, (time - changedAt) / 1.2))
+        let eased = t * t * (3 - 2 * t)
+        return previous[i] + (target[i] - previous[i]) * eased
+    }
+    private func shore(_ x: CGFloat, size: CGSize, time: Double) -> CGFloat {
+        let u = min(5, max(0, Double(x / max(1, size.width)) * 6 - 0.5))
+        let index = min(4, Int(u)), t = u - Double(index)
+        let p0 = value(max(0, index - 1), time: time), p1 = value(index, time: time)
+        let p2 = value(index + 1, time: time), p3 = value(min(5, index + 2), time: time)
+        let v = min(100, max(0, 0.5 * ((2 * p1) + (-p0 + p2) * t + (2*p0 - 5*p1 + 4*p2 - p3)*t*t + (-p0 + 3*p1 - 3*p2 + p3)*t*t*t)))
+        let base = size.height * (0.65 - v * 0.0043)
+        let time = reduceMotion ? 0 : time
+        let wave = sin(Double(x) * 0.018 + time * 0.48) * 4.5
+        let ripple = sin(Double(x) * 0.037 - time * 0.65) * 2 + sin(Double(x) * 0.079 + time * 0.43) * 0.8
+        return base + CGFloat(wave + ripple)
+    }
+    private func line(size: CGSize, time: Double, offset: CGFloat = 0) -> Path {
+        var path = Path()
+        for x in stride(from: CGFloat(0), through: size.width, by: 2) {
+            let point = CGPoint(x: x, y: shore(x, size: size, time: time) + offset)
+            if x == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        path.addLine(to: CGPoint(x: size.width, y: shore(size.width, size: size, time: time) + offset))
+        return path
+    }
+    private func draw(context: GraphicsContext, size: CGSize, time: Double) {
+        let bottom = size.height - (compact ? 0 : 40)
+        let rect = CGRect(origin: .zero, size: size)
+        context.fill(Path(rect), with: .linearGradient(Gradient(colors: [Color(red: 0.96, green: 0.96, blue: 0.94), Color(red: 0.88, green: 0.92, blue: 0.94)]), startPoint: .zero, endPoint: CGPoint(x: size.width, y: size.height)))
+        // Deterministic mineral grains, not per-frame random noise.
+        for i in 0..<550 {
+            let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width
+            let y = CGFloat((i * 211 + 43) % 991) / 991 * size.height
+            context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(0.45)))
+        }
+        var water = line(size: size, time: time)
+        water.addLine(to: CGPoint(x: size.width, y: bottom)); water.addLine(to: CGPoint(x: 0, y: bottom)); water.closeSubpath()
+        context.fill(water, with: .linearGradient(Gradient(colors: [Color(red: 0.72, green: 0.85, blue: 0.88), Color(red: 0.42, green: 0.66, blue: 0.77), Color(red: 0.24, green: 0.45, blue: 0.61)]), startPoint: CGPoint(x: 0, y: size.height * 0.22), endPoint: CGPoint(x: 0, y: bottom)))
+        var sea = context; sea.clip(to: water)
+        // Fine crossing caustics give the water depth without an opaque image.
+        for row in 0..<36 {
+            var caustic = Path()
+            for column in 0...60 {
+                let x = CGFloat(column) / 60 * size.width
+                let y = CGFloat(row) / 36 * bottom + CGFloat(sin(Double(column) * 0.42 + Double(row) * 1.7 + time * 0.12) * 4 + cos(Double(column) * 0.19 - Double(row)) * 3)
+                if column == 0 { caustic.move(to: CGPoint(x: x, y: y)) } else { caustic.addLine(to: CGPoint(x: x, y: y)) }
+            }
+            sea.stroke(caustic, with: .color(.white.opacity(0.12)), lineWidth: 0.7)
+        }
+        for offset in [CGFloat(0), 8, 18] {
+            context.stroke(line(size: size, time: time, offset: offset), with: .color(.white.opacity(offset == 0 ? 0.75 : 0.4)), lineWidth: offset == 0 ? 3 : 0.8)
+        }
+        for i in 0..<360 {
+            let x = CGFloat(i) / 359 * size.width
+            let d = CGFloat(sin(Double(i) * 4.7) * 3)
+            let y = shore(x, size: size, time: time) + d
+            sea.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.8, height: 1.2)), with: .color(.white.opacity(0.6)))
+        }
+        if !compact {
+            for i in 0..<6 {
+                let x = size.width * (CGFloat(i) + 0.5) / 6
+                let y = shore(x, size: size, time: time) - 22
+                var guide = Path(); guide.move(to: CGPoint(x: x, y: y)); guide.addLine(to: CGPoint(x: x, y: y + 19))
+                context.stroke(guide, with: .color(Color(red: 0.33, green: 0.43, blue: 0.5).opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
+                context.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)), with: .color(Color(red: 0.33, green: 0.43, blue: 0.5)))
+                let number = values.indices.contains(i) ? values[i].map { String(Int(min(100, max(0, $0)))) } ?? "—" : "—"
+                context.draw(Text(number).font(.system(size: 19, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: y - 17))
+                context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: size.height - 14))
+            }
+        }
+    }
+}

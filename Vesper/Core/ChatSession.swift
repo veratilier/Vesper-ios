@@ -705,11 +705,13 @@ private enum ChatCallback {
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             try await connect()
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+            busy = true
             var recalled = ""
             if voiceCallContext == nil {
                 do { let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(text)])); recalled = result["context"].string; memoryStatus = "" }
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
+            try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             if let threadID {
                 let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled))]))
                 guard sendIntent == intent else { throw CancellationError() }
@@ -718,6 +720,7 @@ private enum ChatCallback {
                 let catalog: JSONValue
                 if voiceCallContext != nil { catalog = .object(["tools": .array([])]) }
                 else { catalog = try await api.request("/api/codex/tools") }
+                try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = developerContext(recalled)
                 let result = try await rpc("thread/start", .object(["dynamicTools": .array(voiceCallContext != nil ? [] : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool, Self.historyTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))

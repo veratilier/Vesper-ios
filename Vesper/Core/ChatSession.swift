@@ -457,6 +457,7 @@ private enum ChatCallback {
         closeTransport()
     }
     private func closeTransport() {
+        Self.log.info("Closing local chat transport generation=\(self.generation.uuidString, privacy: .public) foreground=\(self.foreground, privacy: .public) online=\(self.online, privacy: .public) requested=\(self.wantsConnection, privacy: .public)")
         generation = UUID(); approval = nil; resuming = false; bufferedPackets = []
         heartbeatTask?.cancel(); heartbeatTask = nil
         connectionTaskID = UUID(); connectionTask?.cancel(); connectionTask = nil
@@ -553,6 +554,8 @@ private enum ChatCallback {
                 if let threadID {
                     let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
                     try checkCallback()
+                    let returnedThread = snapshot["thread"]["id"].string
+                    guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
                     reconcile(snapshot)
                     if let historyReader {
                         let history = try await historyReader(conversationID)
@@ -747,13 +750,15 @@ private enum ChatCallback {
                 messages[index]["status"] = .string("delivered")
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
                 messages[index]["metadata"]["threadId"] = .string(threadID)
-                try await persist(messages[index])
+                do { try await persist(messages[index]) }
+                catch { if sendIntent == intent { memoryStatus = "Send confirmed; history receipt could not be saved yet." } }
             }
+            guard sendIntent == intent else { return false }
             status = "Rowan is replying…"; return true
         } catch {
             guard sendIntent == intent else { return false }
             if turnID == nil { busy = false }
-            if error is CancellationError { disconnect(); return false }
+            if Task.isCancelled { disconnect(); return false }
             if !initialized || unconfirmedSend {
                 if unconfirmedSend, initialized { closeTransport() }
                 scheduleRecovery()

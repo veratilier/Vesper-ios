@@ -259,6 +259,8 @@ final class ContractTests: XCTestCase {
     var snapshot: JSONValue = .object(["thread": .object(["id": .string("thread"), "turns": .array([])])])
     var loseReceipt = false
     var failInitialize = false
+    var ignoreCancel = false
+    var rejectTurn = false
     var pingCount = 0
     var pingFailure = false
     private var queue: [URLSessionWebSocketTask.Message] = []
@@ -266,7 +268,7 @@ final class ContractTests: XCTestCase {
     func resume() {}
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         self.closeCode = closeCode; closeReason = reason
-        fail()
+        if !ignoreCancel { fail() }
     }
     func fail() {
         let continuation = waiter; waiter = nil
@@ -287,6 +289,10 @@ final class ContractTests: XCTestCase {
         let method = packet["method"].string
         if method == "initialize", failInitialize { throw URLError(.networkConnectionLost) }
         if method == "turn/start", loseReceipt { throw URLError(.networkConnectionLost) }
+        if method == "turn/start", rejectTurn {
+            try emit(.object(["id": packet["id"], "error": .object(["message": .string("Request rejected")])]))
+            return
+        }
         if packet["id"] != .null {
             try emit(.object(["id": packet["id"], "result": method == "thread/resume" ? snapshot : .object([:])]))
         }
@@ -322,6 +328,8 @@ final class ContractTests: XCTestCase {
         let first = RecoverySocket(), second = RecoverySocket(), third = RecoverySocket()
         let chat = session([first, second, third]); defer { chat.disconnect() }
         let id = chat.conversationID
+        chat.composer.draft = "Unsent draft"
+        chat.composer.images = [Data([1, 2, 3])]
         chat.messages = [.object(["id": .string("saved"), "content": .string("Keep me")])]
         try await chat.connect()
         chat.sceneChanged(active: false); chat.sceneChanged(active: true)
@@ -329,6 +337,8 @@ final class ContractTests: XCTestCase {
         chat.networkChanged(available: false); chat.networkChanged(available: true)
         await eventually { third.packets.contains { $0["method"].string == "thread/resume" } && !chat.reconnecting }
         XCTAssertEqual(chat.conversationID, id); XCTAssertEqual(chat.messages.first?.id, "saved")
+        XCTAssertEqual(chat.composer.draft, "Unsent draft")
+        XCTAssertEqual(chat.composer.images, [Data([1, 2, 3])])
         XCTAssertNil(chat.error)
     }
     func testExplicitDisconnectPreventsLifecycleReconnect() async throws {
@@ -341,6 +351,7 @@ final class ContractTests: XCTestCase {
     }
     func testOldReceiveCannotCloseReplacementSocket() async throws {
         let first = RecoverySocket(), second = RecoverySocket(); let chat = session([first, second]); defer { chat.disconnect() }
+        first.ignoreCancel = true
         try await chat.connect(); chat.sceneChanged(active: false); chat.sceneChanged(active: true)
         await eventually { second.packets.contains { $0["method"].string == "thread/resume" } && !chat.reconnecting }
         first.fail()
@@ -397,6 +408,27 @@ final class ContractTests: XCTestCase {
         await eventually { !chat.reconnecting && !second.packets.isEmpty }
         do { _ = try await chat.submitTurn(params) } catch { XCTFail("\(error)") }
         XCTAssertEqual(second.packets.first { $0["method"].string == "turn/start" }?["params"]["clientUserMessageId"].string, "same-client")
+    }
+    func testExplicitRejectionAllowsSameClientIDToBeRetried() async throws {
+        let socket = RecoverySocket(); socket.rejectTurn = true
+        let chat = session([socket]); defer { chat.disconnect() }
+        let params: JSONValue = .object(["clientUserMessageId": .string("client")])
+        do { _ = try await chat.submitTurn(params); XCTFail("Expected rejection") } catch {}
+        XCTAssertFalse(chat.unconfirmedSend)
+        socket.rejectTurn = false
+        _ = try await chat.submitTurn(params)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.map { $0["params"]["clientUserMessageId"].string }, ["client", "client"])
+    }
+    func testSwitchingConversationCancelsScheduledRecovery() async throws {
+        let first = RecoverySocket(), second = RecoverySocket()
+        let chat = session([first, second]); defer { chat.disconnect() }
+        try await chat.connect(); first.fail()
+        await eventually { chat.reconnecting }
+        chat.newConversation(id: "different")
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertTrue(second.packets.isEmpty)
+        XCTAssertEqual(chat.conversationID, "different")
+        XCTAssertFalse(chat.reconnecting)
     }
     func testResumeMergesCompletedReplyAndPreservesPendingAndTombstones() {
         let saved: [JSONValue] = [.object(["id": .string("reply"), "role": .string("agent"), "content": .string("partial")]), .object(["id": .string("local"), "role": .string("user"), "content": .string("draft send")])]

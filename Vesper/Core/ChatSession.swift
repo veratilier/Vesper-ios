@@ -522,7 +522,10 @@ private enum ChatCallback {
         try checkCallback()
         wantsConnection = true
         guard !connectionNeedsRetry else { throw ServiceError(message: "Chat disconnected. Retry") }
-        guard foreground, online else { scheduleRecovery(); throw URLError(.notConnectedToInternet) }
+        guard foreground, online else {
+            reconnecting = true; status = "Reconnecting…"
+            throw URLError(.notConnectedToInternet)
+        }
         if let connectionTask { try await connectionTask.value; return }
         if initialized { return }
         let owner = intent

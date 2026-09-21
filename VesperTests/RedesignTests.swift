@@ -2,6 +2,37 @@ import XCTest
 @testable import Vesper
 
 @MainActor final class RedesignTests: XCTestCase {
+    func testStartupWithoutCredentialsOffersSetupInsteadOfClaimingConnection() async {
+        let store = AppStore()
+        store.token = "  "
+        await store.refresh()
+        XCTAssertFalse(store.connected)
+        XCTAssertFalse(store.loading)
+        XCTAssertNotNil(store.connectionError)
+        XCTAssertNil(store.error, "Startup failures should be inline, not repeated alerts.")
+    }
+
+    func testChangingConnectionInvalidatesPreviousSuccess() {
+        let store = AppStore()
+        store.connected = true
+        store.baseURL = "https://different.example"
+        XCTAssertFalse(store.connected)
+        store.connected = true
+        store.token = "different-token"
+        XCTAssertFalse(store.connected)
+    }
+
+    func testInvalidConnectionCannotKeepEntryUnlocked() async {
+        let store = AppStore()
+        store.token = "test-token"
+        store.baseURL = "not a URL"
+        store.connected = true
+        await store.connect()
+        XCTAssertFalse(store.connected)
+        XCTAssertNotNil(store.connectionError)
+        XCTAssertFalse(store.loading)
+    }
+
     func testDraftsSurviveShellAndConversationChanges() {
         let draft = ChatComposer()
         draft.draft = "unfinished main-room thought"

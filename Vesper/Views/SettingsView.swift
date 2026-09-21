@@ -34,6 +34,7 @@ struct ConnectionView: View {
                 SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(store.loading)
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
+                if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
         }
     }

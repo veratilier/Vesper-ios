@@ -343,7 +343,7 @@ private enum ChatCallback {
     private func loadConversation(_ id: String, around messageID: String? = nil) async throws {
         guard let api, !id.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         busy = true
-        defer { busy = false }
+        defer { busy = turnID != nil }
         // Validate the record before discarding the current chat or its draft.
         let r: JSONValue
         var parameters = URLComponents()
@@ -459,6 +459,7 @@ private enum ChatCallback {
     func disconnect() {
         wantsConnection = false; connectionSuppressed = true; intent = UUID(); sending = false; busy = false; stopRecovery()
         reconnecting = false; connectionNeedsRetry = false
+        unconfirmedSend = pendingTurn != nil
         closeTransport()
     }
     private func restoreSendState() {
@@ -598,7 +599,7 @@ private enum ChatCallback {
                 for packet in buffered { try checkCallback(); await handle(packet) }
                 try checkCallback()
                 initialized = true; reconnecting = false; connectionNeedsRetry = false
-                status = unconfirmedSend ? "Send unconfirmed. Retry to check history" : (busy ? "Rowan is replying…" : "Connected")
+                status = unconfirmedSend ? "Send unconfirmed. Check server status" : (busy ? "Rowan is replying…" : "Connected")
                 startHeartbeat(ws, generation: expected)
             }
         } catch {

@@ -25,6 +25,10 @@ extension URLSessionWebSocketTask: ChatSocket {
         }
     }
 }
+private struct ChatRPCRejected: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
 private enum ChatCallback {
     @TaskLocal static var generation: UUID?
 }
@@ -93,6 +97,9 @@ private enum ChatCallback {
     private var api: APIClient?
     private var socket: (any ChatSocket)?
     private var generation = UUID()
+    private var historyReader: ((String) async throws -> JSONValue)?
+    private var bufferedPackets: [JSONValue] = []
+    private var resuming = false
     private var intent = UUID()
     private var wantsConnection = false
     private var foreground = true
@@ -155,6 +162,7 @@ private enum ChatCallback {
         reconnecting = true; connectionNeedsRetry = false; status = "Reconnecting…"
         let recovery = UUID(); recoveryID = recovery
         recoveryTask = Task { [weak self] in
+            await ChatCallback.$generation.withValue(nil) {
             guard let self else { return }
             defer { if self.recoveryID == recovery { self.recoveryTask = nil } }
             for attempt in 0..<5 {
@@ -172,6 +180,7 @@ private enum ChatCallback {
             }
             self.reconnecting = false; self.connectionNeedsRetry = true
             self.status = "Chat disconnected. Retry"
+            }
         }
     }
     private func connectionFailed(_ failure: Error, socket ws: any ChatSocket, generation expected: UUID) {
@@ -220,6 +229,8 @@ private enum ChatCallback {
     func configure(_ store: AppStore) {
         if let api, api.token != store.api.token || endpoint != store.socketURL { disconnect() }
         appStore = store; api = store.api; endpoint = store.socketURL
+        let historyAPI = store.api
+        historyReader = { id in try await historyAPI.request("/conversations/\(id)", history: true) }
         if networkMonitor == nil {
             let monitor = NWPathMonitor(); networkMonitor = monitor
             monitor.pathUpdateHandler = { [weak self] path in
@@ -445,7 +456,7 @@ private enum ChatCallback {
         closeTransport()
     }
     private func closeTransport() {
-        generation = UUID()
+        generation = UUID(); approval = nil; resuming = false; bufferedPackets = []
         heartbeatTask?.cancel(); heartbeatTask = nil
         connectionTaskID = UUID(); connectionTask?.cancel(); connectionTask = nil
         receiveTask?.cancel(); receiveTask = nil; socket?.cancel(with: .goingAway, reason: nil); socket = nil; initialized = false
@@ -514,7 +525,7 @@ private enum ChatCallback {
         u.queryItems = (u.queryItems ?? []).filter { $0.name != "token" } + [URLQueryItem(name: "token", value: api.token)]
         guard let url = u.url else { throw ServiceError(message: "Invalid chat address.") }
         let expected = UUID(); generation = expected
-        let ws = makeSocket(url); socket = ws; ws.resume()
+        let ws = makeSocket(url); socket = ws; resuming = true; ws.resume()
         receiveTask = Task { [weak self] in
             await ChatCallback.$generation.withValue(expected) {
                 do {
@@ -540,7 +551,31 @@ private enum ChatCallback {
                     let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
                     try checkCallback()
                     reconcile(snapshot)
+                    if let historyReader {
+                        let history = try await historyReader(conversationID)
+                        try checkCallback()
+                        try Self.validateHistoryRecord(history, expectedID: conversationID)
+                        tombstones = history["tombstones"].array
+                        var merged = messages
+                        for message in history["messages"].array {
+                            if let index = merged.firstIndex(where: { $0.id == message.id }) {
+                                // A locally saved pending row is not a server acceptance receipt.
+                                if message["status"].string == "delivered" { merged[index] = message }
+                            } else { merged.append(message) }
+                        }
+                        messages = ChatRecovery.merge(merged, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+                        if let pendingTurn, let receipt = history["messages"].array.first(where: {
+                            $0.id == pendingTurn["clientUserMessageId"].string && $0["status"].string == "delivered" && !$0["metadata"]["turnId"].string.isEmpty
+                        }) {
+                            if let index = messages.firstIndex(where: { $0.id == receipt.id }) { messages[index] = receipt }
+                            self.pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+                        }
+                    }
                 }
+                try checkCallback()
+                resuming = false
+                let buffered = bufferedPackets; bufferedPackets = []
+                for packet in buffered { try checkCallback(); await handle(packet) }
                 try checkCallback()
                 initialized = true; reconnecting = false; connectionNeedsRetry = false
                 status = unconfirmedSend ? "Send unconfirmed. Retry to check history" : (busy ? "Rowan is replying…" : "Connected")
@@ -558,9 +593,18 @@ private enum ChatCallback {
         try await connect()
         try checkCallback()
         pendingTurn = params; unconfirmedSend = true
-        let result = try await rpc("turn/start", params)
-        pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
-        return result
+        let owner = intent
+        do {
+            let result = try await rpc("turn/start", params)
+            guard owner == intent else { throw CancellationError() }
+            pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+            return result
+        } catch let rejection as ChatRPCRejected {
+            guard owner == intent else { throw CancellationError() }
+            // An explicit JSON-RPC rejection proves this request was not accepted.
+            pendingTurn = nil; unconfirmedSend = false
+            throw rejection
+        }
     }
     private func reconcile(_ snapshot: JSONValue) {
         messages = ChatRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
@@ -704,7 +748,7 @@ private enum ChatCallback {
             status = "Rowan is replying…"; return true
         } catch {
             guard sendIntent == intent else { return false }
-            busy = false
+            if turnID == nil { busy = false }
             if error is CancellationError { disconnect(); return false }
             if !initialized || unconfirmedSend {
                 if unconfirmedSend, initialized { closeTransport() }
@@ -764,12 +808,15 @@ private enum ChatCallback {
         } catch { self.error = "Call ended, but its record could not be synced: " + error.localizedDescription }
     }
     private func persist(_ message: JSONValue) async throws {
+        try checkCallback()
+        let targetConversation = conversationID
         guard voiceCallContext == nil, let api else { return }
-        _ = try await api.request("/conversations/\(conversationID)/messages", method: "POST", body: message, history: true)
+        _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+        try checkCallback()
         if message["status"].string == "delivered", !ChatPresentation.isActivity(message), !message["content"].string.isEmpty || !message["metadata"]["attachments"].array.isEmpty {
             do {
-                _ = try await api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(conversationID), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))
-            } catch { memoryStatus = "Chat saved; original evidence could not be synced to Memory." }
+                _ = try await api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(targetConversation), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))
+            } catch { try checkCallback(); memoryStatus = "Chat saved; original evidence could not be synced to Memory." }
         }
     }
     private func handle(_ packet: JSONValue) async {
@@ -777,9 +824,10 @@ private enum ChatCallback {
         let id = packet["id"].string
         if packet["method"].string.isEmpty, let callback = pending.removeValue(forKey: id) {
             timeouts.removeValue(forKey: id)?.cancel()
-            if packet["error"] != .null { callback.resume(throwing: ServiceError(message: packet["error"]["message"].string)) }
+            if packet["error"] != .null { callback.resume(throwing: ChatRPCRejected(message: packet["error"]["message"].string)) }
             else { callback.resume(returning: packet["result"]) }; return
         }
+        if resuming { bufferedPackets.append(packet); return }
         let method = packet["method"].string; let p = packet["params"]
         if packet["id"] != .null {
             if ["item/tool/call", "tool/call", "tools/call"].contains(method) {
@@ -819,7 +867,7 @@ private enum ChatCallback {
             if item["changes"] != .null { execution["files"] = item["changes"] }
             let message: JSONValue = .object(["id": .string("execution-" + id), "conversationId": .string(conversationID), "role": .string("system"), "content": .string(execution["title"].string), "createdAt": .string(index.map { messages[$0]["createdAt"].string } ?? isoNow()), "source": .string("codex"), "metadata": .object(["blockType": item["type"], "execution": execution, "turnId": .string(turnID ?? ""), "threadId": .string(threadID ?? "")])])
             if let index { messages[index] = message } else { messages.append(message) }
-            if method == "item/completed" { do { try await persist(message) } catch { self.error = "Terminal output received, but history could not be saved." } }
+            if method == "item/completed" { do { try await persist(message) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Terminal output received, but history could not be saved." } }
         }
         else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
@@ -835,19 +883,20 @@ private enum ChatCallback {
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
                 messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
-                do { try await persist(messages[index]) } catch { self.error = "Reply received, but history could not be saved." }
+                do { try await persist(messages[index]) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             } else if !item["text"].string.isEmpty {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 var savedMessage = message
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
-                messages.append(savedMessage); do { try await persist(savedMessage) } catch { self.error = "Reply received, but history could not be saved." }
+                messages.append(savedMessage); do { try await persist(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             }
         } else if method == "turn/completed" {
             if !thinkingSummary.isEmpty || !events.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
                 messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
-                do { try await persist(messages[index]); thinkingSummary = "" } catch { self.error = "Reply received, but the thinking summary could not be saved." }
+                do { try await persist(messages[index]); try checkCallback(); thinkingSummary = "" } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but the thinking summary could not be saved." }
             }
+            guard (try? checkCallback()) != nil else { return }
             busy = false; status = ""; turnID = nil
             if p["turn"]["error"] != .null { error = p["turn"]["error"]["message"].string }
         } else if method == "turn/started" { busy = true; turnID = p["turn"]["id"].string }
@@ -858,7 +907,7 @@ private enum ChatCallback {
     func resolveApproval(accept: Bool) async {
         guard let packet = approval else { return }
         do { try await sendPacket(.object(["id": packet["id"], "result": .object(["decision": .string(accept ? "accept" : "decline")])])) ; approval = nil }
-        catch { self.error = error.localizedDescription }
+        catch { guard (try? checkCallback()) != nil else { return }; self.error = error.localizedDescription }
     }
     private func executeTool(_ packet: JSONValue) async {
         guard (try? checkCallback()) != nil else { return }
@@ -979,6 +1028,7 @@ private enum ChatCallback {
                 try checkCallback()
             events.append("\(name) · completed")
         } catch {
+            guard (try? checkCallback()) != nil else { return }
             toolError = error.localizedDescription
             if name == "request_native_call" {
                 events.append("request_native_call · failed\n" + error.localizedDescription)

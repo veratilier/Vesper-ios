@@ -200,7 +200,7 @@ struct RootView: View {
         .onChange(of: chat.busy) { old, new in if old && !new && sidebar { Task { await refreshUsage() } } }
         .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
         .onChange(of: phase) { _, phase in
-            chat.sceneChanged(active: phase == .active)
+            if phase != .inactive { chat.sceneChanged(active: phase == .active) }
             if phase == .active { Task { await refreshUsage() } }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)

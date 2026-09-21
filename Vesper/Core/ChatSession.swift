@@ -613,7 +613,7 @@ private enum ChatCallback {
         try await connect()
         try checkCallback()
         guard pendingTurn == nil else { throw ServiceError(message: "Check the previous send before sending again.") }
-        pendingTurn = params; unresolvedSends[conversationID] = params; unconfirmedSend = true
+        pendingTurn = params; unresolvedSends[conversationID] = params
         let owner = intent
         do {
             let result = try await rpc("turn/start", params)
@@ -626,6 +626,9 @@ private enum ChatCallback {
             unresolvedSends.removeValue(forKey: conversationID)
             pendingTurn = nil; unconfirmedSend = false
             throw rejection
+        } catch {
+            if owner == intent, pendingTurn != nil { unconfirmedSend = true }
+            throw error
         }
     }
     private func reconcile(_ snapshot: JSONValue) {
@@ -1260,7 +1263,12 @@ enum ChatRecovery {
     }
     static func merge(_ saved: [JSONValue], snapshot: JSONValue, conversationID: String, tombstones: [JSONValue]) -> [JSONValue] {
         let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
-        var correlated = saved
+        var correlated = saved.filter { message in
+            !tombstones.contains { tombstone in
+                let deletedIDs = [tombstone["messageId"].string, tombstone["itemId"].string, tombstone["stableId"].string].filter { !$0.isEmpty }
+                return deletedIDs.contains(message.id) || deletedIDs.contains(message["metadata"]["itemId"].string)
+            }
+        }
         for index in correlated.indices where ChatPresentation.isUser(correlated[index]) {
             if let turn = receipt(for: correlated[index].id, snapshot: snapshot) {
                 correlated[index]["metadata"]["turnId"] = .string(turn)

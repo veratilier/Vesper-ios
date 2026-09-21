@@ -391,7 +391,7 @@ struct ChatView: View {
             } else if chat.connectionNeedsRetry || chat.unconfirmedSend {
                 HStack {
                     Text(chat.unconfirmedSend ? "Send unconfirmed; checking server history avoids duplicates." : "Chat disconnected")
-                    Button("Retry") { chat.retryConnection() }
+                    Button(chat.connectionNeedsRetry ? "Retry" : "Check status") { chat.retryConnection() }
                 }.font(.caption).padding(8)
             }
         }

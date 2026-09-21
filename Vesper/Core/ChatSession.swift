@@ -112,6 +112,8 @@ private enum ChatCallback {
     @Published private(set) var connectionNeedsRetry = false
     @Published private(set) var unconfirmedSend = false
     private var pendingTurn: JSONValue?
+    private var unresolvedSends: [String: JSONValue] = [:]
+    private var connectionSuppressed = false
     private var pendingDraftID: String?
     private var sending = false
     private let makeSocket: (URL) -> any ChatSocket
@@ -128,8 +130,9 @@ private enum ChatCallback {
     }
     deinit { networkMonitor?.cancel() }
     // Used by deterministic transport tests without credentials or live requests.
-    func configureConnection(api: APIClient, endpoint: String, threadID: String? = nil) {
-        self.api = api; self.endpoint = endpoint; self.threadID = threadID
+    func configureConnection(api: APIClient, endpoint: String, threadID: String? = nil,
+                             historyReader: ((String) async throws -> JSONValue)? = nil) {
+        self.api = api; self.endpoint = endpoint; self.threadID = threadID; self.historyReader = historyReader
     }
     private func checkCallback() throws {
         try Task.checkCancellation()
@@ -152,7 +155,7 @@ private enum ChatCallback {
         else if restored { scheduleRecovery(immediate: true) }
     }
     func retryConnection() {
-        guard wantsConnection else { return }
+        wantsConnection = true; connectionSuppressed = false
         stopRecovery(); closeTransport(); scheduleRecovery(immediate: true)
     }
     private func stopRecovery() {
@@ -228,7 +231,10 @@ private enum ChatCallback {
     ])
     private weak var appStore: AppStore?
     func configure(_ store: AppStore) {
-        if let api, api.token != store.api.token || endpoint != store.socketURL { disconnect() }
+        if let api, api.token != store.api.token || endpoint != store.socketURL {
+            disconnect(); unresolvedSends = [:]; pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+            connectionSuppressed = store.api.token.isEmpty
+        }
         appStore = store; api = store.api; endpoint = store.socketURL
         let historyAPI = store.api
         historyReader = { id in try await historyAPI.request("/conversations/\(id)", history: true) }
@@ -352,7 +358,7 @@ private enum ChatCallback {
         }
         try Self.validateHistoryRecord(r, expectedID: id)
         composer.switchConversation(from: conversationID, to: id)
-        disconnect(); conversationID = id; threadID = nil; turnID = nil
+        disconnect(); conversationID = id; restoreSendState(); connectionSuppressed = false; threadID = nil; turnID = nil
         jumpMessageID = nil; events = []; thinkingSummary = ""
         let t = r["conversation"]["codexThreadId"].string
         threadID = t.isEmpty ? nil : t
@@ -448,13 +454,21 @@ private enum ChatCallback {
         } catch { self.error = error.localizedDescription }
     }
     func newConversation(id: String = UUID().uuidString) {
-        guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
+        guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
     }
     func disconnect() {
-        wantsConnection = false; intent = UUID(); sending = false; stopRecovery()
+        wantsConnection = false; connectionSuppressed = true; intent = UUID(); sending = false; busy = false; stopRecovery()
         reconnecting = false; connectionNeedsRetry = false
-        pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
         closeTransport()
+    }
+    private func restoreSendState() {
+        pendingTurn = unresolvedSends[conversationID]
+        pendingDraftID = pendingTurn?["clientUserMessageId"].string
+        unconfirmedSend = pendingTurn != nil
+    }
+    private func confirmPendingSend() {
+        unresolvedSends.removeValue(forKey: conversationID)
+        pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
     }
     private func closeTransport() {
         Self.log.info("Closing local chat transport generation=\(self.generation.uuidString, privacy: .public) foreground=\(self.foreground, privacy: .public) online=\(self.online, privacy: .public) requested=\(self.wantsConnection, privacy: .public)")
@@ -574,7 +588,7 @@ private enum ChatCallback {
                             $0.id == pendingTurn["clientUserMessageId"].string && $0["status"].string == "delivered" && !$0["metadata"]["turnId"].string.isEmpty
                         }) {
                             if let index = messages.firstIndex(where: { $0.id == receipt.id }) { messages[index] = receipt }
-                            self.pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+                            confirmPendingSend()
                         }
                     }
                 }
@@ -598,16 +612,18 @@ private enum ChatCallback {
         guard pendingTurn == nil else { throw ServiceError(message: "Check the previous send before sending again.") }
         try await connect()
         try checkCallback()
-        pendingTurn = params; unconfirmedSend = true
+        guard pendingTurn == nil else { throw ServiceError(message: "Check the previous send before sending again.") }
+        pendingTurn = params; unresolvedSends[conversationID] = params; unconfirmedSend = true
         let owner = intent
         do {
             let result = try await rpc("turn/start", params)
             guard owner == intent else { throw CancellationError() }
-            pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+            confirmPendingSend()
             return result
         } catch let rejection as ChatRPCRejected {
             guard owner == intent else { throw CancellationError() }
             // An explicit JSON-RPC rejection proves this request was not accepted.
+            unresolvedSends.removeValue(forKey: conversationID)
             pendingTurn = nil; unconfirmedSend = false
             throw rejection
         }
@@ -625,7 +641,7 @@ private enum ChatCallback {
                 messages[index]["status"] = .string("delivered")
                 messages[index]["metadata"]["turnId"] = .string(receipt)
             }
-            self.pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+            confirmPendingSend()
         }
     }
     func loadModels() async {
@@ -658,6 +674,7 @@ private enum ChatCallback {
     }
     func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil) async -> Bool {
         guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
+        connectionSuppressed = false
         busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
         let messageID = pendingDraftID ?? UUID().uuidString
         pendingDraftID = messageID
@@ -768,7 +785,7 @@ private enum ChatCallback {
         }
     }
     func loadUsage() async {
-        guard !loadingUsage, let api, !api.token.isEmpty else { return }
+        guard !connectionSuppressed, !loadingUsage, let api, !api.token.isEmpty else { return }
         loadingUsage = true; usageError = nil
         defer { loadingUsage = false }
         do {
@@ -782,9 +799,13 @@ private enum ChatCallback {
         return Int(max(0, min(100, 100 - used)).rounded())
     }
     func interrupt() async {
-        guard let threadID, let turnID else { return }
+        // Stopping is a user action, so a failing interrupt must not restart recovery.
+        wantsConnection = false; stopRecovery()
+        let owner = intent
+        defer { if owner == intent { disconnect() } }
+        guard initialized, let threadID, let turnID else { return }
         do { _ = try await rpc("turn/interrupt", .object(["threadId": .string(threadID), "turnId": .string(turnID)])) }
-        catch { self.error = error.localizedDescription }
+        catch { if owner == intent { status = "Stopped locally; server status will be checked when you reconnect." } }
     }
     private static let historyTool: JSONValue = .object([
         "name": .string("search_native_history"),

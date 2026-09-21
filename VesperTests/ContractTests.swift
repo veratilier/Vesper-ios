@@ -301,14 +301,14 @@ final class ContractTests: XCTestCase {
 }
 
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
-    private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000) -> ChatSession {
+    private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
         var index = 0
         let chat = ChatSession(socketFactory: { _ in
             let socket = sockets[min(index, sockets.count - 1)]; index += 1; return socket
         }, delay: { seconds in
             try await Task.sleep(for: .milliseconds(seconds >= 100 ? 100_000 : 5))
         }, heartbeatInterval: heartbeat, requestTimeout: 0.1)
-        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread")
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread", historyReader: historyReader)
         return chat
     }
     private func eventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
@@ -429,6 +429,33 @@ final class ContractTests: XCTestCase {
         XCTAssertTrue(second.packets.isEmpty)
         XCTAssertEqual(chat.conversationID, "different")
         XCTAssertFalse(chat.reconnecting)
+    }
+    func testPersistedReceiptResolvesLostAcknowledgement() async throws {
+        let first = RecoverySocket(), second = RecoverySocket(); first.loseReceipt = true
+        var accepted = false
+        let chat = session([first, second], historyReader: { id in
+            .object(["conversation": .object(["id": .string(id)]), "messages": .array(accepted ? [.object(["id": .string("client"), "role": .string("user"), "status": .string("delivered"), "metadata": .object(["turnId": .string("turn")])])] : [])])
+        }); defer { chat.disconnect() }
+        do { _ = try await chat.submitTurn(.object(["clientUserMessageId": .string("client")])) } catch {}
+        accepted = true
+        await eventually { second.packets.contains { $0["method"].string == "thread/resume" } && !chat.unconfirmedSend }
+        XCTAssertFalse(second.packets.contains { $0["method"].string == "turn/start" })
+        XCTAssertEqual(chat.messages.first { $0.id == "client" }?["status"].string, "delivered")
+    }
+    func testCancelStopsRecoveryButKeepsAmbiguousSendIdentity() async throws {
+        let first = RecoverySocket(), second = RecoverySocket(); first.loseReceipt = true
+        let chat = session([first, second]); defer { chat.disconnect() }
+        do { _ = try await chat.submitTurn(.object(["clientUserMessageId": .string("client")])) } catch {}
+        await chat.interrupt()
+        chat.sceneChanged(active: false); chat.sceneChanged(active: true)
+        chat.networkChanged(available: false); chat.networkChanged(available: true)
+        await chat.loadUsage()
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertTrue(second.packets.isEmpty)
+        XCTAssertTrue(chat.unconfirmedSend)
+        chat.retryConnection()
+        await eventually { second.packets.contains { $0["method"].string == "thread/resume" } }
+        XCTAssertFalse(second.packets.contains { $0["method"].string == "turn/start" })
     }
     func testResumeMergesCompletedReplyAndPreservesPendingAndTombstones() {
         let saved: [JSONValue] = [.object(["id": .string("reply"), "role": .string("agent"), "content": .string("partial")]), .object(["id": .string("local"), "role": .string("user"), "content": .string("draft send")])]

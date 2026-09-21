@@ -2,6 +2,36 @@ import Foundation
 import SwiftUI
 import UserNotifications
 import AVFoundation
+import Network
+import OSLog
+
+// Injectable transport keeps recovery tests independent of the live service.
+@MainActor protocol ChatSocket: AnyObject {
+    var closeCode: URLSessionWebSocketTask.CloseCode { get }
+    var closeReason: Data? { get }
+    func resume()
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    func send(_ message: URLSessionWebSocketTask.Message) async throws
+    func ping() async throws
+}
+extension URLSessionWebSocketTask: ChatSocket {
+    func ping() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            sendPing { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+        }
+    }
+}
+private struct ChatRPCRejected: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+private enum ChatCallback {
+    @TaskLocal static var generation: UUID?
+}
 
 @MainActor final class ChatSession: ObservableObject {
     let composer = ChatComposer()
@@ -26,6 +56,7 @@ import AVFoundation
     @Published var loadingUsage = false
     @Published var usageError: String?
     private var connectionTask: Task<Void, Error>?
+    private var connectionTaskID = UUID()
     @Published var model = ""
     @Published var effort = ""
     private var restoringLatest = false
@@ -64,7 +95,130 @@ import AVFoundation
     private var threadID: String?
     private var turnID: String?
     private var api: APIClient?
-    private var socket: URLSessionWebSocketTask?
+    private var socket: (any ChatSocket)?
+    private var generation = UUID()
+    private var historyReader: ((String) async throws -> JSONValue)?
+    private var bufferedPackets: [JSONValue] = []
+    private var resuming = false
+    private var intent = UUID()
+    private var wantsConnection = false
+    private var foreground = true
+    private var online = true
+    private var networkMonitor: NWPathMonitor?
+    private var heartbeatTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryID = UUID()
+    @Published private(set) var reconnecting = false
+    @Published private(set) var connectionNeedsRetry = false
+    @Published private(set) var unconfirmedSend = false
+    private var pendingTurn: JSONValue?
+    private var unresolvedSends: [String: JSONValue] = [:]
+    private var connectionSuppressed = false
+    private var pendingDraftID: String?
+    private var sending = false
+    private let makeSocket: (URL) -> any ChatSocket
+    private let delay: (Double) async throws -> Void
+    private let heartbeatInterval: Double
+    private let requestTimeout: Double
+    private static let log = Logger(subsystem: "Vesper", category: "ChatConnection")
+
+    init(socketFactory: @escaping (URL) -> any ChatSocket = { URLSession.shared.webSocketTask(with: $0) },
+         delay: @escaping (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+         heartbeatInterval: Double = 25, requestTimeout: Double = 30) {
+        makeSocket = socketFactory; self.delay = delay
+        self.heartbeatInterval = heartbeatInterval; self.requestTimeout = requestTimeout
+    }
+    deinit { networkMonitor?.cancel() }
+    // Used by deterministic transport tests without credentials or live requests.
+    func configureConnection(api: APIClient, endpoint: String, threadID: String? = nil,
+                             historyReader: ((String) async throws -> JSONValue)? = nil) {
+        self.api = api; self.endpoint = endpoint; self.threadID = threadID; self.historyReader = historyReader
+    }
+    private func checkCallback() throws {
+        try Task.checkCancellation()
+        if let expected = ChatCallback.generation, expected != generation { throw CancellationError() }
+    }
+    static func retryDelay(_ attempt: Int, jitter: Double = Double.random(in: 0.5...1.5)) -> Double {
+        min(30, pow(2, Double(attempt))) * min(1.5, max(0.5, jitter))
+    }
+    func sceneChanged(active: Bool) {
+        foreground = active
+        guard wantsConnection else { return }
+        if !active {
+            stopRecovery(); closeTransport()
+        } else { scheduleRecovery(immediate: true) }
+    }
+    func networkChanged(available: Bool) {
+        let restored = !online && available; online = available
+        guard wantsConnection else { return }
+        if !available { stopRecovery(); closeTransport(); reconnecting = true }
+        else if restored { scheduleRecovery(immediate: true) }
+    }
+    func retryConnection() {
+        wantsConnection = true; connectionSuppressed = false
+        stopRecovery(); closeTransport(); scheduleRecovery(immediate: true)
+    }
+    private func stopRecovery() {
+        recoveryID = UUID(); recoveryTask?.cancel(); recoveryTask = nil
+    }
+    private func scheduleRecovery(immediate: Bool = false) {
+        guard wantsConnection, foreground, online, recoveryTask == nil, !connectionNeedsRetry || immediate else { return }
+        reconnecting = true; connectionNeedsRetry = false; status = "Reconnecting…"
+        let recovery = UUID(); recoveryID = recovery
+        recoveryTask = Task { [weak self] in
+            await ChatCallback.$generation.withValue(nil) {
+            guard let self else { return }
+            defer { if self.recoveryID == recovery { self.recoveryTask = nil } }
+            for attempt in 0..<5 {
+                do {
+                    if !immediate || attempt > 0 { try await self.delay(Self.retryDelay(attempt)) }
+                    try Task.checkCancellation()
+                    guard self.recoveryID == recovery, self.wantsConnection, self.foreground, self.online else { return }
+                    try await self.connect()
+                    guard self.recoveryID == recovery else { return }
+                    self.reconnecting = false; self.connectionNeedsRetry = false
+                    return
+                } catch {
+                    guard !Task.isCancelled, self.recoveryID == recovery else { return }
+                }
+            }
+            self.reconnecting = false; self.connectionNeedsRetry = true
+            self.status = "Chat disconnected. Retry"
+            }
+        }
+    }
+    private func connectionFailed(_ failure: Error, socket ws: any ChatSocket, generation expected: UUID) {
+        guard expected == generation, socket === ws else { return }
+        let underlying = failure as NSError
+        let reason = ws.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        // Keep arbitrary server reasons/error descriptions private (they may contain URLs).
+        Self.log.error("WebSocket generation=\(expected.uuidString, privacy: .public) close=\(ws.closeCode.rawValue, privacy: .public) reason=\(reason, privacy: .private) error=\(underlying.domain, privacy: .public):\(underlying.code, privacy: .public) details=\(String(describing: underlying), privacy: .private)")
+        closeTransport(); scheduleRecovery()
+    }
+    private func startHeartbeat(_ ws: any ChatSocket, generation expected: UUID) {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do {
+                    try await self.delay(self.heartbeatInterval)
+                    guard expected == self.generation, self.socket === ws else { return }
+                    // A separate deadline is required: some transports never call the pong completion.
+                    let deadline = Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(10))
+                        guard !Task.isCancelled else { return }
+                        self?.connectionFailed(URLError(.timedOut), socket: ws, generation: expected)
+                    }
+                    defer { deadline.cancel() }
+                    try await ws.ping()
+                    guard expected == self.generation, self.socket === ws else { return }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.connectionFailed(error, socket: ws, generation: expected); return
+                }
+            }
+        }
+    }
     private var receiveTask: Task<Void, Never>?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
     private var timeouts: [String: Task<Void, Never>] = [:]
@@ -76,7 +230,23 @@ import AVFoundation
         "apps.app_6a92be9d9e1c819197f58017d0e2b985.enabled": .bool(false)
     ])
     private weak var appStore: AppStore?
-    func configure(_ store: AppStore) { appStore = store; api = store.api; endpoint = store.socketURL }
+    func configure(_ store: AppStore) {
+        if let api, api.token != store.api.token || endpoint != store.socketURL {
+            disconnect(); unresolvedSends = [:]; pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+            connectionSuppressed = store.api.token.isEmpty
+        }
+        appStore = store; api = store.api; endpoint = store.socketURL
+        let historyAPI = store.api
+        historyReader = { id in try await historyAPI.request("/conversations/\(id)", history: true) }
+        if networkMonitor == nil {
+            let monitor = NWPathMonitor(); networkMonitor = monitor
+            monitor.pathUpdateHandler = { [weak self] path in
+                let available = path.status == .satisfied
+                Task { @MainActor [weak self] in self?.networkChanged(available: available) }
+            }
+            monitor.start(queue: DispatchQueue(label: "Vesper.ChatNetwork"))
+        }
+    }
     func loadConversations() async {
         guard let api else { return }
         do { let r = try await api.request("/conversations", history: true); conversations = r["conversations"].array }
@@ -173,7 +343,7 @@ import AVFoundation
     private func loadConversation(_ id: String, around messageID: String? = nil) async throws {
         guard let api, !id.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         busy = true
-        defer { busy = false }
+        defer { busy = turnID != nil }
         // Validate the record before discarding the current chat or its draft.
         let r: JSONValue
         var parameters = URLComponents()
@@ -188,7 +358,7 @@ import AVFoundation
         }
         try Self.validateHistoryRecord(r, expectedID: id)
         composer.switchConversation(from: conversationID, to: id)
-        disconnect(); conversationID = id; threadID = nil; turnID = nil
+        disconnect(); conversationID = id; restoreSendState(); connectionSuppressed = false; threadID = nil; turnID = nil
         jumpMessageID = nil; events = []; thinkingSummary = ""
         let t = r["conversation"]["codexThreadId"].string
         threadID = t.isEmpty ? nil : t
@@ -196,13 +366,12 @@ import AVFoundation
         messages = r["messages"].array
         hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
         status = "History loaded"
-        if let threadID {
+        if threadID != nil {
             do {
                 try await connect()
-                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
-                messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+                // connect() resumes and merges the existing thread before becoming ready.
             } catch {
-                self.error = "Saved history is visible, but the full conversation could not be loaded: " + error.localizedDescription
+                if !(error is CancellationError) { scheduleRecovery() }
             }
         }
     }
@@ -285,18 +454,44 @@ import AVFoundation
         } catch { self.error = error.localizedDescription }
     }
     func newConversation(id: String = UUID().uuidString) {
-        guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
+        guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
     }
     func disconnect() {
-        connectionTask?.cancel(); connectionTask = nil
+        wantsConnection = false; connectionSuppressed = true; intent = UUID(); sending = false; busy = false; stopRecovery()
+        reconnecting = false; connectionNeedsRetry = false
+        unconfirmedSend = pendingTurn != nil
+        closeTransport()
+    }
+    private func restoreSendState() {
+        pendingTurn = unresolvedSends[conversationID]
+        pendingDraftID = pendingTurn?["clientUserMessageId"].string
+        unconfirmedSend = pendingTurn != nil
+    }
+    private func confirmPendingSend() {
+        unresolvedSends.removeValue(forKey: conversationID)
+        pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+    }
+    private func closeTransport() {
+        Self.log.info("Closing local chat transport generation=\(self.generation.uuidString, privacy: .public) foreground=\(self.foreground, privacy: .public) online=\(self.online, privacy: .public) requested=\(self.wantsConnection, privacy: .public)")
+        generation = UUID(); approval = nil; resuming = false; bufferedPackets = []
+        heartbeatTask?.cancel(); heartbeatTask = nil
+        connectionTaskID = UUID(); connectionTask?.cancel(); connectionTask = nil
         receiveTask?.cancel(); receiveTask = nil; socket?.cancel(with: .goingAway, reason: nil); socket = nil; initialized = false
         for (_, timer) in timeouts { timer.cancel() }; timeouts.removeAll()
         let requests = pending; pending.removeAll()
         for (_, continuation) in requests { continuation.resume(throwing: ServiceError(message: "Chat connection closed.")) }
     }
     private func sendPacket(_ packet: JSONValue) async throws {
+        try checkCallback()
         guard let socket else { throw ServiceError(message: "Chat is disconnected.") }
-        try await socket.send(Self.wireMessage(packet))
+        let expected = generation
+        do {
+            try await socket.send(Self.wireMessage(packet))
+            guard expected == generation, self.socket === socket else { throw CancellationError() }
+        } catch {
+            connectionFailed(error, socket: socket, generation: expected)
+            throw error
+        }
     }
     static func wireMessage(_ packet: JSONValue) throws -> URLSessionWebSocketTask.Message {
         let data = try JSONEncoder().encode(packet)
@@ -304,58 +499,156 @@ import AVFoundation
         return .string(String(decoding: data, as: UTF8.self))
     }
     private func rpc(_ method: String, _ params: JSONValue = .object([:])) async throws -> JSONValue {
+        try checkCallback()
+        let expected = generation
+        let timeout = requestTimeout
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
             timeouts[id] = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: .seconds(timeout))
                 guard !Task.isCancelled, let self, let c = self.pending.removeValue(forKey: id) else { return }
-                self.timeouts.removeValue(forKey: id); c.resume(throwing: ServiceError(message: "Request timed out (\(method)). Check history before resending."))
+                self.timeouts.removeValue(forKey: id); c.resume(throwing: URLError(.timedOut))
+                if let ws = self.socket { self.connectionFailed(URLError(.timedOut), socket: ws, generation: expected) }
             }
             Task { [weak self] in
-                guard let self else { return }
+                guard let self, expected == self.generation, self.pending[id] != nil else { return }
                 do { try await self.sendPacket(.object(["id": .string(id), "method": .string(method), "params": params])) }
                 catch { self.timeouts.removeValue(forKey: id)?.cancel(); self.pending.removeValue(forKey: id)?.resume(throwing: error) }
             }
         }
     }
     func connect() async throws {
-        if initialized { return }
+        try checkCallback()
+        wantsConnection = true
+        guard !connectionNeedsRetry else { throw ServiceError(message: "Chat disconnected. Retry") }
+        guard foreground, online else {
+            reconnecting = true; status = "Reconnecting…"
+            throw URLError(.notConnectedToInternet)
+        }
         if let connectionTask { try await connectionTask.value; return }
+        if initialized { return }
+        let owner = intent
+        let taskID = UUID(); connectionTaskID = taskID
         let task = Task { try await self.establishConnection() }
         connectionTask = task
-        defer { connectionTask = nil }
-        try await task.value
+        do {
+            try await task.value
+            guard owner == intent else { throw CancellationError() }
+            if connectionTaskID == taskID { connectionTask = nil }
+        } catch {
+            if owner == intent, connectionTaskID == taskID { connectionTask = nil; scheduleRecovery() }
+            throw error
+        }
     }
     private func establishConnection() async throws {
-        guard !initialized, let api else { return }
+        guard let api else { throw ServiceError(message: "Connect your device first.") }
         guard !api.token.isEmpty, var u = URLComponents(string: endpoint), u.scheme == "wss", u.host != nil else { throw ServiceError(message: "Pair this device in Settings first.") }
         u.queryItems = (u.queryItems ?? []).filter { $0.name != "token" } + [URLQueryItem(name: "token", value: api.token)]
         guard let url = u.url else { throw ServiceError(message: "Invalid chat address.") }
-        let ws = URLSession.shared.webSocketTask(with: url); socket = ws; ws.resume()
+        let expected = UUID(); generation = expected
+        let ws = makeSocket(url); socket = ws; resuming = true; ws.resume()
         receiveTask = Task { [weak self] in
-            do {
-                while !Task.isCancelled {
-                    let message = try await ws.receive()
-                    let data: Data
-                    switch message { case .data(let d): data = d; case .string(let s): data = Data(s.utf8); @unknown default: continue }
-                    let packet = try JSONDecoder().decode(JSONValue.self, from: data)
-                    await self?.handle(packet)
+            await ChatCallback.$generation.withValue(expected) {
+                do {
+                    while !Task.isCancelled {
+                        let message = try await ws.receive()
+                        guard let self, self.generation == expected, self.socket === ws else { return }
+                        let data: Data
+                        switch message { case .data(let d): data = d; case .string(let s): data = Data(s.utf8); @unknown default: continue }
+                        let packet = try JSONDecoder().decode(JSONValue.self, from: data)
+                        await self.handle(packet)
+                    }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self?.connectionFailed(error, socket: ws, generation: expected)
                 }
-            } catch {
-                guard !Task.isCancelled, self?.socket === ws else { return }
-                self?.error = "Chat connection interrupted. Reopen the conversation to check the server history before resending."
-                self?.busy = false; self?.disconnect()
             }
         }
         do {
-        _ = try await rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])]))
-        try await sendPacket(.object(["method": .string("initialized")]))
-        initialized = true
-        status = "Connected"
+            try await ChatCallback.$generation.withValue(expected) {
+                _ = try await rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])]))
+                try await sendPacket(.object(["method": .string("initialized")]))
+                if let threadID {
+                    let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
+                    try checkCallback()
+                    let returnedThread = snapshot["thread"]["id"].string
+                    guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
+                    reconcile(snapshot)
+                    if let historyReader {
+                        let history = try await historyReader(conversationID)
+                        try checkCallback()
+                        try Self.validateHistoryRecord(history, expectedID: conversationID)
+                        tombstones = history["tombstones"].array
+                        var merged = messages
+                        for message in history["messages"].array {
+                            if let index = merged.firstIndex(where: { $0.id == message.id }) {
+                                // A locally saved pending row is not a server acceptance receipt.
+                                if message["status"].string == "delivered" { merged[index] = message }
+                            } else { merged.append(message) }
+                        }
+                        messages = ChatRecovery.merge(merged, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+                        if let pendingTurn, let receipt = history["messages"].array.first(where: {
+                            $0.id == pendingTurn["clientUserMessageId"].string && $0["status"].string == "delivered" && !$0["metadata"]["turnId"].string.isEmpty
+                        }) {
+                            if let index = messages.firstIndex(where: { $0.id == receipt.id }) { messages[index] = receipt }
+                            confirmPendingSend()
+                        }
+                    }
+                }
+                try checkCallback()
+                resuming = false
+                let buffered = bufferedPackets; bufferedPackets = []
+                for packet in buffered { try checkCallback(); await handle(packet) }
+                try checkCallback()
+                initialized = true; reconnecting = false; connectionNeedsRetry = false
+                status = unconfirmedSend ? "Send unconfirmed. Check server status" : (busy ? "Rowan is replying…" : "Connected")
+                startHeartbeat(ws, generation: expected)
+            }
         } catch {
-            if socket === ws { disconnect() }
+            connectionFailed(error, socket: ws, generation: expected)
             throw error
+        }
+    }
+    // Keep the exact envelope until a receipt resolves it. A transport error after
+    // send() begins is ambiguous even if URLSession reports that the send failed.
+    func submitTurn(_ params: JSONValue) async throws -> JSONValue {
+        guard pendingTurn == nil else { throw ServiceError(message: "Check the previous send before sending again.") }
+        try await connect()
+        try checkCallback()
+        guard pendingTurn == nil else { throw ServiceError(message: "Check the previous send before sending again.") }
+        pendingTurn = params; unresolvedSends[conversationID] = params
+        let owner = intent
+        do {
+            let result = try await rpc("turn/start", params)
+            guard owner == intent else { throw CancellationError() }
+            confirmPendingSend()
+            return result
+        } catch let rejection as ChatRPCRejected {
+            guard owner == intent else { throw CancellationError() }
+            // An explicit JSON-RPC rejection proves this request was not accepted.
+            unresolvedSends.removeValue(forKey: conversationID)
+            pendingTurn = nil; unconfirmedSend = false
+            throw rejection
+        } catch {
+            if owner == intent, pendingTurn != nil { unconfirmedSend = true }
+            throw error
+        }
+    }
+    private func reconcile(_ snapshot: JSONValue) {
+        messages = ChatRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+        let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
+        let turns = thread["turns"].array
+        if let active = turns.last(where: { ["inProgress", "running", "started"].contains($0["status"].string) }) {
+            turnID = active.id; busy = true
+        } else if case .array = thread["turns"] { turnID = nil; busy = false }
+        if let pendingTurn, let receipt = ChatRecovery.receipt(for: pendingTurn["clientUserMessageId"].string, snapshot: snapshot) {
+            let id = pendingTurn["clientUserMessageId"].string
+            if let index = messages.firstIndex(where: { $0.id == id }) {
+                messages[index]["status"] = .string("delivered")
+                messages[index]["metadata"]["turnId"] = .string(receipt)
+            }
+            confirmPendingSend()
         }
     }
     func loadModels() async {
@@ -384,12 +677,17 @@ import AVFoundation
             }
             if !effort.isEmpty && !supportedEfforts.contains(effort) { effort = "" }
             if models.isEmpty { modelError = "The server returned no available models." }
-        } catch { modelError = error.localizedDescription; if !initialized { disconnect() } }
+        } catch { modelError = error.localizedDescription; if !initialized { scheduleRecovery() } }
     }
     func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil) async -> Bool {
-        guard !busy, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
+        guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
+        connectionSuppressed = false
         busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
-        let messageID = UUID().uuidString
+        let messageID = pendingDraftID ?? UUID().uuidString
+        pendingDraftID = messageID
+        let sendIntent = intent
+        sending = true
+        defer { if sendIntent == intent { sending = false } }
         do {
             var attachments: [JSONValue] = []
             // Call frames are sent inline below; they do not need permanent chat uploads.
@@ -407,24 +705,29 @@ import AVFoundation
                 fileContext += "\nAttachment: \(file.name) (\(file.mime))\nDownload: \(attachment["url"].string)"
                 if file.mime.hasPrefix("text/") || ["application/json", "application/xml"].contains(file.mime), let preview = String(data: file.data, encoding: .utf8) { fileContext += "\nFile preview:\n" + String(preview.prefix(120000)) }
             }
-            try Task.checkCancellation()
+            try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             try await connect()
-            try Task.checkCancellation()
+            try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+            busy = true
             var recalled = ""
             if voiceCallContext == nil {
                 do { let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(text)])); recalled = result["context"].string; memoryStatus = "" }
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
+            try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             if let threadID {
                 let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled))]))
+                guard sendIntent == intent else { throw CancellationError() }
                 messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
             } else {
                 let catalog: JSONValue
                 if voiceCallContext != nil { catalog = .object(["tools": .array([])]) }
                 else { catalog = try await api.request("/api/codex/tools") }
+                try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = developerContext(recalled)
                 let result = try await rpc("thread/start", .object(["dynamicTools": .array(voiceCallContext != nil ? [] : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool, Self.historyTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                guard sendIntent == intent else { throw CancellationError() }
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
                 threadID = id
@@ -433,6 +736,7 @@ import AVFoundation
             if voiceCallContext == nil {
             _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(conversations.first(where: { $0.id == conversationID })?["title"].string ?? String(text.prefix(50))), "source": .string("codex")]), history: true)
             }
+            guard sendIntent == intent else { throw CancellationError() }
             var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
             var musicContext = ""
             if let music {
@@ -451,7 +755,7 @@ import AVFoundation
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
             if let sticker { user["type"] = .string("sticker"); user["metadata"]["sticker"] = sticker }
             if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }
-            messages.append(user)
+            messages.removeAll { $0.id == messageID }; messages.append(user)
             latestLocalMessageID = messageID
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
@@ -464,24 +768,34 @@ import AVFoundation
                 guard supportedEfforts.contains(effort) else { throw ServiceError(message: "Select an available reasoning effort for this model.") }
                 params["effort"] = .string(effort)
             }
-            try Task.checkCancellation()
-            let result = try await rpc("turn/start", params)
+            try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+            let result = try await submitTurn(params)
+            guard sendIntent == intent else { throw CancellationError() }
+            pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
             turnID = result["turn"]["id"].string
             if let index = messages.firstIndex(where: { $0.id == messageID }) {
                 messages[index]["status"] = .string("delivered")
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
                 messages[index]["metadata"]["threadId"] = .string(threadID)
-                try await persist(messages[index])
+                do { try await persist(messages[index]) }
+                catch { if sendIntent == intent { memoryStatus = "Send confirmed; history receipt could not be saved yet." } }
             }
+            guard sendIntent == intent else { return false }
             status = "Rowan is replying…"; return true
         } catch {
-            self.error = error.localizedDescription; busy = false; status = "Could not confirm the send"
-            if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index]["status"] = .string("error") }
+            guard sendIntent == intent else { return false }
+            if turnID == nil { busy = false }
+            if Task.isCancelled { disconnect(); return false }
+            if !initialized || unconfirmedSend {
+                if unconfirmedSend, initialized { closeTransport() }
+                scheduleRecovery()
+            } else { self.error = error.localizedDescription; status = "Could not confirm the send" }
+            if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index]["status"] = .string(unconfirmedSend ? "pending" : "error") }
             return false
         }
     }
     func loadUsage() async {
-        guard !loadingUsage, let api, !api.token.isEmpty else { return }
+        guard !connectionSuppressed, !loadingUsage, let api, !api.token.isEmpty else { return }
         loadingUsage = true; usageError = nil
         defer { loadingUsage = false }
         do {
@@ -495,9 +809,13 @@ import AVFoundation
         return Int(max(0, min(100, 100 - used)).rounded())
     }
     func interrupt() async {
-        guard let threadID, let turnID else { return }
+        // Stopping is a user action, so a failing interrupt must not restart recovery.
+        wantsConnection = false; stopRecovery()
+        let owner = intent
+        defer { if owner == intent { disconnect() } }
+        guard initialized, let threadID, let turnID else { return }
         do { _ = try await rpc("turn/interrupt", .object(["threadId": .string(threadID), "turnId": .string(turnID)])) }
-        catch { self.error = error.localizedDescription }
+        catch { if owner == intent { status = "Stopped locally; server status will be checked when you reconnect." } }
     }
     private static let historyTool: JSONValue = .object([
         "name": .string("search_native_history"),
@@ -530,21 +848,26 @@ import AVFoundation
         } catch { self.error = "Call ended, but its record could not be synced: " + error.localizedDescription }
     }
     private func persist(_ message: JSONValue) async throws {
+        try checkCallback()
+        let targetConversation = conversationID
         guard voiceCallContext == nil, let api else { return }
-        _ = try await api.request("/conversations/\(conversationID)/messages", method: "POST", body: message, history: true)
+        _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+        try checkCallback()
         if message["status"].string == "delivered", !ChatPresentation.isActivity(message), !message["content"].string.isEmpty || !message["metadata"]["attachments"].array.isEmpty {
             do {
-                _ = try await api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(conversationID), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))
-            } catch { memoryStatus = "Chat saved; original evidence could not be synced to Memory." }
+                _ = try await api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(targetConversation), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))
+            } catch { try checkCallback(); memoryStatus = "Chat saved; original evidence could not be synced to Memory." }
         }
     }
     private func handle(_ packet: JSONValue) async {
+        guard (try? checkCallback()) != nil else { return }
         let id = packet["id"].string
         if packet["method"].string.isEmpty, let callback = pending.removeValue(forKey: id) {
             timeouts.removeValue(forKey: id)?.cancel()
-            if packet["error"] != .null { callback.resume(throwing: ServiceError(message: packet["error"]["message"].string)) }
+            if packet["error"] != .null { callback.resume(throwing: ChatRPCRejected(message: packet["error"]["message"].string)) }
             else { callback.resume(returning: packet["result"]) }; return
         }
+        if resuming { bufferedPackets.append(packet); return }
         let method = packet["method"].string; let p = packet["params"]
         if packet["id"] != .null {
             if ["item/tool/call", "tool/call", "tools/call"].contains(method) {
@@ -584,7 +907,7 @@ import AVFoundation
             if item["changes"] != .null { execution["files"] = item["changes"] }
             let message: JSONValue = .object(["id": .string("execution-" + id), "conversationId": .string(conversationID), "role": .string("system"), "content": .string(execution["title"].string), "createdAt": .string(index.map { messages[$0]["createdAt"].string } ?? isoNow()), "source": .string("codex"), "metadata": .object(["blockType": item["type"], "execution": execution, "turnId": .string(turnID ?? ""), "threadId": .string(threadID ?? "")])])
             if let index { messages[index] = message } else { messages.append(message) }
-            if method == "item/completed" { do { try await persist(message) } catch { self.error = "Terminal output received, but history could not be saved." } }
+            if method == "item/completed" { do { try await persist(message) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Terminal output received, but history could not be saved." } }
         }
         else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
@@ -600,19 +923,20 @@ import AVFoundation
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
                 messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
-                do { try await persist(messages[index]) } catch { self.error = "Reply received, but history could not be saved." }
+                do { try await persist(messages[index]) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             } else if !item["text"].string.isEmpty {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 var savedMessage = message
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
-                messages.append(savedMessage); do { try await persist(savedMessage) } catch { self.error = "Reply received, but history could not be saved." }
+                messages.append(savedMessage); do { try await persist(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             }
         } else if method == "turn/completed" {
             if !thinkingSummary.isEmpty || !events.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
                 messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
-                do { try await persist(messages[index]); thinkingSummary = "" } catch { self.error = "Reply received, but the thinking summary could not be saved." }
+                do { try await persist(messages[index]); try checkCallback(); thinkingSummary = "" } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but the thinking summary could not be saved." }
             }
+            guard (try? checkCallback()) != nil else { return }
             busy = false; status = ""; turnID = nil
             if p["turn"]["error"] != .null { error = p["turn"]["error"]["message"].string }
         } else if method == "turn/started" { busy = true; turnID = p["turn"]["id"].string }
@@ -623,9 +947,10 @@ import AVFoundation
     func resolveApproval(accept: Bool) async {
         guard let packet = approval else { return }
         do { try await sendPacket(.object(["id": packet["id"], "result": .object(["decision": .string(accept ? "accept" : "decline")])])) ; approval = nil }
-        catch { self.error = error.localizedDescription }
+        catch { guard (try? checkCallback()) != nil else { return }; self.error = error.localizedDescription }
     }
     private func executeTool(_ packet: JSONValue) async {
+        guard (try? checkCallback()) != nil else { return }
         guard let api else { return }
         let p = packet["params"]; let name = p["tool"].string.isEmpty ? p["name"].string : p["tool"].string
         let targetConversation = conversationID
@@ -636,7 +961,7 @@ import AVFoundation
         var toolError: String?
         recordTool(callID, name: name, status: "running", duration: nil, output: "")
         defer {
-            if conversationID == targetConversation {
+            if conversationID == targetConversation, (try? checkCallback()) != nil {
                 recordTool(callID, name: name, status: toolError == nil ? "completed" : "failed", duration: Date().timeIntervalSince(toolStarted) * 1000, output: toolError ?? "")
             }
         }
@@ -651,23 +976,28 @@ import AVFoundation
                 if !queryText.isEmpty {
                     query.queryItems = [URLQueryItem(name: "q", value: queryText), URLQueryItem(name: "conversationId", value: requested), URLQueryItem(name: "offset", value: String(Int(min(100000, max(0, args["offset"].number)))))]
                     response = try await api.request("/search?" + (query.percentEncodedQuery ?? ""), history: true)
+                try checkCallback()
                 } else {
                     let id = requested.isEmpty ? targetConversation : requested
                     guard id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { throw ServiceError(message: "Use an exact saved conversation ID.") }
                     query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "60"), URLQueryItem(name: "before", value: args["before"].string)]
                     response = try await api.request("/conversations/\(id)?" + (query.percentEncodedQuery ?? ""), history: true)
+                try checkCallback()
                 }
                 let originals = (response["results"] == .null ? response["messages"] : response["results"]).array.filter { !ChatPresentation.isActivity($0) }.map { item in
                     JSONValue.object(["id": item["id"], "conversationId": item["conversationId"], "role": item["role"], "content": item["content"], "createdAt": item["createdAt"], "attachments": item["metadata"]["attachments"]])
                 }
                 let result: JSONValue = .object(["messages": .array(originals), "hasMore": response["hasMore"], "before": response["before"], "nextOffset": .number(args["offset"].number + Double(originals.count))])
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                try checkCallback()
                 return
             }
             if name == "read_native_health" {
                 let reader = HealthReader(); await reader.refresh()
+                try checkCallback()
                 let result = reader.snapshot
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(reader.available), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                try checkCallback()
                 events.append("read_native_health · completed")
                 return
             }
@@ -683,14 +1013,18 @@ import AVFoundation
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = try JSONEncoder().encode(JSONValue.object(["text": .string(text), "connection": connection]))
                 let (data, response) = try await URLSession.shared.data(for: request)
+                try checkCallback()
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw ServiceError(message: VoiceConfiguration.failure(data, response: response, connection: connection)) }
                 let audio = try AVAudioPlayer(data: data)
                 var attachment = try await api.uploadFile(data, name: "Rowan-voice.mp3", mime: "audio/mpeg")
+                try checkCallback()
                 attachment["type"] = .string("audio/mpeg"); attachment["transcript"] = .string(text); attachment["duration"] = .number(audio.duration)
                 let message: JSONValue = .object(["id": .string("voice:" + targetThread + ":" + callID), "conversationId": .string(targetConversation), "role": .string("agent"), "content": .string(text), "createdAt": .string(isoNow()), "status": .string("delivered"), "metadata": .object(["attachments": .array([attachment]), "voiceMessage": .bool(true)])])
                 _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+                try checkCallback()
                 if targetConversation == conversationID { if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message } else { messages.append(message) } }
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("Voice message saved with transcript")])])])]))
+                try checkCallback()
                 events.append("send_native_voice · completed")
                 return
             }
@@ -698,10 +1032,12 @@ import AVFoundation
                 guard UIApplication.shared.applicationState == .active, !callActive, !incomingCall else { throw ServiceError(message: "Vera cannot receive an in-app call invitation right now.") }
                 incomingCall = true
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("In-app call invitation displayed; Vera must accept and tap Start call. Not answered yet.")])])])]))
+                try checkCallback()
                 events.append("request_native_call · invitation displayed")
                 return
             }
             let r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(threadID ?? ""), "conversationId": .string(conversationID), "turnId": .string(turnID ?? ""), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
+                try checkCallback()
             if name == "sticker_send" {
                 let sticker = r["result"]["stickerMessage"]
                 guard !sticker["assetId"].string.isEmpty, !sticker["url"].string.isEmpty, !sticker["mimeType"].string.isEmpty else { throw ServiceError(message: "The tool returned no sticker; delivery was not confirmed.") }
@@ -709,6 +1045,7 @@ import AVFoundation
                 let existing = messages.first(where: { $0.id == id })
                 let message: JSONValue = .object(["id": .string(id), "conversationId": .string(targetConversation), "role": .string("agent"), "type": .string("sticker"), "content": .string(""), "createdAt": .string(existing?["createdAt"].string ?? isoNow()), "status": .string("delivered"), "metadata": .object(["sticker": sticker, "showTurnStatus": .bool(false), "threadId": .string(targetThread), "turnId": .string(targetTurn)])])
                 _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+                try checkCallback()
                 if targetConversation == conversationID {
                     if let index = messages.firstIndex(where: { $0.id == id }) { messages[index] = message } else { messages.append(message) }
                 }
@@ -721,14 +1058,17 @@ import AVFoundation
                 let fileMessage = ChatFileDelivery.message(result, conversationID: targetConversation, threadID: targetThread, turnID: targetTurn, callID: callID, createdAt: existing?["createdAt"].string ?? isoNow())
                 // Confirm persistence before reporting successful delivery to the model.
                 _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: fileMessage, history: true)
+                try checkCallback()
                 if targetConversation == conversationID {
                     if let index = messages.firstIndex(where: { $0.id == fileMessage.id }) { messages[index] = fileMessage }
                     else { messages.append(fileMessage) }
                 }
             }
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))
+                try checkCallback()
             events.append("\(name) · completed")
         } catch {
+            guard (try? checkCallback()) != nil else { return }
             toolError = error.localizedDescription
             if name == "request_native_call" {
                 events.append("request_native_call · failed\n" + error.localizedDescription)
@@ -913,3 +1253,48 @@ enum NativeToolCatalog {
     }
 }
 
+
+/// An absent item in a snapshot is not a negative acknowledgement: history may lag.
+/// Only an exact client ID/receipt proves acceptance; never retry an ambiguous turn/start.
+enum ChatRecovery {
+    static func receipt(for clientID: String, snapshot: JSONValue) -> String? {
+        guard !clientID.isEmpty else { return nil }
+        let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
+        for turn in thread["turns"].array {
+            if turn["clientUserMessageId"].string == clientID { return turn.id }
+            for item in turn["items"].array where item.id == clientID || item["clientUserMessageId"].string == clientID || item["metadata"]["clientUserMessageId"].string == clientID {
+                return turn.id
+            }
+        }
+        return nil
+    }
+    static func merge(_ saved: [JSONValue], snapshot: JSONValue, conversationID: String, tombstones: [JSONValue]) -> [JSONValue] {
+        let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
+        var correlated = saved.filter { message in
+            !tombstones.contains { tombstone in
+                let deletedIDs = [tombstone["messageId"].string, tombstone["itemId"].string, tombstone["stableId"].string].filter { !$0.isEmpty }
+                return deletedIDs.contains(message.id) || deletedIDs.contains(message["metadata"]["itemId"].string)
+            }
+        }
+        for index in correlated.indices where ChatPresentation.isUser(correlated[index]) {
+            if let turn = receipt(for: correlated[index].id, snapshot: snapshot) {
+                correlated[index]["metadata"]["turnId"] = .string(turn)
+                correlated[index]["status"] = .string("delivered")
+            }
+        }
+        var result = UserHistoryRecovery.merge(correlated, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+        for turn in thread["turns"].array {
+            for item in turn["items"].array where item["type"].string == "agentMessage" && !item.id.isEmpty {
+                guard !tombstones.contains(where: { $0["messageId"].string == item.id || $0["itemId"].string == item.id || $0["stableId"].string == item.id }) else { continue }
+                let index = result.firstIndex { $0.id == item.id || $0["metadata"]["itemId"].string == item.id }
+                var message = index.map { result[$0] } ?? .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "source": .string("codex")])
+                message["content"] = item["text"]
+                message["status"] = .string(["inProgress", "running", "started"].contains(turn["status"].string) ? "streaming" : "delivered")
+                message["metadata"]["threadId"] = thread["id"]
+                message["metadata"]["turnId"] = .string(turn.id)
+                if let index { result[index] = message } else { result.append(message) }
+            }
+        }
+        return ChatDetailRecovery.restore(result, snapshot: snapshot)
+    }
+}

@@ -385,6 +385,16 @@ struct ChatView: View {
     }
     var body: some View {
         attachmentContent
+        .safeAreaInset(edge: .top) {
+            if chat.reconnecting {
+                HStack { ProgressView(); Text("Reconnecting…") }.font(.caption).padding(8)
+            } else if chat.connectionNeedsRetry || chat.unconfirmedSend {
+                HStack {
+                    Text(chat.unconfirmedSend ? "Send unconfirmed; checking server history avoids duplicates." : "Chat disconnected")
+                    Button(chat.connectionNeedsRetry ? "Retry" : "Check status") { chat.retryConnection() }
+                }.font(.caption).padding(8)
+            }
+        }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
             NavigationStack {

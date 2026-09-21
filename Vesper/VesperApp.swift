@@ -272,6 +272,8 @@ struct RootView: View {
 
 struct OpeningView: View {
     let enter: () -> Void
+    @EnvironmentObject private var store: AppStore
+    @State private var showingConnection = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visible = false
     @State private var ready = false
@@ -288,14 +290,35 @@ struct OpeningView: View {
                     Text("Somewhere we belong.").font(.system(size: 15, design: .serif).italic())
                 }.foregroundStyle(VesperTheme.ink).shadow(color: .black.opacity(0.08), radius: 8)
                     .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready ? 1 : 0)
-                VStack { Spacer(); Button { entering = true; enter() } label: {
+                VStack(spacing: 14) { Spacer()
+                    if store.connected && !store.loading {
+                    Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
                         .background(.ultraThinMaterial, in: Capsule())
                         .overlay(Capsule().stroke(.white.opacity(0.7)))
-                }.buttonStyle(.plain).padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0).disabled(!ready || entering) }
+                    }.buttonStyle(.plain).disabled(!ready || entering)
+                    } else if store.loading {
+                        ProgressView("Connecting to Vesper…")
+                    } else {
+                        Text(store.connectionError ?? "Connect your Vesper to continue.")
+                            .font(.footnote).multilineTextAlignment(.center).padding(.horizontal, 28)
+                        if !store.token.isEmpty {
+                            Button("Retry connection") { Task { await store.connect() } }
+                        }
+                        Button("Connection settings") { showingConnection = true }
+                    }
+                }.padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: store.connected)
             }
-        }.ignoresSafeArea().task {
+        }.ignoresSafeArea()
+        .sheet(isPresented: $showingConnection) {
+            NavigationStack {
+                ConnectionView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingConnection = false } } }
+            }
+        }
+        .task {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.45)) { visible = true }
             if !reduceMotion { try? await Task.sleep(for: .milliseconds(200)) }
             guard !Task.isCancelled else { return }

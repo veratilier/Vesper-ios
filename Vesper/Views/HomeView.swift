@@ -54,7 +54,7 @@ struct HomeView: View {
             guard phase == .active else { return }
             // This task ends when Home disappears or the app leaves the foreground.
             while !Task.isCancelled {
-                weatherLocation.locateIfAuthorized()
+                weatherLocation.locate()
                 await refreshWeather()
                 do { try await Task.sleep(for: .seconds(15 * 60)) }
                 catch { return }

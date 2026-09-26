@@ -4,6 +4,44 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    func testTranscriptKeepsFullChronologicalHistoryAcrossPagesAndReconnect() {
+        func row(_ id: String, _ time: String) -> JSONValue {
+            .object(["id": .string(id), "role": .string("user"), "createdAt": .string(time)])
+        }
+        let latest = [row("today", "2026-09-26T20:02:00Z"), row("yesterday", "2026-09-25T19:00:00Z")]
+        let old = [row("first", "2026-09-21T02:05:42Z"), row("second", "2026-09-22T23:59:00Z")]
+        let afterPage = ChatTranscript.merge(latest, incoming: old, tombstones: [])
+        XCTAssertEqual(afterPage.map(\.id), ["first", "second", "yesterday", "today"])
+        let afterReconnect = ChatTranscript.merge(afterPage, incoming: latest + old, tombstones: [])
+        XCTAssertEqual(afterReconnect.map(\.id), afterPage.map(\.id))
+        XCTAssertEqual(ChatPresentation.displayRows(afterReconnect).map(\.id), afterPage.map(\.id))
+    }
+    func testTranscriptOnlyDeliveredReceiptReplacesPendingAndTombstonesWin() {
+        let pending: JSONValue = .object(["id": .string("send"), "status": .string("pending"), "content": .string("original")])
+        let uncertain: JSONValue = .object(["id": .string("send"), "status": .string("sending"), "content": .string("other")])
+        let delivered: JSONValue = .object(["id": .string("send"), "status": .string("delivered"), "content": .string("stored")])
+        XCTAssertEqual(ChatTranscript.merge([pending], incoming: [uncertain], tombstones: []), [pending])
+        XCTAssertEqual(ChatTranscript.merge([pending], incoming: [delivered], tombstones: []), [delivered])
+        XCTAssertTrue(ChatTranscript.merge([pending], incoming: [delivered], tombstones: [.object(["messageId": .string("send")])]).isEmpty)
+    }
+    func testTranscriptDoesNotInventDatesForUnsyncedMessages() {
+        func row(_ id: String, _ time: String) -> JSONValue {
+            .object(["id": .string(id), "createdAt": .string(time)])
+        }
+        let input = [row("late", "2026-09-26T10:00:00Z"), row("pending", ""),
+                     row("early", "2026-09-21T10:00:00Z")]
+        XCTAssertEqual(ChatTranscript.ordered(input).map(\.id), ["early", "pending", "late"])
+    }
+    @MainActor func testResumeRequestsMetadataWithoutLargeThreadTurns() async throws {
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread")
+        defer { chat.disconnect() }
+        try await chat.connect()
+        let resume = try XCTUnwrap(socket.packets.first { $0["method"].string == "thread/resume" })
+        XCTAssertEqual(resume["params"]["excludeTurns"], .bool(true))
+        XCTAssertEqual(chat.connectionStage, .ready)
+    }
     @MainActor func testLiveChatSocketRaisesReceiveLimitAboveObservedSnapshot() {
         let socket = ChatSession.liveSocket(URL(string: "wss://example.invalid/chat")!)
         XCTAssertEqual(socket.maximumMessageSize, 16 * 1024 * 1024)

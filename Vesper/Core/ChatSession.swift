@@ -174,8 +174,17 @@ enum ChatConnectionStage: String {
     private let requestTimeout: Double
     private let attemptTimeout: Double
     private static let log = Logger(subsystem: "Vesper", category: "ChatConnection")
+    // thread/resume returns the current thread in one frame. The observed
+    // 1,271,125-byte reply exceeds URLSession's 1 MiB receive default.
+    nonisolated static let maximumIncomingMessageBytes = 16 * 1024 * 1024
 
-    init(socketFactory: @escaping (URL) -> any ChatSocket = { URLSession.shared.webSocketTask(with: $0) },
+    nonisolated static func liveSocket(_ url: URL) -> URLSessionWebSocketTask {
+        let socket = URLSession.shared.webSocketTask(with: url)
+        socket.maximumMessageSize = maximumIncomingMessageBytes
+        return socket
+    }
+
+    init(socketFactory: @escaping (URL) -> any ChatSocket = { ChatSession.liveSocket($0) },
          delay: @escaping (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
          heartbeatInterval: Double = 25, requestTimeout: Double = 30, stableConnectionInterval: Double = 60, attemptTimeout: Double? = nil) {
         makeSocket = socketFactory; self.delay = delay
@@ -280,6 +289,9 @@ enum ChatConnectionStage: String {
             return "Authentication was rejected (HTTP \(httpStatus)) during \(stage.rawValue). Check the chat connection in Settings, then Retry. API Connected does not verify chat."
         }
         let error = failure as NSError
+        if error.domain == NSPOSIXErrorDomain && error.code == EMSGSIZE {
+            return "Chat response exceeded the 16 MB receive limit during \(stage.rawValue). Tap Retry; if it repeats, the thread needs a smaller server response."
+        }
         let code: String
         if let rejection = failure as? ChatRPCRejected { code = "JSON-RPC \(rejection.code)" }
         else if error.domain == NSURLErrorDomain { code = "URLSession \(error.code)" }

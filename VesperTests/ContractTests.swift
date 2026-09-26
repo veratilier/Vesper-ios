@@ -4,6 +4,15 @@ import UIKit
 @testable import Vesper
 
 final class ContractTests: XCTestCase {
+    @MainActor func testLiveChatSocketRaisesReceiveLimitAboveObservedSnapshot() {
+        let socket = ChatSession.liveSocket(URL(string: "wss://example.invalid/chat")!)
+        XCTAssertEqual(socket.maximumMessageSize, 16 * 1024 * 1024)
+        XCTAssertGreaterThan(socket.maximumMessageSize, 1_271_125)
+        let diagnostic = ChatSession.connectionDiagnostic(stage: .resume,
+            failure: NSError(domain: NSPOSIXErrorDomain, code: Int(EMSGSIZE)), httpStatus: nil, closeCode: 0)
+        XCTAssertTrue(diagnostic.contains("16 MB"))
+        socket.cancel(with: .goingAway, reason: nil)
+    }
     @MainActor func testHistoryRecordMustMatchBeforeSwitchingChat() throws {
         XCTAssertThrowsError(try ChatSession.validateHistoryRecord(.object(["conversation": .null]), expectedID: "wanted"))
         XCTAssertThrowsError(try ChatSession.validateHistoryRecord(.object(["conversation": .object(["id": .string("other")])]), expectedID: "wanted"))

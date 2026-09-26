@@ -98,8 +98,44 @@ private struct AttachmentQuickLook: UIViewControllerRepresentable {
     }
 }
 
+// Text edits must not invalidate the chat timeline. Only the field and its
+// send button observe this object; attachments still notify ChatView.
+final class ChatTypedDraft: ObservableObject {
+    @Published var text = ""
+}
+
+private struct ChatDraftField: View {
+    @ObservedObject var draft: ChatTypedDraft
+    @FocusState.Binding var focused: Bool
+    let listening: Bool
+
+    var body: some View {
+        TextField(listening ? "Listening…" : "Write to Rowan…", text: $draft.text, axis: .vertical)
+            .lineLimit(1...5).focused($focused).font(.system(size: 16))
+    }
+}
+
+private struct ChatSendButton: View {
+    @ObservedObject var draft: ChatTypedDraft
+    let hasAttachment: Bool
+    let blocked: Bool
+    let send: () -> Void
+
+    var body: some View {
+        Button(action: send) {
+            Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40)
+        }
+        .disabled((draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasAttachment) || blocked)
+        .accessibilityLabel("Send")
+    }
+}
+
 final class ChatComposer: ObservableObject {
-    @Published var draft = ""
+    let typedDraft = ChatTypedDraft()
+    var draft: String {
+        get { typedDraft.text }
+        set { typedDraft.text = newValue }
+    }
     @Published var images: [Data] = []
     @Published var files: [ChatFile] = []
     @Published var pendingMusic: JSONValue?
@@ -513,14 +549,19 @@ struct ChatView: View {
                 } } }
             }
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
-            TextField(speech.listening ? "Listening…" : "Write to Rowan…", text: $draftStore.draft, axis: .vertical).lineLimit(1...5).focused($focused).font(.system(size: 16))
+            ChatDraftField(draft: draftStore.typedDraft, focused: $focused, listening: speech.listening)
             HStack(spacing: 4) {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
                 Button { focused = false; drawer = false; player.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
-                else { Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) }.disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty && files.isEmpty && voiceRecorder.file == nil && pendingMusic == nil) || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels).accessibilityLabel("Send") }
+                else {
+                    ChatSendButton(draft: draftStore.typedDraft,
+                                   hasAttachment: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil,
+                                   blocked: voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
+                                   send: send)
+                }
             }
         }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
     }

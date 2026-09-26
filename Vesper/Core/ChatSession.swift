@@ -356,7 +356,10 @@ enum ChatConnectionStage: String {
         }
         appStore = store; api = store.api; endpoint = store.socketURL
         let historyAPI = store.api
-        historyReader = { id in try await historyAPI.request("/conversations/\(id)", history: true) }
+        historyReader = { id in
+            // Reconnection needs recent receipts, not the entire growing archive.
+            try await historyAPI.request("/conversations/\(id)?latest=1&limit=200", history: true)
+        }
         if networkMonitor == nil {
             let monitor = NWPathMonitor(); networkMonitor = monitor
             monitor.pathUpdateHandler = { [weak self] path in
@@ -700,7 +703,7 @@ enum ChatConnectionStage: String {
                 _ = try await stage(.initialize) { try await self.rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])])) }
                 try await stage(.initialize) { try await self.sendPacket(.object(["method": .string("initialized")])) }
                 if let threadID {
-                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config])) }
+                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config, "excludeTurns": .bool(true)])) }
                     try checkCallback()
                     let returnedThread = snapshot["thread"]["id"].string
                     guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
@@ -777,7 +780,11 @@ enum ChatConnectionStage: String {
         let turns = thread["turns"].array
         if let active = turns.last(where: { ["inProgress", "running", "started"].contains($0["status"].string) }) {
             turnID = active.id; busy = true
-        } else if case .array = thread["turns"] { turnID = nil; busy = false }
+        // excludeTurns returns an empty array even while a turn is running.
+        // Only an explicit idle status or a populated completed snapshot
+        // proves that a previously active turn has stopped.
+        } else if thread["status"]["type"].string == "idle" { turnID = nil; busy = false }
+        else if case .array(let entries) = thread["turns"], !entries.isEmpty { turnID = nil; busy = false }
         if let pendingTurn, let receipt = ChatRecovery.receipt(for: pendingTurn["clientUserMessageId"].string, snapshot: snapshot) {
             let id = pendingTurn["clientUserMessageId"].string
             if let index = messages.firstIndex(where: { $0.id == id }) {
@@ -852,7 +859,7 @@ enum ChatConnectionStage: String {
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             if let threadID {
-                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled))]))
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled)), "excludeTurns": .bool(true)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
             } else {

@@ -65,6 +65,22 @@ Apple simulator; its result is separate from live-service verification.
 - No credentials, private chat records or user data are committed. Artwork comes
   from the existing Vesper project; Ballet is distributed under the bundled OFL.
 
+## Home Screen widgets
+
+The **Vesper · Days** widget already lets you edit a title and date by touching
+and holding the widget on your Home Screen. **Vesper · Picture** lets you choose
+one of three bundled Vesper scenes and edit a short caption the same way. Both
+work without a Vesper account or network connection; the picture choices are
+bundled artwork, not personal photos selected from your photo library.
+
+The existing Desire, Usage and Notes widgets still use the App Group snapshot
+shared with the app. The Broadcast extension separately requires shared App
+Group and Keychain entitlements. CI builds for an iOS simulator with signing
+disabled; this does not prove that your Apple team can sign all three targets
+for a physical iPhone. If Xcode fails while installing, inspect the first
+Signing & Capabilities error for **Vesper**, **VesperWidgets** or
+**VesperBroadcast** and ensure the same team is selected for each target.
+
 ## Development
 
 Sources are grouped in `Vesper/Core` and `Vesper/Views`. The project has no package

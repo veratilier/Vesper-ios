@@ -169,6 +169,10 @@ enum ChatConnectionStage: String {
     private var connectionSuppressed = false
     private var pendingDraftID: String?
     private var sending = false
+    func replyIsStillRunning(_ message: JSONValue) -> Bool {
+        guard busy, let turnID, !turnID.isEmpty else { return false }
+        return message["metadata"]["turnId"].string == turnID
+    }
     private let makeSocket: (URL) -> any ChatSocket
     private let delay: (Double) async throws -> Void
     private let heartbeatInterval: Double
@@ -825,13 +829,19 @@ enum ChatConnectionStage: String {
     }
     func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil) async -> Bool {
         guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
+        let sendIntent = intent
+        sending = true
+        defer { if sendIntent == intent { sending = false } }
+        let stickerInput: String?
+        do {
+            if let sticker { stickerInput = try await api.stickerInputURL(assetID: sticker["assetId"].string) }
+            else { stickerInput = nil }
+        } catch { if sendIntent == intent { self.error = error.localizedDescription }; return false }
+        guard sendIntent == intent else { return false }
         connectionSuppressed = false
         busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
         let messageID = pendingDraftID ?? UUID().uuidString
         pendingDraftID = messageID
-        let sendIntent = intent
-        sending = true
-        defer { if sendIntent == intent { sending = false } }
         do {
             var attachments: [JSONValue] = []
             // Call frames are sent inline below; they do not need permanent chat uploads.
@@ -905,7 +915,7 @@ enum ChatConnectionStage: String {
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
-            if let sticker { input.append(.object(["type": .string("image"), "url": sticker["url"]])) }
+            if let stickerInput { input.append(.object(["type": .string("image"), "url": .string(stickerInput)])) }
             params["input"] = .array(input)
             if !model.isEmpty { params["model"] = .string(model) }
             if !effort.isEmpty {

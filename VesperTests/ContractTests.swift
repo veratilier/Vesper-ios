@@ -3,7 +3,41 @@ import SwiftUI
 import UIKit
 @testable import Vesper
 
+private final class StickerAssetProtocol: URLProtocol {
+    static var requestedURL: URL?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requestedURL = request.url
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).pngData { context in
+            context.cgContext.setFillColor(UIColor.red.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "image/png"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 final class ContractTests: XCTestCase {
+    func testStickerFetchesOnlyOurAssetAndSendsInlineImage() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StickerAssetProtocol.self]
+        var api = APIClient(baseURL: "https://vesper.example", historyURL: "https://history.example", token: "test")
+        api.stickerSession = URLSession(configuration: config)
+        let id = "aaad7a49-9441-4ce4-b619-f160138608ee"
+        let input = try await api.stickerInputURL(assetID: id)
+        XCTAssertEqual(StickerAssetProtocol.requestedURL?.absoluteString, "https://vesper.example/api/stickers/assets/" + id)
+        XCTAssertTrue(input.hasPrefix("data:image/jpeg;base64,"))
+        XCTAssertNotNil(Data(base64Encoded: String(input.dropFirst("data:image/jpeg;base64,".count))))
+        do {
+            _ = try await api.stickerInputURL(assetID: "https://somewhere-else.example/image.jpg")
+            XCTFail("An external URL must not be loaded as a sticker")
+        } catch { XCTAssertEqual(StickerAssetProtocol.requestedURL?.absoluteString, "https://vesper.example/api/stickers/assets/" + id) }
+    }
+
     func testTranscriptKeepsFullChronologicalHistoryAcrossPagesAndReconnect() {
         func row(_ id: String, _ time: String) -> JSONValue {
             .object(["id": .string(id), "role": .string("user"), "createdAt": .string(time)])

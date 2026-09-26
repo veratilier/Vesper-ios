@@ -17,7 +17,7 @@ import UserNotifications
 }
 enum Destination: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", notes = "Notes"
-    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", pandora = "Pandora", settings = "Settings"
+    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Reading Room", movieRoom = "Movie Room", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -31,7 +31,8 @@ enum Destination: String, CaseIterable, Identifiable {
         case .music: return "music.note"
         case .album: return "photo.on.rectangle"
         case .memory: return "brain.head.profile"
-        case .pandora: return "shippingbox"
+        case .readingRoom: return "book.pages"
+        case .movieRoom: return "film"
         case .settings: return "slider.horizontal.3"
         }
     }
@@ -60,7 +61,7 @@ struct RootView: View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
                     NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
-                    appLibrary.tabItem { Label("Vesper", systemImage: "square.grid.2x2").environment(\.symbolVariants, .none) }.tag(2)
+                    appLibrary.tabItem { Label("Vesper", systemImage: "square.grid.2x2.fill") }.tag(2)
                     shell(.journal).tabItem { Label("Journal", systemImage: "book.closed") }.tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
                 }.onChange(of: nativeTab) { _, tab in
@@ -78,8 +79,8 @@ struct RootView: View {
             ZStack {
                 Background()
                 ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 22) {
-                        ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .pandora]) { page in
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 22) {
+                        ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .movieRoom]) { page in
                             NavigationLink(value: page) {
                                 VStack(spacing: 8) {
                                     Image(systemName: page.icon).font(.system(size: 25, weight: .medium))
@@ -254,7 +255,8 @@ struct RootView: View {
         case .music: MusicView()
         case .album: AlbumView()
         case .memory: MemoryView()
-        case .pandora: PandoraView()
+        case .readingRoom: ReadingRoomView()
+        case .movieRoom: MovieRoomView()
         case .settings: SettingsView()
         }
     }

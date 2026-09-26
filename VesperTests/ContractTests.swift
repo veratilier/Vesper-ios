@@ -34,7 +34,7 @@ final class ContractTests: XCTestCase {
     }
     @MainActor func testResumeRequestsMetadataWithoutLargeThreadTurns() async throws {
         let socket = RecoverySocket()
-        let chat = ChatSession(socketFactory: { _ in socket }, delay: { _ in }, heartbeatInterval: 1000)
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
         chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread")
         defer { chat.disconnect() }
         try await chat.connect()

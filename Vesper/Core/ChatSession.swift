@@ -1446,6 +1446,11 @@ enum ChatRecovery {
                 var message = index.map { result[$0] } ?? .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "source": .string("codex")])
                 message["content"] = item["text"]
                 message["status"] = .string(["inProgress", "running", "started"].contains(turn["status"].string) ? "streaming" : "delivered")
+                if message["createdAt"].string.isEmpty {
+                    let eventTime = item["createdAt"] == .null ? turn["startedAt"] : item["createdAt"]
+                    let timestamp = UserHistoryRecovery.timestamp(eventTime)
+                    if !timestamp.isEmpty { message["createdAt"] = .string(timestamp) }
+                }
                 message["metadata"]["threadId"] = thread["id"]
                 message["metadata"]["turnId"] = .string(turn.id)
                 if let index { result[index] = message } else { result.append(message) }

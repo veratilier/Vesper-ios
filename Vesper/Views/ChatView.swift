@@ -657,7 +657,17 @@ enum ChatPresentation {
         return wake && isActivity(message)
     }
     static func displayRows(_ input: [JSONValue]) -> [Row] {
-        let messages = input.filter { !isWakeActivity($0) }
+        // Recovery can append an older Codex item after recent saved messages.
+        // Keep the transcript chronological without changing persisted records.
+        let messages = input.enumerated()
+            .filter { !isWakeActivity($0.element) }
+            .map { (index: $0.offset, message: $0.element, date: UserHistoryRecovery.parsedTime($0.element["createdAt"].string)) }
+            .sorted {
+                let lhs = $0.date ?? .distantFuture
+                let rhs = $1.date ?? .distantFuture
+                return lhs == rhs ? $0.index < $1.index : lhs < rhs
+            }
+            .map { $0.message }
         let replies = messages.indices.filter { !isUser(messages[$0]) && !isActivity(messages[$0]) }
         var attached: [Int: [JSONValue]] = [:]
         var orphans: [Int] = []

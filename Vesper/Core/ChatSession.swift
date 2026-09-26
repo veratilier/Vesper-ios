@@ -356,7 +356,10 @@ enum ChatConnectionStage: String {
         }
         appStore = store; api = store.api; endpoint = store.socketURL
         let historyAPI = store.api
-        historyReader = { id in try await historyAPI.request("/conversations/\(id)", history: true) }
+        historyReader = { id in
+            // Reconnection needs recent receipts, not the entire growing archive.
+            try await historyAPI.request("/conversations/\(id)?latest=1&limit=200", history: true)
+        }
         if networkMonitor == nil {
             let monitor = NWPathMonitor(); networkMonitor = monitor
             monitor.pathUpdateHandler = { [weak self] path in
@@ -484,6 +487,9 @@ enum ChatConnectionStage: String {
         tombstones = r["tombstones"].array
         messages = r["messages"].array
         hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
+        // Keep the initial response bounded, then fill the complete archive in
+        // pages. The full conversation remains available in the chat view.
+        Task { await self.loadCompleteHistory(for: id) }
         status = "History loaded"
         if threadID != nil {
             do {
@@ -543,6 +549,16 @@ enum ChatConnectionStage: String {
             let existing = Set(messages.map(\.id)); messages.insert(contentsOf: response["messages"].array.filter { !existing.contains($0.id) }, at: 0)
             hasOlderMessages = response["hasMore"].bool; historyCursor = response["before"].string
         } catch { self.error = error.localizedDescription }
+    }
+    private func loadCompleteHistory(for id: String) async {
+        while !Task.isCancelled, conversationID == id, hasOlderMessages {
+            let cursor = historyCursor
+            if loadingOlder { try? await Task.sleep(for: .milliseconds(50)); continue }
+            await loadOlder()
+            // Stop on a failed request or invalid cursor; leave the manual
+            // Load earlier control in place so history can be retried.
+            if conversationID != id || historyCursor == cursor { break }
+        }
     }
     func reveal(_ id: String) async {
         while !messages.contains(where: { $0.id == id }) && hasOlderMessages {
@@ -700,7 +716,7 @@ enum ChatConnectionStage: String {
                 _ = try await stage(.initialize) { try await self.rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])])) }
                 try await stage(.initialize) { try await self.sendPacket(.object(["method": .string("initialized")])) }
                 if let threadID {
-                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config])) }
+                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config, "excludeTurns": .bool(true)])) }
                     try checkCallback()
                     let returnedThread = snapshot["thread"]["id"].string
                     guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
@@ -777,7 +793,11 @@ enum ChatConnectionStage: String {
         let turns = thread["turns"].array
         if let active = turns.last(where: { ["inProgress", "running", "started"].contains($0["status"].string) }) {
             turnID = active.id; busy = true
-        } else if case .array = thread["turns"] { turnID = nil; busy = false }
+        // excludeTurns returns an empty array even while a turn is running.
+        // Only an explicit idle status or a populated completed snapshot
+        // proves that a previously active turn has stopped.
+        } else if thread["status"]["type"].string == "idle" { turnID = nil; busy = false }
+        else if case .array(let entries) = thread["turns"], !entries.isEmpty { turnID = nil; busy = false }
         if let pendingTurn, let receipt = ChatRecovery.receipt(for: pendingTurn["clientUserMessageId"].string, snapshot: snapshot) {
             let id = pendingTurn["clientUserMessageId"].string
             if let index = messages.firstIndex(where: { $0.id == id }) {
@@ -852,7 +872,7 @@ enum ChatConnectionStage: String {
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             if let threadID {
-                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled))]))
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled)), "excludeTurns": .bool(true)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
             } else {
@@ -1426,6 +1446,11 @@ enum ChatRecovery {
                 var message = index.map { result[$0] } ?? .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "source": .string("codex")])
                 message["content"] = item["text"]
                 message["status"] = .string(["inProgress", "running", "started"].contains(turn["status"].string) ? "streaming" : "delivered")
+                if message["createdAt"].string.isEmpty {
+                    let eventTime = item["createdAt"] == .null ? turn["startedAt"] : item["createdAt"]
+                    let timestamp = UserHistoryRecovery.timestamp(eventTime)
+                    if !timestamp.isEmpty { message["createdAt"] = .string(timestamp) }
+                }
                 message["metadata"]["threadId"] = thread["id"]
                 message["metadata"]["turnId"] = .string(turn.id)
                 if let index { result[index] = message } else { result.append(message) }

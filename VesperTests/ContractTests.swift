@@ -493,6 +493,7 @@ final class ContractTests: XCTestCase {
         do { try await chat.connect(); XCTFail("Expected failure") } catch {}
         await eventually { recovered.packets.contains { $0["method"].string == "thread/resume" } && !chat.reconnecting }
         XCTAssertEqual(recovered.packets.first { $0["method"].string == "thread/resume" }?["params"]["threadId"].string, "thread")
+        XCTAssertTrue(recovered.packets.first { $0["method"].string == "thread/resume" }?["params"]["excludeTurns"].bool == true)
         XCTAssertNil(chat.error)
         XCTAssertFalse(recovered.packets.contains { $0["method"].string == "thread/start" })
     }
@@ -561,6 +562,21 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(first.packets.first { $0["method"].string == "turn/start" }?["params"]["clientUserMessageId"].string, "client")
         XCTAssertFalse(second.packets.contains { $0["method"].string == "turn/start" })
     }
+    func testThinResumeDoesNotMistakeOmittedTurnsForCompletedTurn() async throws {
+        let first = RecoverySocket(), second = RecoverySocket(), third = RecoverySocket()
+        first.snapshot = .object(["thread": .object(["id": .string("thread"), "turns": .array([.object(["id": .string("running"), "status": .string("inProgress")])])])])
+        second.snapshot = .object(["thread": .object(["id": .string("thread"), "status": .object(["type": .string("active")]), "turns": .array([])])])
+        third.snapshot = .object(["thread": .object(["id": .string("thread"), "status": .object(["type": .string("idle")]), "turns": .array([])])])
+        let chat = session([first, second, third]); defer { chat.disconnect() }
+        try await chat.connect()
+        XCTAssertTrue(chat.busy)
+        first.fail()
+        await eventually { second.packets.contains { $0["method"].string == "thread/resume" } && !chat.reconnecting }
+        XCTAssertTrue(chat.busy)
+        second.fail()
+        await eventually { third.packets.contains { $0["method"].string == "thread/resume" } && !chat.reconnecting }
+        XCTAssertFalse(chat.busy)
+    }
     func testMissingReceiptNeverAuthorizesDuplicateSend() async throws {
         let first = RecoverySocket(), second = RecoverySocket(); first.loseReceipt = true
         let chat = session([first, second]); defer { chat.disconnect() }
@@ -613,6 +629,7 @@ final class ContractTests: XCTestCase {
         await eventually { second.packets.contains { $0["method"].string == "thread/resume" } && !chat.unconfirmedSend }
         XCTAssertFalse(second.packets.contains { $0["method"].string == "turn/start" })
         XCTAssertEqual(chat.messages.first { $0.id == "client" }?["status"].string, "delivered")
+        XCTAssertTrue(second.packets.first { $0["method"].string == "thread/resume" }?["params"]["excludeTurns"].bool == true)
     }
     func testCancelStopsRecoveryButKeepsAmbiguousSendIdentity() async throws {
         let first = RecoverySocket(), second = RecoverySocket(); first.loseReceipt = true
@@ -637,5 +654,16 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(merged[1].id, "local")
         XCTAssertEqual(ChatRecovery.merge(merged, snapshot: snapshot, conversationID: "c", tombstones: [.object(["itemId": .string("deleted")])]), merged)
         XCTAssertNil(ChatRecovery.receipt(for: "local", snapshot: snapshot))
+    }
+    func testRecoveredOldReplyDisplaysBeforeRecentChat() {
+        let recent: JSONValue = .object(["id": .string("recent"), "role": .string("user"), "createdAt": .string("2026-09-26T12:02:00Z")])
+        let snapshot: JSONValue = .object(["thread": .object(["id": .string("thread"), "turns": .array([
+            .object(["id": .string("old-turn"), "startedAt": .number(1_779_000_000), "status": .string("completed"), "items": .array([
+                .object(["id": .string("old-reply"), "type": .string("agentMessage"), "text": .string("earlier")])
+            ])])
+        ])])])
+        let restored = ChatRecovery.merge([recent], snapshot: snapshot, conversationID: "c", tombstones: [])
+        XCTAssertFalse(restored.first { $0.id == "old-reply" }?["createdAt"].string.isEmpty ?? true)
+        XCTAssertEqual(ChatPresentation.displayRows(restored).map(\.id), ["old-reply", "recent"])
     }
 }

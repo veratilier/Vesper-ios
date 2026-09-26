@@ -45,6 +45,90 @@ struct VesperDayWidget: Widget {
     }
 }
 
+// These pictures are bundled with the widget extension. Selecting one needs
+// neither a connection to Vesper nor access to its shared App Group.
+enum VesperPicture: String, AppEnum {
+    case coast, marble, veil
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Vesper picture"
+    static var caseDisplayRepresentations: [VesperPicture: DisplayRepresentation] = [
+        .coast: "Coast", .marble: "Blue marble", .veil: "Soft light"
+    ]
+
+    var assetName: String {
+        switch self {
+        case .coast: "WidgetCoast"
+        case .marble: "WidgetMarble"
+        case .veil: "WidgetVeil"
+        }
+    }
+}
+
+struct PictureWidgetConfiguration: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Vesper picture"
+    static var description = IntentDescription("Choose a picture and a short line for your Home Screen.")
+
+    @Parameter(title: "Picture", default: .coast) var picture: VesperPicture
+    @Parameter(title: "Caption", default: "Somewhere we belong.") var caption: String
+}
+
+struct PictureEntry: TimelineEntry {
+    let date: Date
+    let configuration: PictureWidgetConfiguration
+}
+
+struct PictureProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> PictureEntry {
+        PictureEntry(date: .now, configuration: PictureWidgetConfiguration())
+    }
+    func snapshot(for configuration: PictureWidgetConfiguration, in context: Context) async -> PictureEntry {
+        PictureEntry(date: .now, configuration: configuration)
+    }
+    func timeline(for configuration: PictureWidgetConfiguration, in context: Context) async -> Timeline<PictureEntry> {
+        Timeline(entries: [PictureEntry(date: .now, configuration: configuration)], policy: .never)
+    }
+}
+
+struct PictureWidgetView: View {
+    let entry: PictureEntry
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.clear
+            if !entry.configuration.caption.isEmpty {
+                Text(entry.configuration.caption)
+                    .font(.system(size: 15, weight: .medium, design: .serif))
+                    .lineLimit(2)
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.7), radius: 8)
+                    .padding(16)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .containerBackground(for: .widget) {
+            GeometryReader { geometry in
+                Image(entry.configuration.picture.assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+            }
+        }
+    }
+}
+
+struct VesperPictureWidget: Widget {
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: "VesperPictureWidget", intent: PictureWidgetConfiguration.self, provider: PictureProvider()) {
+            PictureWidgetView(entry: $0)
+        }
+        .configurationDisplayName("Vesper · Picture")
+        .description("A picture and a line to keep on your Home Screen.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
+    }
+}
+
 struct StatusEntry: TimelineEntry { let date: Date; let snapshot: WidgetSnapshot? }
 struct StatusProvider: TimelineProvider {
     let key: String
@@ -102,5 +186,5 @@ struct VesperNotesWidget: Widget {
     }
 }
 @main struct VesperWidgetBundle: WidgetBundle {
-    var body: some Widget { VesperDayWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperNotesWidget() }
+    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperNotesWidget() }
 }

@@ -387,10 +387,13 @@ struct ChatView: View {
         attachmentContent
         .safeAreaInset(edge: .top) {
             if chat.reconnecting {
-                HStack { ProgressView(); Text("Reconnecting…") }.font(.caption).padding(8)
+                VStack(spacing: 4) {
+                    HStack { ProgressView(); Text("Reconnecting…") }
+                    Text("\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5").font(.caption2)
+                }.font(.caption).padding(8)
             } else if chat.connectionNeedsRetry || chat.unconfirmedSend {
                 HStack {
-                    Text(chat.unconfirmedSend ? "Send unconfirmed; checking server history avoids duplicates." : "Chat disconnected")
+                    Text(chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected. Tap Retry.") : "Send unconfirmed; checking server history avoids duplicates.")
                     Button(chat.connectionNeedsRetry ? "Retry" : "Check status") { chat.retryConnection() }
                 }.font(.caption).padding(8)
             }

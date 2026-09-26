@@ -262,10 +262,19 @@ final class ContractTests: XCTestCase {
     var ignoreCancel = false
     var rejectTurn = false
     var pingCount = 0
+    private var connectionPings = 0
     var pingFailure = false
+    var handshakeStatus: Int?
+    var handshakeFailure = false
+    var hangHandshake = false
+    var hangMethod: String?
+    var rejectMethod: String?
+    var hangInitialized = false
+    private var suspended: [CheckedContinuation<Void, Error>] = []
+    func releaseSuspended() { let waits = suspended; suspended = []; for wait in waits { wait.resume() } }
     private var queue: [URLSessionWebSocketTask.Message] = []
     private var waiter: CheckedContinuation<URLSessionWebSocketTask.Message, Error>?
-    func resume() {}
+    func resume() { connectionPings = 0 }
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         self.closeCode = closeCode; closeReason = reason
         if !ignoreCancel { fail() }
@@ -287,6 +296,15 @@ final class ContractTests: XCTestCase {
         guard case .string(let text) = message else { return }
         let packet = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)); packets.append(packet)
         let method = packet["method"].string
+        if method == hangMethod { return }
+        if method == rejectMethod {
+            try emit(.object(["id": packet["id"], "error": .object(["code": .number(-32602), "message": .string("never-log-this-token")])]))
+            return
+        }
+        if method == "initialized", hangInitialized {
+            try await withCheckedThrowingContinuation { suspended.append($0) }
+            return
+        }
         if method == "initialize", failInitialize { throw URLError(.networkConnectionLost) }
         if method == "turn/start", loseReceipt { throw URLError(.networkConnectionLost) }
         if method == "turn/start", rejectTurn {
@@ -297,23 +315,168 @@ final class ContractTests: XCTestCase {
             try emit(.object(["id": packet["id"], "result": method == "thread/resume" ? snapshot : .object([:])]))
         }
     }
-    func ping() async throws { pingCount += 1; if pingFailure { throw URLError(.networkConnectionLost) } }
+    func ping() async throws {
+        pingCount += 1; connectionPings += 1
+        if connectionPings == 1 {
+            if hangHandshake { try await withCheckedThrowingContinuation { suspended.append($0) } }
+            if handshakeFailure { throw URLError(.badServerResponse) }
+        } else if pingFailure { throw URLError(.networkConnectionLost) }
+    }
+}
+
+@MainActor private final class SuspendedHistory {
+    var waits: [CheckedContinuation<JSONValue, Error>] = []
+    func read() async throws -> JSONValue { try await withCheckedThrowingContinuation { waits.append($0) } }
+    func release(_ value: JSONValue) {
+        let pending = waits; waits = []
+        for wait in pending { wait.resume(returning: value) }
+    }
 }
 
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
-    private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
+    private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, stableInterval: Double = 60, timeout: Double = 5, attemptTimeout: Double? = nil, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
         var index = 0
         let chat = ChatSession(socketFactory: { _ in
             let socket = sockets[min(index, sockets.count - 1)]; index += 1; return socket
         }, delay: { seconds in
             try await Task.sleep(for: .milliseconds(seconds >= 100 ? 100_000 : 5))
-        }, heartbeatInterval: heartbeat, requestTimeout: 0.1)
+        }, heartbeatInterval: heartbeat, requestTimeout: timeout, stableConnectionInterval: stableInterval, attemptTimeout: attemptTimeout)
         chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread", historyReader: historyReader)
         return chat
     }
     private func eventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<200 { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
+    }
+    func testOfflineStateDoesNotSpinWithoutAnAttempt() async {
+        let chat = session([RecoverySocket()]); defer { chat.disconnect() }
+        chat.networkChanged(available: false)
+        do { try await chat.connect() } catch {}
+        XCTAssertFalse(chat.reconnecting)
+        XCTAssertTrue(chat.connectionNeedsRetry)
+    }
+    func testRepeatedHeartbeatFailureEventuallyExhaustsBudget() async {
+        let socket = RecoverySocket(); socket.pingFailure = true
+        let chat = session([socket], heartbeat: 25); defer { chat.disconnect() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertFalse(chat.reconnecting)
+    }
+    func testWholeAttemptTimeoutIsNotOverwrittenByChildCancellation() async {
+        let socket = RecoverySocket(); socket.hangHandshake = true
+        let chat = session([socket], timeout: 5, attemptTimeout: 0.1)
+        defer { chat.disconnect(); socket.releaseSuspended() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.recoveryAttempts, 5)
+        XCTAssertFalse(chat.reconnecting)
+        XCTAssertTrue(chat.connectionIssue?.contains("Timed out") == true)
+        XCTAssertFalse(chat.connectionIssue?.contains("error 1") == true)
+    }
+    func testHungHandshakeHasDeadlineAndActionableRetry() async {
+        let socket = RecoverySocket(); socket.hangHandshake = true
+        let chat = session([socket], timeout: 0.5); defer { chat.disconnect(); socket.releaseSuspended() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.connectionStage, .handshake)
+        XCTAssertFalse(chat.reconnecting)
+        XCTAssertTrue(chat.connectionIssue?.contains("Timed out") == true)
+        XCTAssertTrue(socket.packets.isEmpty)
+    }
+    func testInitializeAndResumeTimeoutsIdentifyTheirStage() async {
+        for (method, phase) in [("initialize", ChatConnectionStage.initialize), ("thread/resume", .resume)] {
+            let socket = RecoverySocket(); socket.hangMethod = method
+            let chat = session([socket], timeout: 0.5)
+            do { try await chat.connect() } catch {}
+            await eventually { chat.connectionNeedsRetry }
+            XCTAssertEqual(chat.connectionStage, phase)
+            XCTAssertTrue(chat.connectionIssue?.contains(phase.rawValue) == true)
+            XCTAssertFalse(chat.reconnecting)
+            chat.disconnect()
+        }
+    }
+    func testInitializedNotificationSendCannotHangRecovery() async {
+        let socket = RecoverySocket(); socket.hangInitialized = true
+        let chat = session([socket], timeout: 0.5); defer { chat.disconnect(); socket.releaseSuspended() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.connectionStage, .initialize)
+        XCTAssertFalse(chat.reconnecting)
+    }
+    func testHungHistoryExhaustsAndLateCompletionCannotOverwriteNewConnection() async throws {
+        let gate = SuspendedHistory()
+        let chat = session([RecoverySocket()], timeout: 0.5, historyReader: { _ in try await gate.read() })
+        defer { chat.disconnect(); gate.release(.null) }
+        let room = chat.conversationID
+        chat.messages = [.object(["id": .string("kept"), "content": .string("keep")])]
+        chat.composer.draft = "draft"
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.connectionStage, .history)
+        XCTAssertFalse(chat.reconnecting)
+        XCTAssertEqual(chat.recoveryAttempts, 5)
+        XCTAssertEqual(chat.composer.draft, "draft")
+        // The timed-out HTTP callbacks can finish after the socket was replaced.
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread")
+        chat.retryConnection()
+        await eventually { chat.connectionStage == .ready }
+        gate.release(.object(["conversation": .object(["id": .string(room)]), "messages": .array([.object(["id": .string("stale")])])]))
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(chat.messages.map(\.id), ["kept"])
+        XCTAssertEqual(chat.connectionStage, .ready)
+    }
+    func testExhaustionSurvivesForegroundRefreshUntilExplicitRetry() async {
+        let socket = RecoverySocket(); socket.failInitialize = true
+        let chat = session([socket]); defer { chat.disconnect() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        let attempts = socket.packets.count
+        chat.sceneChanged(active: true)
+        chat.sceneChanged(active: false); chat.sceneChanged(active: true)
+        await chat.loadUsage()
+        XCTAssertEqual(socket.packets.count, attempts)
+        XCTAssertTrue(chat.connectionNeedsRetry)
+        socket.failInitialize = false
+        chat.retryConnection()
+        await eventually { chat.connectionStage == .ready }
+        XCTAssertFalse(chat.reconnecting)
+        XCTAssertNil(chat.connectionIssue)
+    }
+    func testChatAuthenticationFailureIsNotAPIConnectedAndDoesNotLogToken() async {
+        let socket = RecoverySocket(); socket.handshakeFailure = true; socket.handshakeStatus = 401
+        let chat = session([socket]); defer { chat.disconnect() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.connectionStage, .handshake)
+        XCTAssertTrue(chat.connectionIssue?.contains("401") == true)
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "initialize" })
+        let secret = "never-log-this-token"
+        let error = NSError(domain: NSURLErrorDomain, code: -1001, userInfo: [NSLocalizedDescriptionKey: "wss://server/?token=" + secret, NSURLErrorFailingURLStringErrorKey: "wss://server/?token=" + secret])
+        let diagnostic = ChatSession.connectionDiagnostic(stage: .handshake, failure: error, httpStatus: nil, closeCode: 1006)
+        XCTAssertFalse(diagnostic.contains(secret)); XCTAssertFalse(diagnostic.contains("token="))
+        XCTAssertTrue(diagnostic.contains("-1001"))
+    }
+    func testStablePongsResetBudgetOnlyAfterHealthyWindow() async throws {
+        let first = RecoverySocket(); first.failInitialize = true
+        let second = RecoverySocket()
+        let chat = session([first, second], heartbeat: 25, stableInterval: 1)
+        defer { chat.disconnect() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionStage == .ready }
+        XCTAssertGreaterThan(chat.recoveryAttempts, 0)
+        await eventually { second.pingCount > 2 && chat.recoveryAttempts == 0 }
+        XCTAssertFalse(chat.connectionNeedsRetry)
+    }
+    func testResumeRejectionReportsRPCCodeWithoutServerText() async {
+        let socket = RecoverySocket(); socket.rejectMethod = "thread/resume"
+        let chat = session([socket]); defer { chat.disconnect() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.connectionStage, .resume)
+        XCTAssertTrue(chat.connectionIssue?.contains("-32602") == true)
+        XCTAssertFalse(chat.connectionIssue?.contains("never-log-this-token") == true)
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "thread/start" || $0["method"].string == "turn/start" })
     }
     func testLoadingDisconnectRecoversSameThreadWithoutAlert() async {
         let broken = RecoverySocket(); broken.failInitialize = true

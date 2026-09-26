@@ -172,14 +172,16 @@ enum ChatConnectionStage: String {
     private let delay: (Double) async throws -> Void
     private let heartbeatInterval: Double
     private let requestTimeout: Double
+    private let attemptTimeout: Double
     private static let log = Logger(subsystem: "Vesper", category: "ChatConnection")
 
     init(socketFactory: @escaping (URL) -> any ChatSocket = { URLSession.shared.webSocketTask(with: $0) },
          delay: @escaping (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
-         heartbeatInterval: Double = 25, requestTimeout: Double = 30, stableConnectionInterval: Double = 60) {
+         heartbeatInterval: Double = 25, requestTimeout: Double = 30, stableConnectionInterval: Double = 60, attemptTimeout: Double? = nil) {
         makeSocket = socketFactory; self.delay = delay
         self.heartbeatInterval = heartbeatInterval; self.requestTimeout = requestTimeout
         self.stableConnectionInterval = stableConnectionInterval
+        self.attemptTimeout = attemptTimeout ?? requestTimeout * 4
     }
     deinit { networkMonitor?.cancel() }
     // Used by deterministic transport tests without credentials or live requests.
@@ -636,7 +638,7 @@ enum ChatConnectionStage: String {
         let owner = intent
         let taskID = UUID(); connectionTaskID = taskID
         let task = Task {
-            try await ChatDeadline<Void>().run(seconds: self.requestTimeout * 4) { try await self.establishConnection() }
+            try await ChatDeadline<Void>().run(seconds: self.attemptTimeout) { try await self.establishConnection() }
         }
         connectionTask = task
         do {
@@ -726,7 +728,9 @@ enum ChatConnectionStage: String {
                 startHeartbeat(ws, generation: expected)
             }
         } catch {
-            connectionFailed(error, socket: ws, generation: expected)
+            // A whole-attempt timeout cancels this child. Its owner reports the
+            // original timeout; the child's cancellation must not replace it.
+            if !Task.isCancelled { connectionFailed(error, socket: ws, generation: expected) }
             throw error
         }
     }

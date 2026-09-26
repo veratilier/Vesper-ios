@@ -63,7 +63,7 @@ send; use Retry/Check status to reconcile its original client ID.
 ## Validation
 
 The two original stall reproductions failed before the fix. After the fix, all
-54 XCTest tests pass on the local iOS 27 Simulator, including 10 new regressions.
+55 XCTest tests pass on the local iOS 27 Simulator, including 11 new regressions.
 The build type-checks/compiles the native app with Xcode 27 beta. This validation
 uses injected transport failures and does not require a live token or mutate
 production history. Existing lost-receipt/no-resend tests remain passing.

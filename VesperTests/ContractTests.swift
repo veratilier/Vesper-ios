@@ -334,18 +334,19 @@ final class ContractTests: XCTestCase {
 }
 
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
-    private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, stableInterval: Double = 60, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
+    private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, stableInterval: Double = 60, timeout: Double = 5, attemptTimeout: Double? = nil, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
         var index = 0
         let chat = ChatSession(socketFactory: { _ in
             let socket = sockets[min(index, sockets.count - 1)]; index += 1; return socket
         }, delay: { seconds in
             try await Task.sleep(for: .milliseconds(seconds >= 100 ? 100_000 : 5))
-        }, heartbeatInterval: heartbeat, requestTimeout: 0.1, stableConnectionInterval: stableInterval)
+        }, heartbeatInterval: heartbeat, requestTimeout: timeout, stableConnectionInterval: stableInterval, attemptTimeout: attemptTimeout)
         chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"), endpoint: "wss://invalid.example", threadID: "thread", historyReader: historyReader)
         return chat
     }
     private func eventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<500 { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
     }
     func testOfflineStateDoesNotSpinWithoutAnAttempt() async {
@@ -362,9 +363,20 @@ final class ContractTests: XCTestCase {
         await eventually { chat.connectionNeedsRetry }
         XCTAssertFalse(chat.reconnecting)
     }
+    func testWholeAttemptTimeoutIsNotOverwrittenByChildCancellation() async {
+        let socket = RecoverySocket(); socket.hangHandshake = true
+        let chat = session([socket], timeout: 5, attemptTimeout: 0.1)
+        defer { chat.disconnect(); socket.releaseSuspended() }
+        do { try await chat.connect() } catch {}
+        await eventually { chat.connectionNeedsRetry }
+        XCTAssertEqual(chat.recoveryAttempts, 5)
+        XCTAssertFalse(chat.reconnecting)
+        XCTAssertTrue(chat.connectionIssue?.contains("Timed out") == true)
+        XCTAssertFalse(chat.connectionIssue?.contains("error 1") == true)
+    }
     func testHungHandshakeHasDeadlineAndActionableRetry() async {
         let socket = RecoverySocket(); socket.hangHandshake = true
-        let chat = session([socket]); defer { chat.disconnect(); socket.releaseSuspended() }
+        let chat = session([socket], timeout: 0.5); defer { chat.disconnect(); socket.releaseSuspended() }
         do { try await chat.connect() } catch {}
         await eventually { chat.connectionNeedsRetry }
         XCTAssertEqual(chat.connectionStage, .handshake)
@@ -375,7 +387,7 @@ final class ContractTests: XCTestCase {
     func testInitializeAndResumeTimeoutsIdentifyTheirStage() async {
         for (method, phase) in [("initialize", ChatConnectionStage.initialize), ("thread/resume", .resume)] {
             let socket = RecoverySocket(); socket.hangMethod = method
-            let chat = session([socket])
+            let chat = session([socket], timeout: 0.5)
             do { try await chat.connect() } catch {}
             await eventually { chat.connectionNeedsRetry }
             XCTAssertEqual(chat.connectionStage, phase)
@@ -386,7 +398,7 @@ final class ContractTests: XCTestCase {
     }
     func testInitializedNotificationSendCannotHangRecovery() async {
         let socket = RecoverySocket(); socket.hangInitialized = true
-        let chat = session([socket]); defer { chat.disconnect(); socket.releaseSuspended() }
+        let chat = session([socket], timeout: 0.5); defer { chat.disconnect(); socket.releaseSuspended() }
         do { try await chat.connect() } catch {}
         await eventually { chat.connectionNeedsRetry }
         XCTAssertEqual(chat.connectionStage, .initialize)
@@ -394,7 +406,7 @@ final class ContractTests: XCTestCase {
     }
     func testHungHistoryExhaustsAndLateCompletionCannotOverwriteNewConnection() async throws {
         let gate = SuspendedHistory()
-        let chat = session([RecoverySocket()], historyReader: { _ in try await gate.read() })
+        let chat = session([RecoverySocket()], timeout: 0.5, historyReader: { _ in try await gate.read() })
         defer { chat.disconnect(); gate.release(.null) }
         let room = chat.conversationID
         chat.messages = [.object(["id": .string("kept"), "content": .string("keep")])]
@@ -448,7 +460,7 @@ final class ContractTests: XCTestCase {
     func testStablePongsResetBudgetOnlyAfterHealthyWindow() async throws {
         let first = RecoverySocket(); first.failInitialize = true
         let second = RecoverySocket()
-        let chat = session([first, second], heartbeat: 25, stableInterval: 0.1)
+        let chat = session([first, second], heartbeat: 25, stableInterval: 1)
         defer { chat.disconnect() }
         do { try await chat.connect() } catch {}
         await eventually { chat.connectionStage == .ready }

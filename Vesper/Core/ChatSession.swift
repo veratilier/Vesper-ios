@@ -145,6 +145,7 @@ enum ChatConnectionStage: String {
     private var socket: (any ChatSocket)?
     private var generation = UUID()
     private var historyReader: ((String) async throws -> JSONValue)?
+    private var historyLoadTask: Task<Void, Never>?
     private var bufferedPackets: [JSONValue] = []
     private var resuming = false
     private var intent = UUID()
@@ -356,7 +357,7 @@ enum ChatConnectionStage: String {
         }
         appStore = store; api = store.api; endpoint = store.socketURL
         let historyAPI = store.api
-        historyReader = { id in try await historyAPI.request("/conversations/\(id)", history: true) }
+        historyReader = { id in try await historyAPI.request("/conversations/\(id)?latest=1&limit=200", history: true) }
         if networkMonitor == nil {
             let monitor = NWPathMonitor(); networkMonitor = monitor
             monitor.pathUpdateHandler = { [weak self] path in
@@ -444,7 +445,7 @@ enum ChatConnectionStage: String {
         guard !busy, !callActive else { return false }
         error = nil
         do {
-            try await loadConversation(message["conversationId"].string, around: message.id)
+            try await loadConversation(message["conversationId"].string)
             await reveal(message.id)
             guard messages.contains(where: { $0.id == message.id }) else {
                 throw ServiceError(message: "The matching message could not be loaded. Update the history service and search again.")
@@ -459,7 +460,7 @@ enum ChatConnectionStage: String {
             throw ServiceError(message: "The history service did not return the requested conversation. Your current chat and draft have been kept.")
         }
     }
-    private func loadConversation(_ id: String, around messageID: String? = nil) async throws {
+    private func loadConversation(_ id: String) async throws {
         guard let api, !id.isEmpty else { throw ServiceError(message: "Connect your device first.") }
         busy = true
         defer { busy = turnID != nil }
@@ -467,7 +468,6 @@ enum ChatConnectionStage: String {
         let r: JSONValue
         var parameters = URLComponents()
         parameters.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200")]
-        if let messageID { parameters.queryItems?.append(URLQueryItem(name: "around", value: messageID)) }
         do {
             r = try await api.request("/conversations/\(id)?" + (parameters.percentEncodedQuery ?? ""), history: true)
         } catch let failure as ServiceError where failure.statusCode == 404 {
@@ -476,14 +476,16 @@ enum ChatConnectionStage: String {
             r = try await api.request("/conversations/\(id)", history: true)
         }
         try Self.validateHistoryRecord(r, expectedID: id)
+        historyLoadTask?.cancel()
         composer.switchConversation(from: conversationID, to: id)
         disconnect(); conversationID = id; restoreSendState(); connectionSuppressed = false; threadID = nil; turnID = nil
         jumpMessageID = nil; events = []; thinkingSummary = ""
         let t = r["conversation"]["codexThreadId"].string
         threadID = t.isEmpty ? nil : t
         tombstones = r["tombstones"].array
-        messages = r["messages"].array
+        messages = ChatTranscript.merge([], incoming: r["messages"].array, tombstones: tombstones)
         hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
+        historyLoadTask = Task { await self.loadCompleteHistory(for: id) }
         status = "History loaded"
         if threadID != nil {
             do {
@@ -540,11 +542,22 @@ enum ChatConnectionStage: String {
             var query = URLComponents(); query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "before", value: historyCursor)]
             let response = try await api.request("/conversations/\(id)?" + (query.percentEncodedQuery ?? ""), history: true)
             guard id == conversationID else { return }
-            let existing = Set(messages.map(\.id)); messages.insert(contentsOf: response["messages"].array.filter { !existing.contains($0.id) }, at: 0)
+            try Self.validateHistoryRecord(response, expectedID: id)
+            tombstones = response["tombstones"].array
+            messages = ChatTranscript.merge(messages, incoming: response["messages"].array, tombstones: tombstones)
             hasOlderMessages = response["hasMore"].bool; historyCursor = response["before"].string
         } catch { self.error = error.localizedDescription }
     }
+    private func loadCompleteHistory(for id: String) async {
+        while !Task.isCancelled, conversationID == id, hasOlderMessages {
+            let cursor = historyCursor
+            if loadingOlder { try? await Task.sleep(for: .milliseconds(50)); continue }
+            await loadOlder()
+            if conversationID != id || historyCursor == cursor { break }
+        }
+    }
     func reveal(_ id: String) async {
+        if !messages.contains(where: { $0.id == id }), let historyLoadTask { await historyLoadTask.value }
         while !messages.contains(where: { $0.id == id }) && hasOlderMessages {
             let cursor = historyCursor; await loadOlder(); if cursor == historyCursor { break }
         }
@@ -573,7 +586,7 @@ enum ChatConnectionStage: String {
         } catch { self.error = error.localizedDescription }
     }
     func newConversation(id: String = UUID().uuidString) {
-        guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
+        guard !busy else { return }; historyLoadTask?.cancel(); historyLoadTask = nil; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
     }
     func disconnect() {
         wantsConnection = false; connectionSuppressed = true; intent = UUID(); sending = false; busy = false; stopRecovery()
@@ -700,7 +713,7 @@ enum ChatConnectionStage: String {
                 _ = try await stage(.initialize) { try await self.rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])])) }
                 try await stage(.initialize) { try await self.sendPacket(.object(["method": .string("initialized")])) }
                 if let threadID {
-                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config])) }
+                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config, "excludeTurns": .bool(true)])) }
                     try checkCallback()
                     let returnedThread = snapshot["thread"]["id"].string
                     guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
@@ -712,14 +725,8 @@ enum ChatConnectionStage: String {
                         try checkCallback()
                         try Self.validateHistoryRecord(history, expectedID: conversationID)
                         tombstones = history["tombstones"].array
-                        var merged = messages
-                        for message in history["messages"].array {
-                            if let index = merged.firstIndex(where: { $0.id == message.id }) {
-                                // A locally saved pending row is not a server acceptance receipt.
-                                if message["status"].string == "delivered" { merged[index] = message }
-                            } else { merged.append(message) }
-                        }
-                        messages = ChatRecovery.merge(merged, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+                        let merged = ChatTranscript.merge(messages, incoming: history["messages"].array, tombstones: tombstones)
+                        messages = ChatTranscript.ordered(ChatRecovery.merge(merged, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
                         if let pendingTurn, let receipt = history["messages"].array.first(where: {
                             $0.id == pendingTurn["clientUserMessageId"].string && $0["status"].string == "delivered" && !$0["metadata"]["turnId"].string.isEmpty
                         }) {
@@ -772,12 +779,13 @@ enum ChatConnectionStage: String {
         }
     }
     private func reconcile(_ snapshot: JSONValue) {
-        messages = ChatRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+        messages = ChatTranscript.ordered(ChatRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
         let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
         let turns = thread["turns"].array
         if let active = turns.last(where: { ["inProgress", "running", "started"].contains($0["status"].string) }) {
             turnID = active.id; busy = true
-        } else if case .array = thread["turns"] { turnID = nil; busy = false }
+        } else if thread["status"]["type"].string == "idle" { turnID = nil; busy = false }
+        else if case .array(let entries) = thread["turns"], !entries.isEmpty { turnID = nil; busy = false }
         if let pendingTurn, let receipt = ChatRecovery.receipt(for: pendingTurn["clientUserMessageId"].string, snapshot: snapshot) {
             let id = pendingTurn["clientUserMessageId"].string
             if let index = messages.firstIndex(where: { $0.id == id }) {
@@ -852,9 +860,9 @@ enum ChatConnectionStage: String {
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             if let threadID {
-                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled))]))
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled)), "excludeTurns": .bool(true)]))
                 guard sendIntent == intent else { throw CancellationError() }
-                messages = UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones)
+                messages = ChatTranscript.ordered(UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
             } else {
                 let catalog: JSONValue
                 if voiceCallContext != nil { catalog = .object(["tools": .array([])]) }
@@ -1406,12 +1414,7 @@ enum ChatRecovery {
     }
     static func merge(_ saved: [JSONValue], snapshot: JSONValue, conversationID: String, tombstones: [JSONValue]) -> [JSONValue] {
         let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
-        var correlated = saved.filter { message in
-            !tombstones.contains { tombstone in
-                let deletedIDs = [tombstone["messageId"].string, tombstone["itemId"].string, tombstone["stableId"].string].filter { !$0.isEmpty }
-                return deletedIDs.contains(message.id) || deletedIDs.contains(message["metadata"]["itemId"].string)
-            }
-        }
+        var correlated = saved.filter { !ChatTranscript.isDeleted($0, tombstones: tombstones) }
         for index in correlated.indices where ChatPresentation.isUser(correlated[index]) {
             if let turn = receipt(for: correlated[index].id, snapshot: snapshot) {
                 correlated[index]["metadata"]["turnId"] = .string(turn)
@@ -1426,11 +1429,16 @@ enum ChatRecovery {
                 var message = index.map { result[$0] } ?? .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "source": .string("codex")])
                 message["content"] = item["text"]
                 message["status"] = .string(["inProgress", "running", "started"].contains(turn["status"].string) ? "streaming" : "delivered")
+                if message["createdAt"].string.isEmpty {
+                    let time = item["createdAt"] == .null ? turn["startedAt"] : item["createdAt"]
+                    let timestamp = UserHistoryRecovery.timestamp(time)
+                    if !timestamp.isEmpty { message["createdAt"] = .string(timestamp) }
+                }
                 message["metadata"]["threadId"] = thread["id"]
                 message["metadata"]["turnId"] = .string(turn.id)
                 if let index { result[index] = message } else { result.append(message) }
             }
         }
-        return ChatDetailRecovery.restore(result, snapshot: snapshot)
+        return ChatTranscript.ordered(ChatDetailRecovery.restore(result, snapshot: snapshot))
     }
 }

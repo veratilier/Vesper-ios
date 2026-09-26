@@ -657,7 +657,7 @@ enum ChatPresentation {
         return wake && isActivity(message)
     }
     static func displayRows(_ input: [JSONValue]) -> [Row] {
-        let messages = input.filter { !isWakeActivity($0) }
+        let messages = ChatTranscript.ordered(input).filter { !isWakeActivity($0) }
         let replies = messages.indices.filter { !isUser(messages[$0]) && !isActivity(messages[$0]) }
         var attached: [Int: [JSONValue]] = [:]
         var orphans: [Int] = []

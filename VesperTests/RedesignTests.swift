@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import Vesper
 
 @MainActor final class RedesignTests: XCTestCase {
@@ -46,6 +47,20 @@ import XCTest
         XCTAssertEqual(draft.pendingMusic?["id"].string, "song")
         draft.switchConversation(from: "main", to: "main")
         XCTAssertEqual(draft.draft, "unfinished main-room thought")
+    }
+    func testTypingOnlyUpdatesDraftObservers() {
+        let composer = ChatComposer()
+        var timelineInvalidations = 0
+        var inputInvalidations = 0
+        let timeline = composer.objectWillChange.sink { timelineInvalidations += 1 }
+        let input = composer.typedDraft.objectWillChange.sink { inputInvalidations += 1 }
+        withExtendedLifetime((timeline, input)) {
+            for count in 1...200 { composer.draft = String(repeating: "字", count: count) }
+            XCTAssertEqual(timelineInvalidations, 0, "Typing must not refresh the chat timeline.")
+            XCTAssertEqual(inputInvalidations, 200)
+            composer.images = [Data([1, 2, 3])]
+            XCTAssertEqual(timelineInvalidations, 1, "Attachments should still refresh the composer.")
+        }
     }
     func testNoteLayoutRoundTripDoesNotNeedOrChangeBody() {
         let note: JSONValue = .object(["id": .string("one"), "text": .string("original body"), "kind": .string("agent")])

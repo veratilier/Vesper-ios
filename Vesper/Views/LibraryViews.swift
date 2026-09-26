@@ -230,7 +230,7 @@ private struct MovieCue {
     }
 }
 
-private struct MovieRoomView: View {
+struct MovieRoomView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var music: MusicPlayer
     @Environment(\.scenePhase) private var phase

@@ -487,6 +487,9 @@ enum ChatConnectionStage: String {
         tombstones = r["tombstones"].array
         messages = r["messages"].array
         hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
+        // Keep the initial response bounded, then fill the complete archive in
+        // pages. The full conversation remains available in the chat view.
+        Task { await self.loadCompleteHistory(for: id) }
         status = "History loaded"
         if threadID != nil {
             do {
@@ -546,6 +549,16 @@ enum ChatConnectionStage: String {
             let existing = Set(messages.map(\.id)); messages.insert(contentsOf: response["messages"].array.filter { !existing.contains($0.id) }, at: 0)
             hasOlderMessages = response["hasMore"].bool; historyCursor = response["before"].string
         } catch { self.error = error.localizedDescription }
+    }
+    private func loadCompleteHistory(for id: String) async {
+        while !Task.isCancelled, conversationID == id, hasOlderMessages {
+            let cursor = historyCursor
+            if loadingOlder { try? await Task.sleep(for: .milliseconds(50)); continue }
+            await loadOlder()
+            // Stop on a failed request or invalid cursor; leave the manual
+            // Load earlier control in place so history can be retried.
+            if conversationID != id || historyCursor == cursor { break }
+        }
     }
     func reveal(_ id: String) async {
         while !messages.contains(where: { $0.id == id }) && hasOlderMessages {

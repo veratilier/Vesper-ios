@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import UIKit
 
 struct ServiceError: LocalizedError {
     let message: String
@@ -30,6 +31,7 @@ struct APIClient {
     var baseURL: String
     var historyURL: String
     var token: String
+    var stickerSession: URLSession = .shared
     static func validatedURL(_ base: String, path: String) throws -> URL {
         guard let origin = URL(string: base), origin.scheme == "https", origin.host != nil, origin.user == nil, origin.password == nil,
               var parts = URLComponents(url: origin, resolvingAgainstBaseURL: false) else { throw ServiceError(message: "Enter a valid HTTPS server address.") }
@@ -42,6 +44,33 @@ struct APIClient {
     }
     func uploadImage(_ data: Data, name: String) async throws -> JSONValue {
         try await uploadFile(data, name: name, mime: "image/jpeg")
+    }
+    /// The chat socket accepts inline image input, never the sticker catalog's HTTPS URL.
+    /// Fetch from our own asset endpoint using the catalog ID rather than trusting a URL
+    /// supplied in message metadata (which could point to an unrelated host).
+    func stickerInputURL(assetID: String) async throws -> String {
+        guard (16...64).contains(assetID.count),
+              assetID.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-").contains($0) }) else {
+            throw ServiceError(message: "This sticker is unavailable. Nothing was sent.")
+        }
+        var request = URLRequest(url: try Self.validatedURL(baseURL, path: "/api/stickers/assets/\(assetID)"))
+        request.timeoutInterval = 30
+        let (data, response) = try await stickerSession.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("image/") == true,
+              !data.isEmpty, data.count <= 16 * 1024 * 1024,
+              let image = UIImage(data: data) else {
+            throw ServiceError(message: "This sticker could not be loaded as an image. Nothing was sent.")
+        }
+        let scale = min(1, 1600 / max(image.size.width, image.size.height))
+        let size = CGSize(width: max(1, round(image.size.width * scale)), height: max(1, round(image.size.height * scale)))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        let jpeg = UIGraphicsImageRenderer(size: size, format: format).jpegData(withCompressionQuality: 0.84) { context in
+            context.cgContext.setFillColor(UIColor.white.cgColor); context.cgContext.fill(CGRect(origin: .zero, size: size))
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        guard jpeg.count <= 8 * 1024 * 1024 else { throw ServiceError(message: "This sticker is too large to send. Nothing was sent.") }
+        return "data:image/jpeg;base64," + jpeg.base64EncodedString()
     }
     func uploadFile(_ data: Data, name: String, mime: String, sticker: Bool = false, description: String = "") async throws -> JSONValue {
         guard !token.isEmpty else { throw ServiceError(message: "Connect your device first.") }

@@ -479,7 +479,7 @@ struct ChatView: View {
                     Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
-                if message["status"].string != "streaming" {
+                if message["status"].string != "streaming" && !chat.replyIsStillRunning(message) {
                     HStack(spacing: 12) {
                         if user { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
                         Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message")

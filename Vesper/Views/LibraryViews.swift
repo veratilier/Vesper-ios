@@ -96,19 +96,6 @@ struct AlbumView: View {
         catch { status = error.localizedDescription }
     }
 }
-struct PandoraView: View {
-    var body: some View {
-        Page(title: "Pandora", subtitle: "Small doors to other worlds.") {
-            NavigationLink { ReadingRoomView() } label: {
-                GlassCard { HStack(spacing: 16) { Image(systemName: "book.pages").font(.largeTitle); VStack(alignment: .leading, spacing: 7) { Text("Reading Room").font(.headline); Text("Our bookshelf, passages and margins").font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right") } }
-            }.buttonStyle(.plain)
-            NavigationLink { MovieRoomView() } label: {
-                GlassCard { HStack(spacing: 16) { Image(systemName: "film").font(.title); VStack(alignment: .leading, spacing: 7) { Text("Movie Room").font(.headline); Text("Watch, share a scene and talk together").font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right") } }
-            }.buttonStyle(.plain)
-            NavigationLink { DesireView() } label: { GlassCard { Label("Desire", systemImage: "heart").font(.headline) } }.buttonStyle(.plain)
-        }
-    }
-}
 struct ReadingRoomView: View {
     @EnvironmentObject private var store: AppStore
     @State private var adding = false

@@ -9,13 +9,16 @@ import OSLog
 @MainActor protocol ChatSocket: AnyObject {
     var closeCode: URLSessionWebSocketTask.CloseCode { get }
     var closeReason: Data? { get }
+    var handshakeStatus: Int? { get }
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
     func receive() async throws -> URLSessionWebSocketTask.Message
     func send(_ message: URLSessionWebSocketTask.Message) async throws
     func ping() async throws
 }
+extension ChatSocket { var handshakeStatus: Int? { nil } }
 extension URLSessionWebSocketTask: ChatSocket {
+    var handshakeStatus: Int? { (response as? HTTPURLResponse)?.statusCode }
     func ping() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             sendPing { error in
@@ -27,10 +30,54 @@ extension URLSessionWebSocketTask: ChatSocket {
 }
 private struct ChatRPCRejected: LocalizedError {
     let message: String
+    var code: Int = 0
     var errorDescription: String? { message }
 }
 private enum ChatCallback {
     @TaskLocal static var generation: UUID?
+}
+
+enum ChatConnectionStage: String {
+    case handshake = "WebSocket handshake/authentication"
+    case initialize = "initialize"
+    case resume = "thread/resume"
+    case history = "history reconciliation"
+    case heartbeat = "WebSocket heartbeat"
+    case ready = "Chat connected"
+    case waiting = "Waiting for network"
+}
+
+/// Unlike a task-group race, this deadline does not wait for an I/O operation
+/// that ignores cancellation. Late completions are discarded; callers also fence generations.
+@MainActor private final class ChatDeadline<Value> {
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var operation: Task<Void, Never>?
+    private var timer: Task<Void, Never>?
+    private func finish(_ result: Result<Value, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        operation?.cancel(); timer?.cancel(); operation = nil; timer = nil
+        continuation.resume(with: result)
+    }
+    func run(seconds: Double, operation work: @escaping @MainActor () async throws -> Value) async throws -> Value {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                guard !Task.isCancelled else { finish(.failure(CancellationError())); return }
+                operation = Task {
+                    do { self.finish(.success(try await work())) }
+                    catch { self.finish(.failure(error)) }
+                }
+                timer = Task {
+                    do { try await Task.sleep(for: .seconds(seconds)) }
+                    catch { return }
+                    self.finish(.failure(URLError(.timedOut)))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.finish(.failure(CancellationError())) }
+        }
+    }
 }
 
 @MainActor final class ChatSession: ObservableObject {
@@ -108,6 +155,11 @@ private enum ChatCallback {
     private var heartbeatTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, Never>?
     private var recoveryID = UUID()
+    @Published private(set) var connectionStage: ChatConnectionStage = .handshake
+    @Published private(set) var connectionIssue: String?
+    @Published private(set) var recoveryAttempts = 0
+    private var readyAt: Date?
+    private let stableConnectionInterval: Double
     @Published private(set) var reconnecting = false
     @Published private(set) var connectionNeedsRetry = false
     @Published private(set) var unconfirmedSend = false
@@ -124,9 +176,10 @@ private enum ChatCallback {
 
     init(socketFactory: @escaping (URL) -> any ChatSocket = { URLSession.shared.webSocketTask(with: $0) },
          delay: @escaping (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
-         heartbeatInterval: Double = 25, requestTimeout: Double = 30) {
+         heartbeatInterval: Double = 25, requestTimeout: Double = 30, stableConnectionInterval: Double = 60) {
         makeSocket = socketFactory; self.delay = delay
         self.heartbeatInterval = heartbeatInterval; self.requestTimeout = requestTimeout
+        self.stableConnectionInterval = stableConnectionInterval
     }
     deinit { networkMonitor?.cancel() }
     // Used by deterministic transport tests without credentials or live requests.
@@ -142,57 +195,104 @@ private enum ChatCallback {
         min(30, pow(2, Double(attempt))) * min(1.5, max(0.5, jitter))
     }
     func sceneChanged(active: Bool) {
+        let returning = !foreground && active
         foreground = active
         guard wantsConnection else { return }
-        if !active {
-            stopRecovery(); closeTransport()
-        } else { scheduleRecovery(immediate: true) }
+        if !active { stopRecovery(); closeTransport(); reconnecting = false }
+        else if returning { scheduleRecovery(immediate: true) }
     }
     func networkChanged(available: Bool) {
-        let restored = !online && available; online = available
+        guard available != online else { return }
+        online = available
         guard wantsConnection else { return }
-        if !available { stopRecovery(); closeTransport(); reconnecting = true }
-        else if restored { scheduleRecovery(immediate: true) }
+        if !available {
+            stopRecovery(); closeTransport(); showNetworkWait()
+        } else if recoveryAttempts < 5 {
+            connectionNeedsRetry = false
+            scheduleRecovery(immediate: true)
+        }
+    }
+    private func showNetworkWait() {
+        reconnecting = false; connectionNeedsRetry = true
+        connectionStage = .waiting
+        connectionIssue = "The device reports no available network path. Reconnect to a network, then Retry. Saved messages and unconfirmed sends are kept."
+        status = "Waiting for network"
     }
     func retryConnection() {
         wantsConnection = true; connectionSuppressed = false
-        stopRecovery(); closeTransport(); scheduleRecovery(immediate: true)
+        stopRecovery(); closeTransport()
+        recoveryAttempts = 0; connectionNeedsRetry = false; connectionIssue = nil
+        scheduleRecovery(immediate: true)
     }
     private func stopRecovery() {
         recoveryID = UUID(); recoveryTask?.cancel(); recoveryTask = nil
     }
     private func scheduleRecovery(immediate: Bool = false) {
-        guard wantsConnection, foreground, online, recoveryTask == nil, !connectionNeedsRetry || immediate else { return }
-        reconnecting = true; connectionNeedsRetry = false; status = "Reconnecting…"
+        guard wantsConnection, foreground, recoveryTask == nil else { return }
+        guard online else { showNetworkWait(); return }
+        guard !connectionNeedsRetry else { return }
+        reconnecting = true; status = "Reconnecting…"
         let recovery = UUID(); recoveryID = recovery
         recoveryTask = Task { [weak self] in
             await ChatCallback.$generation.withValue(nil) {
-            guard let self else { return }
-            defer { if self.recoveryID == recovery { self.recoveryTask = nil } }
-            for attempt in 0..<5 {
-                do {
-                    if !immediate || attempt > 0 { try await self.delay(Self.retryDelay(attempt)) }
-                    try Task.checkCancellation()
-                    guard self.recoveryID == recovery, self.wantsConnection, self.foreground, self.online else { return }
-                    try await self.connect()
-                    guard self.recoveryID == recovery else { return }
-                    self.reconnecting = false; self.connectionNeedsRetry = false
-                    return
-                } catch {
-                    guard !Task.isCancelled, self.recoveryID == recovery else { return }
+                guard let self else { return }
+                defer { if self.recoveryID == recovery { self.recoveryTask = nil } }
+                var first = true
+                while self.recoveryAttempts < 5 {
+                    do {
+                        if !immediate || !first { try await self.delay(Self.retryDelay(self.recoveryAttempts)) }
+                        first = false
+                        try Task.checkCancellation()
+                        guard self.recoveryID == recovery, self.wantsConnection, self.foreground, self.online else { return }
+                        self.recoveryAttempts += 1
+                        try await self.connect()
+                        guard self.recoveryID == recovery else { return }
+                        // An open socket alone is not stability. Repeated early heartbeat
+                        // failures share this budget until the connection stays healthy.
+                        if self.initialized { self.reconnecting = false; return }
+                    } catch {
+                        guard !Task.isCancelled, self.recoveryID == recovery else { return }
+                    }
                 }
-            }
-            self.reconnecting = false; self.connectionNeedsRetry = true
-            self.status = "Chat disconnected. Retry"
+                self.reconnecting = false; self.connectionNeedsRetry = true
+                self.status = "Chat disconnected. Retry"
+                if self.connectionIssue == nil { self.connectionIssue = "Chat recovery failed. Tap Retry to start another attempt." }
             }
         }
     }
+    private func stage<Value>(_ stage: ChatConnectionStage, work: @escaping @MainActor () async throws -> Value) async throws -> Value {
+        try checkCallback()
+        connectionStage = stage
+        let expected = generation
+        Self.log.info("phase-start generation=\(expected.uuidString, privacy: .public) phase=\(stage.rawValue, privacy: .public) attempt=\(self.recoveryAttempts, privacy: .public)")
+        let result = try await ChatDeadline<Value>().run(seconds: requestTimeout, operation: work)
+        try checkCallback()
+        guard expected == generation else { throw CancellationError() }
+        Self.log.info("phase-ok generation=\(expected.uuidString, privacy: .public) phase=\(stage.rawValue, privacy: .public)")
+        return result
+    }
+    static func connectionDiagnostic(stage: ChatConnectionStage, failure: Error, httpStatus: Int?, closeCode: Int) -> String {
+        // Never interpolate localizedDescription/userInfo/server text: they can contain
+        // the authenticated URL or echo a token, even when logged with private privacy.
+        if let httpStatus, [401, 403].contains(httpStatus) {
+            return "Authentication was rejected (HTTP \(httpStatus)) during \(stage.rawValue). Check the chat connection in Settings, then Retry. API Connected does not verify chat."
+        }
+        let error = failure as NSError
+        let code: String
+        if let rejection = failure as? ChatRPCRejected { code = "JSON-RPC \(rejection.code)" }
+        else if error.domain == NSURLErrorDomain { code = "URLSession \(error.code)" }
+        else { code = "error \(error.code)" }
+        let kind = error.domain == NSURLErrorDomain && error.code == URLError.timedOut.rawValue ? "Timed out" : "Failed"
+        let response = httpStatus.map { " HTTP \($0)." } ?? ""
+        return "\(kind) during \(stage.rawValue) (\(code), close \(closeCode)).\(response) Tap Retry. If it repeats, check ChatConnection logs for this stage."
+    }
     private func connectionFailed(_ failure: Error, socket ws: any ChatSocket, generation expected: UUID) {
         guard expected == generation, socket === ws else { return }
-        let underlying = failure as NSError
-        let reason = ws.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        // Keep arbitrary server reasons/error descriptions private (they may contain URLs).
-        Self.log.error("WebSocket generation=\(expected.uuidString, privacy: .public) close=\(ws.closeCode.rawValue, privacy: .public) reason=\(reason, privacy: .private) error=\(underlying.domain, privacy: .public):\(underlying.code, privacy: .public) details=\(String(describing: underlying), privacy: .private)")
+        let httpStatus = connectionStage == .handshake ? ws.handshakeStatus : (failure as? ServiceError)?.statusCode
+        connectionIssue = Self.connectionDiagnostic(stage: connectionStage, failure: failure, httpStatus: httpStatus, closeCode: ws.closeCode.rawValue)
+        // Raw close reasons and NSError descriptions may contain credentials. Record
+        // safe numeric metadata only; phase-start/phase-ok establish the failed boundary.
+        Self.log.error("phase-failed generation=\(expected.uuidString, privacy: .public) phase=\(self.connectionStage.rawValue, privacy: .public) attempt=\(self.recoveryAttempts, privacy: .public) http=\(httpStatus ?? 0, privacy: .public) close=\(ws.closeCode.rawValue, privacy: .public) reasonBytes=\(ws.closeReason?.count ?? 0, privacy: .public) diagnostic=\(self.connectionIssue ?? "", privacy: .public)")
         closeTransport(); scheduleRecovery()
     }
     private func startHeartbeat(_ ws: any ChatSocket, generation expected: UUID) {
@@ -203,6 +303,7 @@ private enum ChatCallback {
                 do {
                     try await self.delay(self.heartbeatInterval)
                     guard expected == self.generation, self.socket === ws else { return }
+                    self.connectionStage = .heartbeat
                     // A separate deadline is required: some transports never call the pong completion.
                     let deadline = Task { [weak self] in
                         try? await Task.sleep(for: .seconds(10))
@@ -212,6 +313,10 @@ private enum ChatCallback {
                     defer { deadline.cancel() }
                     try await ws.ping()
                     guard expected == self.generation, self.socket === ws else { return }
+                    self.connectionStage = .ready
+                    if let readyAt = self.readyAt, Date().timeIntervalSince(readyAt) >= self.stableConnectionInterval {
+                        self.recoveryAttempts = 0
+                    }
                 } catch {
                     guard !Task.isCancelled else { return }
                     self.connectionFailed(error, socket: ws, generation: expected); return
@@ -458,7 +563,7 @@ private enum ChatCallback {
     }
     func disconnect() {
         wantsConnection = false; connectionSuppressed = true; intent = UUID(); sending = false; busy = false; stopRecovery()
-        reconnecting = false; connectionNeedsRetry = false
+        reconnecting = false; connectionNeedsRetry = false; recoveryAttempts = 0; connectionIssue = nil
         unconfirmedSend = pendingTurn != nil
         closeTransport()
     }
@@ -473,7 +578,7 @@ private enum ChatCallback {
     }
     private func closeTransport() {
         Self.log.info("Closing local chat transport generation=\(self.generation.uuidString, privacy: .public) foreground=\(self.foreground, privacy: .public) online=\(self.online, privacy: .public) requested=\(self.wantsConnection, privacy: .public)")
-        generation = UUID(); approval = nil; resuming = false; bufferedPackets = []
+        generation = UUID(); readyAt = nil; approval = nil; resuming = false; bufferedPackets = []
         heartbeatTask?.cancel(); heartbeatTask = nil
         connectionTaskID = UUID(); connectionTask?.cancel(); connectionTask = nil
         receiveTask?.cancel(); receiveTask = nil; socket?.cancel(with: .goingAway, reason: nil); socket = nil; initialized = false
@@ -523,21 +628,30 @@ private enum ChatCallback {
         wantsConnection = true
         guard !connectionNeedsRetry else { throw ServiceError(message: "Chat disconnected. Retry") }
         guard foreground, online else {
-            reconnecting = true; status = "Reconnecting…"
+            if !online { showNetworkWait() }
             throw URLError(.notConnectedToInternet)
         }
         if let connectionTask { try await connectionTask.value; return }
         if initialized { return }
         let owner = intent
         let taskID = UUID(); connectionTaskID = taskID
-        let task = Task { try await self.establishConnection() }
+        let task = Task {
+            try await ChatDeadline<Void>().run(seconds: self.requestTimeout * 4) { try await self.establishConnection() }
+        }
         connectionTask = task
         do {
             try await task.value
             guard owner == intent else { throw CancellationError() }
             if connectionTaskID == taskID { connectionTask = nil }
         } catch {
-            if owner == intent, connectionTaskID == taskID { connectionTask = nil; scheduleRecovery() }
+            if owner == intent, connectionTaskID == taskID {
+                connectionTask = nil
+                if let ws = socket { connectionFailed(error, socket: ws, generation: generation) }
+                else {
+                    connectionIssue = Self.connectionDiagnostic(stage: connectionStage, failure: error, httpStatus: nil, closeCode: 0)
+                    scheduleRecovery()
+                }
+            }
             throw error
         }
     }
@@ -547,7 +661,7 @@ private enum ChatCallback {
         u.queryItems = (u.queryItems ?? []).filter { $0.name != "token" } + [URLQueryItem(name: "token", value: api.token)]
         guard let url = u.url else { throw ServiceError(message: "Invalid chat address.") }
         let expected = UUID(); generation = expected
-        let ws = makeSocket(url); socket = ws; resuming = true; ws.resume()
+        let ws = makeSocket(url); socket = ws; resuming = true; connectionStage = .handshake; ws.resume()
         receiveTask = Task { [weak self] in
             await ChatCallback.$generation.withValue(expected) {
                 do {
@@ -567,16 +681,20 @@ private enum ChatCallback {
         }
         do {
             try await ChatCallback.$generation.withValue(expected) {
-                _ = try await rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])]))
-                try await sendPacket(.object(["method": .string("initialized")]))
+                // A pong verifies the WebSocket upgrade before JSON-RPC initialization.
+                try await stage(.handshake) { try await ws.ping() }
+                _ = try await stage(.initialize) { try await self.rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])])) }
+                try await stage(.initialize) { try await self.sendPacket(.object(["method": .string("initialized")])) }
                 if let threadID {
-                    let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config]))
+                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config])) }
                     try checkCallback()
                     let returnedThread = snapshot["thread"]["id"].string
                     guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
+                    connectionStage = .history
                     reconcile(snapshot)
                     if let historyReader {
-                        let history = try await historyReader(conversationID)
+                        let room = conversationID
+                        let history = try await stage(.history) { try await historyReader(room) }
                         try checkCallback()
                         try Self.validateHistoryRecord(history, expectedID: conversationID)
                         tombstones = history["tombstones"].array
@@ -602,6 +720,8 @@ private enum ChatCallback {
                 for packet in buffered { try checkCallback(); await handle(packet) }
                 try checkCallback()
                 initialized = true; reconnecting = false; connectionNeedsRetry = false
+                connectionStage = .ready; connectionIssue = nil; readyAt = Date()
+                Self.log.info("chat-ready generation=\(expected.uuidString, privacy: .public) attempt=\(self.recoveryAttempts, privacy: .public)")
                 status = unconfirmedSend ? "Send unconfirmed. Check server status" : (busy ? "Rowan is replying…" : "Connected")
                 startHeartbeat(ws, generation: expected)
             }
@@ -864,7 +984,7 @@ private enum ChatCallback {
         let id = packet["id"].string
         if packet["method"].string.isEmpty, let callback = pending.removeValue(forKey: id) {
             timeouts.removeValue(forKey: id)?.cancel()
-            if packet["error"] != .null { callback.resume(throwing: ChatRPCRejected(message: packet["error"]["message"].string)) }
+            if packet["error"] != .null { callback.resume(throwing: ChatRPCRejected(message: packet["error"]["message"].string, code: Int(exactly: packet["error"]["code"].number) ?? 0)) }
             else { callback.resume(returning: packet["result"]) }; return
         }
         if resuming { bufferedPackets.append(packet); return }

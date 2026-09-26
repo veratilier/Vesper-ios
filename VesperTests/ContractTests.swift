@@ -655,4 +655,15 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(ChatRecovery.merge(merged, snapshot: snapshot, conversationID: "c", tombstones: [.object(["itemId": .string("deleted")])]), merged)
         XCTAssertNil(ChatRecovery.receipt(for: "local", snapshot: snapshot))
     }
+    func testRecoveredOldReplyDisplaysBeforeRecentChat() {
+        let recent: JSONValue = .object(["id": .string("recent"), "role": .string("user"), "createdAt": .string("2026-09-26T12:02:00Z")])
+        let snapshot: JSONValue = .object(["thread": .object(["id": .string("thread"), "turns": .array([
+            .object(["id": .string("old-turn"), "startedAt": .number(1_779_000_000), "status": .string("completed"), "items": .array([
+                .object(["id": .string("old-reply"), "type": .string("agentMessage"), "text": .string("earlier")])
+            ])])
+        ])])])
+        let restored = ChatRecovery.merge([recent], snapshot: snapshot, conversationID: "c", tombstones: [])
+        XCTAssertFalse(restored.first { $0.id == "old-reply" }?["createdAt"].string.isEmpty ?? true)
+        XCTAssertEqual(ChatPresentation.displayRows(restored).map(\.id), ["old-reply", "recent"])
+    }
 }

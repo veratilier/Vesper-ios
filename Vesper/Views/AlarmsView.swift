@@ -91,7 +91,7 @@ struct VesperAlarmItem: Codable, Identifiable {
             guard state == .authorized else { throw ServiceError(message: "Alarm permission was not granted. Open iPhone Settings to allow Vesper alarms.") }
             let id = UUID()
             let stop = AlarmButton(text: "Dismiss", textColor: .white, systemImageName: "stop.circle")
-            let alert = AlarmPresentation.Alert(title: name, stopButton: stop)
+            let alert = AlarmPresentation.Alert(title: LocalizedStringResource(stringLiteral: name), stopButton: stop)
             let attributes = AlarmAttributes<VesperAlarmMetadata>(presentation: AlarmPresentation(alert: alert), tintColor: .blue)
             let schedule: Alarm.Schedule
             if repeatsDaily {
@@ -99,7 +99,7 @@ struct VesperAlarmItem: Codable, Identifiable {
                 let time = Alarm.Schedule.Relative.Time(hour: parts.hour ?? 0, minute: parts.minute ?? 0)
                 schedule = .relative(.init(time: time, repeats: .weekly([.monday, .tuesday, .wednesday, .thursday, .friday, .saturday, .sunday])))
             } else { schedule = .fixed(date) }
-            let configuration = AlarmManager.AlarmConfiguration<VesperAlarmMetadata>.alarm(schedule: schedule, attributes: attributes)
+            let configuration: AlarmManager.AlarmConfiguration<VesperAlarmMetadata> = .alarm(schedule: schedule, attributes: attributes)
             _ = try await manager.schedule(id: id, configuration: configuration)
             let item = VesperAlarmItem(id: id, title: name, date: date, repeatsDaily: repeatsDaily)
             save(stored.filter { $0.id != id } + [item])

@@ -5,8 +5,14 @@ import Foundation
     static let shared = CallLiveActivity()
     private var activity: Activity<VesperCallAttributes>?
 
-    func start(at date: Date, isVideo: Bool) {
+    func start(at date: Date, isVideo: Bool, avatar: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        if avatar.hasPrefix("data:image/"), let comma = avatar.firstIndex(of: ","),
+           let data = Data(base64Encoded: String(avatar[avatar.index(after: comma)...])) {
+            UserDefaults(suiteName: "group.com.vera.vesper.native")?.set(data, forKey: "activeCallAvatar")
+        } else {
+            UserDefaults(suiteName: "group.com.vera.vesper.native")?.removeObject(forKey: "activeCallAvatar")
+        }
         // A previous process may have left a stale island behind after a crash.
         let stale = Activity<VesperCallAttributes>.activities
         Task { for item in stale { await item.end(nil, dismissalPolicy: .immediate) } }
@@ -19,6 +25,7 @@ import Foundation
         } catch {
             // The in-app call remains usable if Live Activities are disabled.
             activity = nil
+            UserDefaults(suiteName: "group.com.vera.vesper.native")?.removeObject(forKey: "activeCallAvatar")
         }
     }
 
@@ -30,11 +37,13 @@ import Foundation
     func end() {
         let current = activity
         activity = nil
+        UserDefaults(suiteName: "group.com.vera.vesper.native")?.removeObject(forKey: "activeCallAvatar")
         if let current { Task { await current.end(nil, dismissalPolicy: .immediate) } }
     }
 
     func endStale() async {
         guard activity == nil else { return }
+        UserDefaults(suiteName: "group.com.vera.vesper.native")?.removeObject(forKey: "activeCallAvatar")
         let stale = Activity<VesperCallAttributes>.activities
         for item in stale {
             guard item.id != activity?.id else { continue }

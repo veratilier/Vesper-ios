@@ -2,6 +2,23 @@ import WidgetKit
 import SwiftUI
 import AppIntents
 import ActivityKit
+import UIKit
+
+private struct CallIslandAvatar: View {
+    let size: CGFloat
+    var body: some View {
+        Group {
+            if let data = UserDefaults(suiteName: "group.com.vera.vesper.native")?.data(forKey: "activeCallAvatar"),
+               let avatar = UIImage(data: data) {
+                Image(uiImage: avatar).resizable().scaledToFill()
+            } else {
+                Text("R").font(.system(size: size * 0.48, weight: .semibold, design: .rounded))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(red: 0.28, green: 0.27, blue: 0.37))
+            }
+        }.frame(width: size, height: size).clipShape(Circle())
+    }
+}
 
 struct DateWidgetConfiguration: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Vesper day"
@@ -207,23 +224,41 @@ struct VesperCallWidget: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label("Rowan", systemImage: context.state.isVideo ? "video.fill" : "phone.fill")
-                        .font(.headline)
+                    HStack(spacing: 10) {
+                        CallIslandAvatar(size: 46)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Rowan").font(.headline)
+                            Text(context.attributes.startedAt, style: .timer)
+                                .font(.subheadline).foregroundStyle(.white.opacity(0.7)).monospacedDigit()
+                        }
+                    }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.attributes.startedAt, style: .timer)
-                        .font(.headline).monospacedDigit()
+                    Image(systemName: context.state.isVideo ? "video.fill" : "waveform")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.green)
+                        .padding(.trailing, 8)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text("Vesper · Tap to return to call").font(.caption)
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.wave.2.fill")
+                        Image(systemName: context.state.isVideo ? "video.fill" : "mic.fill")
+                        Spacer()
+                        Text("Return to call")
+                        Image(systemName: "arrow.up.right")
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                 }
             } compactLeading: {
-                Image(systemName: context.state.isVideo ? "video.fill" : "phone.fill")
+                CallIslandAvatar(size: 22)
             } compactTrailing: {
                 Text(context.attributes.startedAt, style: .timer)
                     .font(.caption2).monospacedDigit()
             } minimal: {
-                Image(systemName: "phone.fill")
+                Image(systemName: "waveform").foregroundStyle(.green)
             }
             .widgetURL(URL(string: "vesper://call"))
         }

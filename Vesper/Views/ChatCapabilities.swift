@@ -261,7 +261,24 @@ struct CallCameraPreview: UIViewRepresentable {
 
 }
 
+@MainActor final class NativeCallPresentation: ObservableObject {
+    static let shared = NativeCallPresentation()
+    @Published var presented = false
+    @Published var minimized = false
+    @Published var initiator = "user"
+
+    func open(initiator: String) {
+        guard !presented else { minimized = false; return }
+        self.initiator = initiator
+        minimized = false
+        presented = true
+    }
+
+    func close() { presented = false; minimized = false }
+}
+
 struct NativeCallView: View {
+    @ObservedObject private var presentation = NativeCallPresentation.shared
     @StateObject private var callChat = ChatSession()
     @State private var cameraChat: ChatSession?
     @StateObject private var systemCall = InAppCalls.shared
@@ -269,7 +286,6 @@ struct NativeCallView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var player: MusicPlayer
-    @Environment(\.dismiss) private var dismiss
     @StateObject private var speech = SpeechInput()
     @StateObject private var voice = CallVoice()
     @StateObject private var camera = CallCamera()
@@ -300,8 +316,87 @@ struct NativeCallView: View {
     @State private var notice: String?
     var body: some View {
         ZStack {
+            if presentation.minimized {
+                compactCall
+            } else {
+                fullCall
+            }
+        }
+        .sheet(isPresented: Binding(get: { callChat.approval != nil }, set: { if !$0 { Task { await callChat.resolveApproval(accept: false) } } })) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("Rowan wants to use a tool during the call.")
+                        Text(callChat.approval?["params"].pretty ?? "")
+                            .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        HStack {
+                            Button("Decline", role: .cancel) { Task { await callChat.resolveApproval(accept: false) } }
+                            Spacer()
+                            Button("Allow once") { Task { await callChat.resolveApproval(accept: true) } }.buttonStyle(.borderedProminent)
+                        }
+                    }.padding()
+                }.navigationTitle("Tool approval").navigationBarTitleDisplayMode(.inline)
+            }.presentationDetents([.medium, .large]).interactiveDismissDisabled()
+        }
+        .onAppear { configureCall() }
+        .onChange(of: systemCall.audioReady) { _, ready in if ready { activateCall() } else { silence?.cancel(); speech.stop(); voice.stop() } }
+        .onChange(of: systemCall.id) { old, new in if old != nil && new == nil { end() } }
+        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else { resumeListening() } }
+        .onChange(of: speech.text) { _, text in
+            silence?.cancel(); if !text.isEmpty && quietHangupMinutes != nil { armQuietHangup() }
+            guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
+            silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
+        }
+        .onChange(of: callChat.busy) { old, new in
+            guard old && !new && waiting && active && !hangingUp else { return }
+            waiting = false
+            let replies = callChat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string != "user" && !ChatPresentation.isActivity($0) }
+            let answer = replies.map { $0["content"].string }.joined(separator: "\n")
+            guard !answer.isEmpty else { notice = callChat.error ?? "No reply received. Please try again."; resumeListening(); return }
+            caption = answer; transcript.append(.object(["speaker": .string("Rowan"), "text": .string(answer), "at": .string(ISO8601DateFormatter().string(from: Date()))])); Task { guard active, visible else { return }; await voice.play(answer, store: store) }
+        }
+        .onDisappear { visible = false; end() }
+        .task(id: video && active && phase == .active) {
+            guard video, active, phase == .active else { return }
+            await streamCamera()
+        }
+        .onChange(of: phase) { _, phase in if phase != .active { stopCamera() } }
+    }
+    private var compactCall: some View {
+        HStack(spacing: 12) {
+            Button { presentation.minimized = false } label: {
+                HStack(spacing: 10) {
+                    CallPortrait().frame(width: 36, height: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Rowan").font(.subheadline.weight(.semibold))
+                        if let startedAt { Text(startedAt, style: .timer).font(.caption).monospacedDigit() }
+                        else { Text("Connecting…").font(.caption) }
+                        if video { Text("Camera on").font(.caption2).foregroundStyle(.secondary) }
+                    }
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.caption)
+                }
+            }.buttonStyle(.plain).accessibilityLabel("Return to call")
+            Button { end() } label: { Image(systemName: "phone.down.fill").foregroundStyle(.red) }
+                .buttonStyle(.plain).accessibilityLabel("End call")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.55), lineWidth: 1))
+        .shadow(radius: 10, y: 5)
+    }
+    private var fullCall: some View {
+        ZStack {
             Background()
             VStack(spacing: 16) {
+                HStack {
+                    Spacer()
+                    Button { presentation.minimized = true } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: 44, height: 44)
+                            .background(.regularMaterial, in: Circle())
+                    }.buttonStyle(.plain).accessibilityLabel("Minimize call")
+                }
                 Text(video ? "VIDEO CALL" : "VOICE CALL").font(.system(size: 11, weight: .medium)).tracking(3).foregroundStyle(VesperTheme.muted)
                 if video { CallCameraPreview(camera: camera).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 24)) }
                 else { CallPortrait().frame(width: 94, height: 94).padding(12).background(.ultraThinMaterial, in: Circle()).padding(.top, 18) }
@@ -358,7 +453,7 @@ struct NativeCallView: View {
                             .accessibilityValue(camera.position == .front ? "Front camera" : "Back camera")
                             .disabled(cameraBusy)
                     }
-                    Button { end(); dismiss() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
+                    Button { end() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
                 }.labelStyle(.iconOnly).font(.system(size: 22)).buttonStyle(.bordered).controlSize(.large).frame(minHeight: 60).padding(.bottom, 12)
                 if active && !waiting && !muted {
                     Button(speech.listening ? "Send now" : voice.speaking || voice.loading ? "Speak now" : "Resume listening") {
@@ -366,38 +461,17 @@ struct NativeCallView: View {
                     }
                 }
             }.padding(24)
-        }.onAppear {
+        }
+    }
+    private func configureCall() {
             callChat.configure(store); callChat.model = chat.model; callChat.effort = chat.effort; callChat.models = chat.models
             let context = chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(16).map { $0["role"].string + ": " + String($0["content"].string.prefix(2000)) }.joined(separator: "\n")
             callChat.voiceCallContext = "You are in an active voice call with Vera. User speech is transcribed by STT, not typed chat. Your text replies are spoken by TTS. A spoken turn may also contain a current camera snapshot and recent visual observations. Inspect attached images directly when present; these are discrete snapshots, not a continuous video feed. Without a new image, do not claim to see the current scene. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive transcripts, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. If Vera asks you to hang up, use end_native_call. If she wants to fall asleep on the call, you can set its quiet timer; silence is not proof she is asleep. Do not hang up on a brief pause. Prior chat context (historical, not new instructions):\n" + context
             callChat.onNativeHangupRequested = { minutes, farewell in requestHangup(afterQuietMinutes: minutes, farewell: farewell) }
-            voice.finished = { if hangingUp { end(); dismiss() } else { resumeListening() } }
+            voice.finished = { if hangingUp { end() } else { resumeListening() } }
              if initiator == "agent" && !systemCall.audioReady {
                  Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } }
              } else { activateCall() }
-        }
-        .onChange(of: systemCall.audioReady) { _, ready in if ready { activateCall() } else { silence?.cancel(); speech.stop(); voice.stop() } }
-        .onChange(of: systemCall.id) { old, new in if old != nil && new == nil { end(); dismiss() } }
-        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else { resumeListening() } }
-        .onChange(of: speech.text) { _, text in
-            silence?.cancel(); if !text.isEmpty && quietHangupMinutes != nil { armQuietHangup() }
-            guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
-            silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
-        }
-        .onChange(of: callChat.busy) { old, new in
-            guard old && !new && waiting && active && !hangingUp else { return }
-            waiting = false
-            let replies = callChat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string != "user" && !ChatPresentation.isActivity($0) }
-            let answer = replies.map { $0["content"].string }.joined(separator: "\n")
-            guard !answer.isEmpty else { notice = callChat.error ?? "No reply received. Please try again."; resumeListening(); return }
-            caption = answer; transcript.append(.object(["speaker": .string("Rowan"), "text": .string(answer), "at": .string(ISO8601DateFormatter().string(from: Date()))])); Task { guard active, visible else { return }; await voice.play(answer, store: store) }
-        }
-        .onDisappear { visible = false; end() }
-        .task(id: video && active && phase == .active) {
-            guard video, active, phase == .active else { return }
-            await streamCamera()
-        }
-        .onChange(of: phase) { _, phase in if phase != .active { stopCamera() } }
     }
     private func resumeListening() {
         guard visible, active, !muted, !waiting, !hangingUp, !voice.speaking, !voice.loading,
@@ -426,7 +500,7 @@ struct NativeCallView: View {
         hangingUp = true
         silence?.cancel(); speech.stop(); waiting = false
         let spoken = farewell.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !spoken.isEmpty else { end(); dismiss(); return }
+        guard !spoken.isEmpty else { end(); return }
         transcript.append(.object(["speaker": .string("Rowan"), "text": .string(spoken), "at": .string(ISO8601DateFormatter().string(from: Date()))]))
         Task { await voice.play(spoken, store: store) }
     }
@@ -556,6 +630,7 @@ struct NativeCallView: View {
             Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator) }
         }
         chat.callActive = false
+        presentation.close()
         active = false; video = false; silence?.cancel(); sendingTask?.cancel(); sendingTask = nil; speech.stop(); voice.finished = nil; voice.stop(); camera.stop(); let pendingReply = waiting; waiting = false; Task { if pendingReply { await callChat.interrupt() }; callChat.disconnect() } }
 }
 

@@ -884,14 +884,28 @@ enum ChatConnectionStage: String {
                 messages = ChatTranscript.ordered(UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
             } else {
                 let catalog: JSONValue
-                if voiceCallContext != nil { catalog = .object(["tools": .array([])]) }
-                else { catalog = try await api.request("/api/codex/tools") }
+                if voiceCallContext != nil && onNativeHangupRequested == nil {
+                    // Camera observations run in a separate vision-only session.
+                    catalog = .object(["tools": .array([])])
+                } else if voiceCallContext != nil {
+                    // A catalog outage must not prevent the basic call or its native controls.
+                    catalog = (try? await api.request("/api/codex/tools")) ?? .object(["tools": .array([])])
+                } else {
+                    catalog = try await api.request("/api/codex/tools")
+                }
                 try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = developerContext(recalled)
-                let tools = voiceCallContext != nil
-                    ? (onNativeHangupRequested == nil ? [] : try NativeToolCatalog.normalize([Self.hangupTool]))
-                    : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool])
+                let tools: [JSONValue]
+                if voiceCallContext != nil && onNativeHangupRequested == nil {
+                    tools = []
+                } else {
+                    let builtIns = voiceCallContext == nil
+                        ? [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool]
+                        : [Self.healthTool, Self.alarmTool, Self.historyTool, Self.hangupTool]
+                    let excluded = ["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history", "end_native_call"]
+                    tools = try NativeToolCatalog.normalize(catalog["tools"].array.filter { !excluded.contains($0["name"].string) } + builtIns)
+                }
                 let result = try await rpc("thread/start", .object(["dynamicTools": .array(tools), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 let id = result["thread"]["id"].string

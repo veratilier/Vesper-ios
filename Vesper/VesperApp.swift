@@ -45,7 +45,7 @@ struct RootView: View {
     @State private var nativeTab = 0
     @State private var libraryPath: [Destination] = []
     @State private var vesperPage: Destination = .desire
-    @State private var acceptedCall = false
+    @StateObject private var callPresentation = NativeCallPresentation.shared
     @State private var opening = true
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
@@ -138,11 +138,19 @@ struct RootView: View {
         .overlay {
             if chat.incomingCall {
                 Color.black.opacity(0.18).ignoresSafeArea()
-                CallInvitation(accept: { chat.incomingCall = false; navigate(.chat); acceptedCall = true }, decline: { chat.incomingCall = false })
+                CallInvitation(accept: { chat.incomingCall = false; navigate(.chat); callPresentation.open(initiator: "agent") }, decline: { chat.incomingCall = false })
                     .padding(28).transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
-        .fullScreenCover(isPresented: $acceptedCall) { NativeCallView(initiator: "agent") }
+        .overlay(alignment: .topTrailing) {
+            if callPresentation.presented {
+                NativeCallView(initiator: callPresentation.initiator)
+                    .frame(maxWidth: callPresentation.minimized ? nil : .infinity,
+                           maxHeight: callPresentation.minimized ? nil : .infinity)
+                    .padding(callPresentation.minimized ? 12 : 0)
+                    .zIndex(3)
+            }
+        }
     }
     private var lifecycle: some View {
         scene

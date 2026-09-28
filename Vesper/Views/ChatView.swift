@@ -281,7 +281,6 @@ struct ChatView: View {
     @State private var drawer = false
     @State private var photoPicker = false
     @State private var cameraPicker = false
-    @State private var call = false
     @State private var filePicker = false
     @State private var musicPicker = false
     @State private var stickerPicker = false
@@ -462,7 +461,6 @@ struct ChatView: View {
     private var attachmentContent: some View {
         photoContent
         .fullScreenCover(isPresented: $cameraPicker) { ChatCameraPicker { data in if let data, images.count < 5 { images.append(data) }; cameraPicker = false }.ignoresSafeArea() }
-        .fullScreenCover(isPresented: $call) { NativeCallView() }
         .fileImporter(isPresented: $filePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             do {
                 for url in try result.get() {
@@ -765,7 +763,7 @@ struct ChatView: View {
         _ = await store.upsert("favorites", item: .object(["id": .string(UUID().uuidString), "folderId": .string("default"), "messageId": .string(message.id), "conversationId": .string(chat.conversationID), "conversationTitle": .string("Conversations"), "content": message["content"], "role": message["role"], "createdAt": message["createdAt"]]))
     }
     private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil } } }
-    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; call = true }
+    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; NativeCallPresentation.shared.open(initiator: "user") }
     private func send() {
         speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; drawer = false
         Task { if await chat.send(sending, images: outgoing, files: outgoingFiles, music: music) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = []; pendingMusic = nil; voiceRecorder.cancel() } }

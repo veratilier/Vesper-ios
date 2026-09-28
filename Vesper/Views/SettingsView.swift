@@ -44,7 +44,6 @@ struct WakeView: View {
     @EnvironmentObject private var store: AppStore
     @State private var runtime: JSONValue = .null
     @State private var enabled = false
-    @State private var interval = 0
     @State private var allowedTools: Set<String> = []
     @State private var allowedMessages: Set<String> = []
     @State private var busy = false
@@ -54,54 +53,55 @@ struct WakeView: View {
     var body: some View {
         List {
             Section {
-                Toggle("Automatic wake-up", isOn: $enabled)
-                HStack { Text("Latest run"); Spacer(); Text(jobs.first?["status"].string ?? "No runs yet").foregroundStyle(VesperTheme.muted) }
-                Picker("Interval", selection: $interval) {
-                    Text("Adaptive").tag(0)
-                    ForEach([60,120,240,360,720,1440], id: \.self) { Text("\($0) minutes").tag($0) }
-                }
-            } footer: {
-                Text("Active chats and quiet requests may postpone a wake-up. With Desire reading off, Adaptive uses 120 minutes.")
+                Toggle("Automatic wake-up", isOn: $enabled).disabled(!supported || busy)
+                NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
+                NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
+                NavigationLink("Recent activity") { activityPage }
             }
-            .disabled(!supported || busy)
             if !supported {
                 Section { Text("Refresh the service to check permission support. If unavailable, update the VPS wake service.").font(.caption) }
             }
-            Section("Permissions") {
-                NavigationLink {
-                    permissionPage(messages: true)
-                } label: {
-                    HStack { Text("Message types"); Spacer(); Text("\(allowedMessages.count) enabled").foregroundStyle(VesperTheme.muted) }
-                }
-                NavigationLink {
-                    permissionPage(messages: false)
-                } label: {
-                    HStack { Text("Allowed tools"); Spacer(); Text("\(allowedTools.count) enabled").foregroundStyle(VesperTheme.muted) }
-                }
-            }.disabled(!supported || busy)
             if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
-            Section("Recent activity") {
-                if jobs.isEmpty { Text("No activity to show").foregroundStyle(VesperTheme.muted) }
-                ForEach(Array(jobs.prefix(3))) { job in
-                    NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
-                }
-                NavigationLink("View all activity") {
-                    List {
-                        ForEach(jobs) { job in
-                            NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
-                        }
-                    }.scrollContentBackground(.hidden).background { Background() }
-                        .navigationTitle("Activity").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
-                }
-            }
-            Section { Button("Refresh service") { Task { await load() } }.disabled(busy) }
         }.scrollContentBackground(.hidden).background { Background() }
             .navigationTitle("Autonomous Wake").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { saveButton } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(busy).accessibilityLabel("Refresh wake service")
+            } }
+            .safeAreaInset(edge: .bottom) { saveBar }
             .task { if runtime == .null { await load() } }.refreshable { await load() }
     }
-    private var saveButton: some View {
-        Button(busy ? "Saving…" : "Save") { Task { await save() } }.disabled(!supported || busy)
+    private var saveBar: some View {
+        Button(busy ? "Saving…" : "Save changes") { Task { await save() } }
+            .disabled(!supported || busy)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 20).padding(.vertical, 10)
+            .background(.regularMaterial)
+    }
+    private var permissionsPage: some View {
+        List {
+            NavigationLink {
+                permissionPage(messages: true)
+            } label: {
+                HStack { Text("Message types"); Spacer(); Text("\(allowedMessages.count) enabled").foregroundStyle(VesperTheme.muted) }
+            }
+            NavigationLink {
+                permissionPage(messages: false)
+            } label: {
+                HStack { Text("Allowed tools"); Spacer(); Text("\(allowedTools.count) enabled").foregroundStyle(VesperTheme.muted) }
+            }
+        }.disabled(busy).scrollContentBackground(.hidden).background { Background() }
+            .navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+            .safeAreaInset(edge: .bottom) { saveBar }
+    }
+    private var activityPage: some View {
+        List {
+            if jobs.isEmpty { Text("No activity to show").foregroundStyle(VesperTheme.muted) }
+            ForEach(jobs) { job in
+                NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
+            }
+        }.scrollContentBackground(.hidden).background { Background() }
+            .navigationTitle("Recent activity").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
     }
     private func permissionPage(messages: Bool) -> some View {
         List {
@@ -115,10 +115,7 @@ struct WakeView: View {
         }.disabled(busy).scrollContentBackground(.hidden).background { Background() }
             .navigationTitle(messages ? "Message types" : "Allowed tools").navigationBarTitleDisplayMode(.inline)
             .transparentNavigationTop()
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { saveButton } }
-            .safeAreaInset(edge: .bottom) {
-                if !status.isEmpty { Text(status).font(.caption).padding(12).frame(maxWidth: .infinity).background(VesperTheme.surface) }
-            }
+            .safeAreaInset(edge: .bottom) { saveBar }
     }
     private func runRow(_ job: JSONValue) -> some View {
         HStack {
@@ -138,7 +135,6 @@ struct WakeView: View {
     }
     private func apply(_ value: JSONValue) {
         runtime = value; enabled = value["config"]["enabled"].bool
-        interval = Int(value["config"]["intervalMinutes"].number)
         allowedTools = Set(value["permissions"]["tools"].array.map { $0.string })
         allowedMessages = Set(value["permissions"]["messages"].array.map { $0.string })
     }
@@ -149,16 +145,81 @@ struct WakeView: View {
     }
     private func save() async {
         guard supported, !busy else { return }; busy = true; defer { busy = false }
+        let interval = runtime["config"]["intervalMinutes"]
         let permissions: JSONValue = .object(["tools": .array(allowedTools.sorted().map { .string($0) }), "messages": .array(allowedMessages.sorted().map { .string($0) })])
-        let body: JSONValue = .object(["action": .string("configure"), "enabled": .bool(enabled), "intervalMinutes": interval == 0 ? .null : .number(Double(interval)), "permissions": permissions])
+        let body: JSONValue = .object(["action": .string("configure"), "enabled": .bool(enabled), "intervalMinutes": interval, "permissions": permissions])
         do {
             let result = try await store.api.request("/wake", method: "POST", body: body, history: true)
             guard result["permissionVersion"].number >= 1, result["permissions"] == permissions,
                   result["config"]["enabled"].bool == enabled,
-                  Int(result["config"]["intervalMinutes"].number) == interval else {
+                  result["config"]["intervalMinutes"] == interval else {
                 throw ServiceError(message: "The server did not confirm these permissions.")
             }
             apply(result); status = "Saved. New permissions are checked before each tool call and message."
+        } catch { status = error.localizedDescription }
+    }
+}
+private struct WakePromptView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var prompt = ""
+    @State private var currentRules = ""
+    @State private var limit = 8000
+    @State private var supported = false
+    @State private var busy = false
+    @State private var status = ""
+    var body: some View {
+        List {
+            Section {
+                TextEditor(text: $prompt)
+                    .frame(minHeight: 220)
+                    .accessibilityLabel("Additional wake instructions")
+                Text("\(prompt.count) / \(limit) characters")
+                    .font(.caption).foregroundStyle(VesperTheme.muted)
+            } header: {
+                Text("Your additional instructions")
+            } footer: {
+                Text("Saved to the VPS. These preferences are added to the current wake rules; they cannot change the interval or permissions. Clear the text and save to use only the current rules.")
+            }
+            Section {
+                DisclosureGroup("Current wake rules from VPS") {
+                    Text(currentRules).font(.subheadline).textSelection(.enabled)
+                }
+            }
+            if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
+        }.scrollContentBackground(.hidden).background { Background() }
+            .navigationTitle("Wake prompt").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+            .safeAreaInset(edge: .bottom) {
+                Button(busy ? "Saving…" : "Save prompt") { Task { await save() } }
+                    .disabled(!supported || busy || prompt.count > limit)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .padding(.horizontal, 20).padding(.vertical, 10)
+                    .background(.regularMaterial)
+            }
+            .task { await load() }
+    }
+    private func load() async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do {
+            let value = try await store.api.request("/wake", history: true)
+            supported = value["promptMode"].string == "append"
+            currentRules = value["defaultPrompt"].string
+            limit = max(1, Int(value["promptMaxLength"].number))
+            prompt = value["promptAddendum"].string
+            status = supported ? "" : "Update the VPS wake service to edit the prompt."
+        } catch { status = error.localizedDescription }
+    }
+    private func save() async {
+        guard supported, !busy, prompt.count <= limit else { return }
+        busy = true; defer { busy = false }
+        let requested = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let result = try await store.api.request("/wake", method: "POST", body: .object(["action": .string("prompt"), "prompt": .string(requested)]), history: true)
+            guard result["promptMode"].string == "append", result["promptAddendum"].string == requested else {
+                throw ServiceError(message: "The VPS did not confirm the prompt change.")
+            }
+            currentRules = result["defaultPrompt"].string
+            prompt = requested
+            status = "Saved on the VPS. The next wake will use these instructions."
         } catch { status = error.localizedDescription }
     }
 }

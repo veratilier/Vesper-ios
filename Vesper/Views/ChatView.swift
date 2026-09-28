@@ -23,55 +23,109 @@ private struct AttachmentRowAlignment: ViewModifier {
     }
 }
 
-private struct ChatPhotoGallery: View {
+private struct ChatPhotoStack: View {
     let photos: [JSONValue]
-    private let gap: CGFloat = 3
+    @State private var front = 0
+    @State private var dragX: CGFloat = 0
+    @State private var advancing = false
+    @State private var showingPhoto = false
+    @State private var advanceGeneration = UUID()
+    private let cardWidth: CGFloat = 256
+    private let cardHeight: CGFloat = 330
 
     var body: some View {
-        Group {
-            switch photos.count {
-            case 1:
+        VStack(alignment: .leading, spacing: 8) {
+            if photos.count > 1 {
+                Label("\(photos.count) Photos", systemImage: "square.grid.2x2.fill")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(VesperTheme.accent)
+                ZStack(alignment: .topLeading) {
+                    ForEach((0..<min(photos.count, 4)).reversed(), id: \.self) { depth in
+                        card((front + depth) % photos.count)
+                            .offset(x: depth == 0 ? dragX : CGFloat(depth) * 8,
+                                    y: CGFloat(depth) * 3)
+                            .zIndex(Double(4 - depth))
+                            .allowsHitTesting(depth == 0)
+                    }
+                }
+                .frame(width: cardWidth + 24, height: cardHeight + 12, alignment: .topLeading)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 12)
+                    .onChanged { value in
+                        guard !advancing, abs(value.translation.width) > abs(value.translation.height) else { return }
+                        dragX = min(0, value.translation.width)
+                    }
+                    .onEnded { value in
+                        guard !advancing else { return }
+                        if abs(value.translation.width) > abs(value.translation.height),
+                           value.translation.width < -65 || value.predictedEndTranslation.width < -110 {
+                            advance()
+                        } else { withAnimation(.spring(response: 0.25)) { dragX = 0 } }
+                    })
+                .accessibilityHint("Swipe left to see the next photo")
+                .accessibilityAction(named: "Next photo") { advance() }
+            } else if !photos.isEmpty {
                 AsyncImage(url: URL(string: photos[0]["url"].string)) { image in
                     image.resizable().scaledToFit().frame(maxWidth: 276, maxHeight: 320)
                 } placeholder: {
-                    placeholder.frame(width: 240, height: 240)
+                    ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+                        .frame(width: 240, height: 240)
                 }
-            case 2:
-                HStack(spacing: gap) { tile(0, width: 138, height: 220); tile(1, width: 138, height: 220) }
-            case 3:
-                HStack(spacing: gap) {
-                    tile(0, width: 178, height: 244)
-                    VStack(spacing: gap) { tile(1, width: 98, height: 120.5); tile(2, width: 98, height: 120.5) }
-                }
-            default:
-                VStack(spacing: gap) {
-                    HStack(spacing: gap) { tile(0, width: 138, height: 138); tile(1, width: 138, height: 138) }
-                    if photos.count == 4 {
-                        HStack(spacing: gap) { tile(2, width: 138, height: 138); tile(3, width: 138, height: 138) }
-                    } else {
-                        HStack(spacing: gap) {
-                            ForEach(2..<min(photos.count, 5), id: \.self) { index in tile(index, width: 91, height: 91) }
-                        }
-                    }
-                }
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .onTapGesture { showingPhoto = true }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(photos.count) \(photos.count == 1 ? "photo" : "photos")")
-    }
-
-    private func tile(_ index: Int, width: CGFloat, height: CGFloat) -> some View {
-        AsyncImage(url: URL(string: photos[index]["url"].string)) { image in
-            image.resizable().scaledToFill().frame(width: width, height: height).clipped()
-        } placeholder: {
-            placeholder.frame(width: width, height: height)
+        .onChange(of: photos) { _, _ in
+            resetStack()
+            showingPhoto = false
         }
-        .frame(width: width, height: height)
+        .onDisappear { resetStack() }
+        .sheet(isPresented: $showingPhoto) {
+            NavigationStack {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    if photos.indices.contains(front) {
+                        AsyncImage(url: URL(string: photos[front]["url"].string)) { image in
+                            image.resizable().scaledToFit()
+                        } placeholder: { ProgressView().tint(.white) }
+                    }
+                }
+                .toolbar { Button("Done") { showingPhoto = false } }
+            }
+        }
     }
 
-    private var placeholder: some View {
-        ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+    private func card(_ index: Int) -> some View {
+        AsyncImage(url: URL(string: photos[index]["url"].string)) { image in
+            image.resizable().scaledToFill().frame(width: cardWidth, height: cardHeight).clipped()
+        } placeholder: {
+            ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+                .frame(width: cardWidth, height: cardHeight)
+        }
+        .frame(width: cardWidth, height: cardHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .shadow(color: .black.opacity(0.12), radius: 7, y: 5)
+        .onTapGesture { if index == front && !advancing { showingPhoto = true } }
+        .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
+    }
+
+    private func advance() {
+        guard photos.count > 1, !advancing else { return }
+        advancing = true
+        let generation = UUID()
+        advanceGeneration = generation
+        withAnimation(.easeOut(duration: 0.2)) { dragX = -cardWidth - 30 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard advanceGeneration == generation else { return }
+            front = (front + 1) % photos.count
+            dragX = 0
+            advancing = false
+        }
+    }
+    private func resetStack() {
+        advanceGeneration = UUID()
+        front = 0
+        dragX = 0
+        advancing = false
     }
 }
 
@@ -550,7 +604,7 @@ struct ChatView: View {
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
                 if !user && message["metadata"]["showTurnStatus"] != .bool(false) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
                 if !photos.isEmpty {
-                    ChatPhotoGallery(photos: photos)
+                    ChatPhotoStack(photos: photos)
                         .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
                 }
                 if !otherAttachments.isEmpty {

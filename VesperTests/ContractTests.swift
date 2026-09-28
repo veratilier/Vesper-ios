@@ -157,6 +157,15 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(rows.map { $0.id }, ["wake-final"])
         XCTAssertTrue(rows[0].activities.isEmpty)
     }
+    func testLateImportedWakeReplyUsesItsOriginalCompletionTime() {
+        let before: JSONValue = .object(["id": .string("before"), "role": .string("user"), "createdAt": .string("2026-09-28T12:00:00Z")])
+        let after: JSONValue = .object(["id": .string("after"), "role": .string("user"), "createdAt": .string("2026-09-28T12:10:00Z")])
+        let wake: JSONValue = .object(["id": .string("wake"), "role": .string("agent"), "createdAt": .string("2026-09-28T12:20:00Z"), "metadata": .object(["wakeRunId": .string("run"), "wake": .object(["completedAt": .string("2026-09-28T12:05:00Z")])])])
+        XCTAssertEqual(ChatPresentation.displayRows([before, after, wake]).map(\.id), ["before", "wake", "after"])
+        XCTAssertEqual(ChatTranscript.merge([before, after], incoming: [wake], tombstones: []).map(\.id), ["before", "wake", "after"])
+        let legacy: JSONValue = .object(["id": .string("wake:auto-1790597100:final"), "role": .string("agent"), "createdAt": .string("2026-09-28T12:20:00Z"), "metadata": .object(["wakeRunId": .string("auto-1790597100"), "source": .string("automation")])])
+        XCTAssertEqual(ChatPresentation.displayRows([before, after, legacy]).map(\.id), ["before", "wake:auto-1790597100:final", "after"])
+    }
     func testMixedToolCatalogUsesOneCanonicalFormat() throws {
         let legacy: JSONValue = .object(["name": .string("native_health"), "description": .string("Read"), "inputSchema": .object(["type": .string("object")])])
         var canonical = legacy; canonical["type"] = .string("function"); canonical["name"] = .string("server_tool")

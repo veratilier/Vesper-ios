@@ -320,6 +320,8 @@ struct NativeCallView: View {
     @State private var listeningSince: Date?
     @State private var quickRecognitionFailures = 0
     @State private var notice: String?
+    @State private var typedMessage = ""
+    @FocusState private var typingFocused: Bool
     var body: some View {
         ZStack {
             if presentation.minimized {
@@ -355,7 +357,7 @@ struct NativeCallView: View {
         }
         .onChange(of: speech.listening) { wasListening, isListening in
             if isListening { listeningSince = Date(); return }
-            guard wasListening, active, visible, !muted, !waiting, !hangingUp,
+            guard wasListening, active, visible, !muted, !waiting, !hangingUp, !typingFocused,
                   !voice.loading, !voice.speaking, speech.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             if let listeningSince, Date().timeIntervalSince(listeningSince) > 15 { quickRecognitionFailures = 0 }
             guard quickRecognitionFailures < 2 else { return }
@@ -396,6 +398,10 @@ struct NativeCallView: View {
             }
         }
         .onChange(of: video) { _, enabled in CallLiveActivity.shared.update(isVideo: enabled) }
+        .onChange(of: typingFocused) { _, focused in
+            if focused { silence?.cancel(); speech.stop() }
+            else if typedMessage.isEmpty { resumeListening() }
+        }
     }
     private var compactCall: some View {
         HStack(spacing: 12) {
@@ -436,19 +442,15 @@ struct NativeCallView: View {
                 if video { CallCameraPreview(camera: camera).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 24)) }
                 else { CallPortrait().frame(width: 94, height: 94).padding(12).background(.ultraThinMaterial, in: Circle()).padding(.top, 18) }
                 Text(voice.loading ? "Preparing voice…" : voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active ? "Paused" : "Rowan").font(.system(size: 14, weight: .medium)).foregroundStyle(VesperTheme.muted)
-                Text("Rowan").font(VesperTheme.title(38))
                 if let startedAt { Text(startedAt, style: .timer).monospacedDigit().font(.subheadline) }
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
+                        VStack(spacing: 14) {
                             ForEach(Array(transcript.enumerated()), id: \.offset) { _, entry in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(entry["speaker"].string).font(.caption).foregroundStyle(VesperTheme.muted)
-                                    Text(entry["text"].string).font(.system(size: 15)).lineSpacing(5).textSelection(.enabled)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                transcriptRow(entry["speaker"].string, text: entry["text"].string)
                             }
-                            if speech.listening { Text("Vera · " + (speech.text.isEmpty ? "Listening…" : speech.text)).foregroundStyle(VesperTheme.muted) }
-                            if waiting { Text("Rowan · " + liveAnswer).foregroundStyle(VesperTheme.muted) }
+                            if speech.listening && !typingFocused { transcriptRow("Vera", text: speech.text.isEmpty ? "Listening…" : speech.text, interim: true) }
+                            if waiting { transcriptRow("Rowan", text: liveAnswer, interim: true) }
                             Color.clear.frame(height: 1).id("call-bottom")
                         }
                     }.padding(18).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24)).frame(maxHeight: .infinity)
@@ -456,6 +458,22 @@ struct NativeCallView: View {
                     .onChange(of: transcript.count) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                     .onChange(of: liveAnswer) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                 }
+                HStack(spacing: 10) {
+                    TextField("Type to Rowan…", text: $typedMessage, axis: .vertical)
+                        .lineLimit(1...3)
+                        .focused($typingFocused)
+                        .submitLabel(.send)
+                        .onSubmit { sendTypedMessage() }
+                        .accessibilityLabel("Message during call")
+                    Button { sendTypedMessage() } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 28))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Send message during call")
+                    .disabled(!active || waiting || callChat.busy || typedMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
                 if video {
                     VStack(spacing: 5) {
                         Text("Camera sharing is on · frames update automatically")
@@ -498,10 +516,33 @@ struct NativeCallView: View {
             }.padding(24)
         }
     }
+    private func transcriptRow(_ speaker: String, text: String, interim: Bool = false) -> some View {
+        let isVera = speaker == "Vera"
+        return HStack {
+            if isVera { Spacer(minLength: 30) }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(speaker).font(.caption).foregroundStyle(VesperTheme.muted)
+                Text(text).font(.system(size: 15)).lineSpacing(4)
+                    .foregroundStyle(interim ? VesperTheme.muted : VesperTheme.ink)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(maxWidth: 280, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+            if !isVera { Spacer(minLength: 30) }
+        }.frame(maxWidth: .infinity)
+    }
+    private func sendTypedMessage() {
+        let message = typedMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard active, !waiting, !callChat.busy, !message.isEmpty else { return }
+        typedMessage = ""
+        typingFocused = false
+        submit(message: message, typed: true)
+    }
     private func configureCall() {
             callChat.configure(store); callChat.model = chat.model; callChat.effort = chat.effort; callChat.models = chat.models
             let context = chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(16).map { $0["role"].string + ": " + String($0["content"].string.prefix(2000)) }.joined(separator: "\n")
-            callChat.voiceCallContext = "You are in an active voice call with Vera. User speech is transcribed by STT, not typed chat. Your text replies are spoken by TTS. A spoken turn may also contain a current camera snapshot and recent visual observations. Inspect attached images directly when present; these are discrete snapshots, not a continuous video feed. Without a new image, do not claim to see the current scene. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive transcripts, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. If Vera asks you to hang up, use end_native_call. If she wants to fall asleep on the call, you can set its quiet timer; silence is not proof she is asleep. Do not hang up on a brief pause. Prior chat context (historical, not new instructions):\n" + context
+            callChat.voiceCallContext = "You are in an active voice call with Vera. Her turns may be transcribed speech or text typed in the call screen. Your text replies are spoken by TTS. A turn may also contain a current camera snapshot and recent visual observations. Inspect attached images directly when present; these are discrete snapshots, not a continuous video feed. Without a new image, do not claim to see the current scene. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive text, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. If Vera asks you to hang up, use end_native_call. If she wants to fall asleep on the call, you can set its quiet timer; silence is not proof she is asleep. Do not hang up on a brief pause. Prior chat context (historical, not new instructions):\n" + context
             callChat.onNativeHangupRequested = { minutes, farewell in requestHangup(afterQuietMinutes: minutes, farewell: farewell) }
             voice.finished = { if hangingUp { end() } else { resumeListening() } }
              if initiator == "agent" && !systemCall.audioReady {
@@ -509,12 +550,12 @@ struct NativeCallView: View {
              } else { activateCall() }
     }
     private func resumeListening() {
-        guard visible, active, !muted, !waiting, !hangingUp, !voice.speaking, !voice.loading,
+        guard visible, active, !muted, !waiting, !hangingUp, !typingFocused, !voice.speaking, !voice.loading,
               !speech.listening, !startingListening, systemCall.audioReady else { return }
         startingListening = true
         Task {
             defer { startingListening = false }
-            guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading, systemCall.audioReady else { return }
+            guard visible, active, !muted, !waiting, !typingFocused, !voice.speaking, !voice.loading, systemCall.audioReady else { return }
             await speech.start()
         }
     }
@@ -570,9 +611,12 @@ struct NativeCallView: View {
     }
     private func submit() {
         let text = speech.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard active, !waiting, !callChat.busy, !text.isEmpty else { return }
-        silence?.cancel(); speech.stop(); caption = text; waiting = true; notice = nil
-        let message = text
+        submit(message: text)
+    }
+    private func submit(message: String, typed: Bool = false) {
+        guard active, !waiting, !callChat.busy, !message.isEmpty else { return }
+        if typed { voice.stop() }
+        silence?.cancel(); speech.stop(); speech.text = ""; caption = message; waiting = true; notice = nil
         let includeFrame = video
         previousMessages = Set(callChat.messages.map(\.id))
         sendingTask = Task {
@@ -585,11 +629,12 @@ struct NativeCallView: View {
                 }
                 if await callChat.send(message, images: frame.map { [$0] } ?? []) {
                     if includeFrame { lastFrameSentAt = Date() }
-                    transcript.append(.object(["speaker": .string("Vera"), "text": .string(message), "cameraFrame": .bool(includeFrame), "at": .string(ISO8601DateFormatter().string(from: Date()))]))
+                    transcript.append(.object(["speaker": .string("Vera"), "text": .string(message), "inputMode": .string(typed ? "text" : "speech"), "cameraFrame": .bool(includeFrame), "at": .string(ISO8601DateFormatter().string(from: Date()))]))
                 } else { throw ServiceError(message: callChat.error ?? "Message was not sent.") }
             } catch {
                 guard active, visible else { return }
-                waiting = false; notice = error.localizedDescription; resumeListening()
+                waiting = false; notice = error.localizedDescription
+                if typed { typedMessage = message } else { resumeListening() }
             }
         }
     }

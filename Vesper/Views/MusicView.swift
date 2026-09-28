@@ -301,10 +301,6 @@ private struct MusicLibraryView: View {
     }
     private var playlists: some View {
         Section {
-            Button("My songs") { Task { await catalog.mySongs(player: player) } }
-                .disabled(!catalog.connected || catalog.busy)
-            Button("Refresh library") { Task { await catalog.refresh(player: player) } }
-                .disabled(!catalog.connected || catalog.busy)
             if catalog.playlists.isEmpty { Text("Your Apple Music playlists will appear here.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
             ForEach(catalog.playlists) { playlist in
                 Button { Task { await catalog.playlist(playlist.id, player: player) } } label: {
@@ -322,7 +318,24 @@ private struct MusicLibraryView: View {
                 }.disabled(catalog.busy)
                     .task(id: playlist.id) { await catalog.ensurePlaylistArtwork(for: playlist.id, player: player) }
             }
-        } header: { Text("Apple Music library") }
+        } header: {
+            HStack {
+                Text("Apple Music library")
+                Spacer()
+                Button { Task { await catalog.mySongs(player: player) } } label: {
+                    Image(systemName: "music.note.list").frame(width: 36, height: 32)
+                }
+                .accessibilityLabel("My songs")
+                Button { Task { await catalog.refresh(player: player) } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 36, height: 32)
+                }
+                .accessibilityLabel("Refresh library")
+            }
+            .font(.system(size: 15))
+            .textCase(nil)
+            .buttonStyle(.borderless)
+            .disabled(!catalog.connected || catalog.busy)
+        }
     }
     private var search: some View {
         Section {

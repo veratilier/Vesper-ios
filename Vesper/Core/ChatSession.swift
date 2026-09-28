@@ -888,7 +888,7 @@ enum ChatConnectionStage: String {
                 try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = developerContext(recalled)
-                let result = try await rpc("thread/start", .object(["dynamicTools": .array(voiceCallContext != nil ? [] : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.voiceTool, Self.historyTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(voiceCallContext != nil ? [] : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
@@ -991,6 +991,17 @@ enum ChatConnectionStage: String {
         "inputSchema": .object(["type": .string("object"), "properties": .object([
             "metrics": .object(["type": .string("array"), "items": .object(["type": .string("string")]), "maxItems": .number(100)])
         ]), "additionalProperties": .bool(false)])
+    ])
+    private static let alarmTool: JSONValue = .object([
+        "name": .string("manage_native_alarm"),
+        "description": .string("List or manage alarms created by Vesper on Vera's current iPhone using AlarmKit (iOS 26+). This cannot read or edit Apple's Clock alarms. Use 'list' to check current alarms. Use 'create' or 'cancel' only when Vera explicitly requests that exact change; never create alarms from an automated wake or unsolicited suggestion. For create, supply an ISO 8601 future date/time with timezone and a short title; daily=true repeats at that time in the iPhone's current timezone. Cancel requires an exact ID returned by list. Success is confirmed only after iOS schedules or cancels the alarm."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object([
+            "action": .object(["type": .string("string"), "enum": .array([.string("list"), .string("create"), .string("cancel")])]),
+            "title": .object(["type": .string("string")]),
+            "when": .object(["type": .string("string")]),
+            "daily": .object(["type": .string("boolean")]),
+            "id": .object(["type": .string("string")])
+        ]), "required": .array([.string("action")]), "additionalProperties": .bool(false)])
     ])
     private static let voiceTool: JSONValue = .object([
         "name": .string("send_native_voice"), "description": .string("Send Vera an audio message synthesized using her configured ElevenLabs/MiniMax voice. Include the exact spoken text. Success means the audio message was saved, not listened to."),
@@ -1170,6 +1181,36 @@ enum ChatConnectionStage: String {
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(reader.available), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 events.append("read_native_health · completed")
+                return
+            }
+            if name == "manage_native_alarm" {
+                let alarms = VesperAlarms.shared
+                let action = args["action"].string
+                var changed = ""
+                switch action {
+                case "list": alarms.refresh()
+                case "create":
+                    let raw = args["when"].string
+                    let parser = ISO8601DateFormatter()
+                    let fractional = ISO8601DateFormatter()
+                    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    guard let date = parser.date(from: raw) ?? fractional.date(from: raw) else {
+                        throw ServiceError(message: "Supply an ISO 8601 date and time with a timezone, such as 2026-10-01T07:00:00+08:00.")
+                    }
+                    let item = try await alarms.create(title: args["title"].string, date: date, repeatsDaily: args["daily"].bool)
+                    changed = "Created Vesper alarm " + item.id.uuidString
+                case "cancel":
+                    guard let id = UUID(uuidString: args["id"].string) else { throw ServiceError(message: "Use an exact Vesper alarm ID from list.") }
+                    try alarms.cancel(id: id)
+                    changed = "Cancelled Vesper alarm " + id.uuidString
+                default: throw ServiceError(message: "Action must be list, create, or cancel.")
+                }
+                try checkCallback()
+                var result = alarms.snapshot
+                if !changed.isEmpty { result["result"] = .string(changed) }
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(alarms.error == nil), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                try checkCallback()
+                events.append("manage_native_alarm · " + action)
                 return
             }
             if name == "send_native_voice" {

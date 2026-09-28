@@ -31,3 +31,14 @@ jobs:
         with:
           name: Vesper-TestResults
           path: TestResults.xcresult
+  alarmkit-sdk:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AlarmKit with iOS 26 SDK
+        run: |
+          xcodebuild -version
+          xcodebuild build -project Vesper.xcodeproj -scheme Vesper -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO

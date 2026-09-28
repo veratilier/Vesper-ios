@@ -704,8 +704,13 @@ struct ChatView: View {
     }
     private var musicSheet: some View {
         NavigationStack { List {
-            ForEach(store.document("music").array) { track in Button { pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "url", "neteaseId"].map { ($0, track[$0]) })); musicPicker = false; drawer = false } label: { Label(track["title"].string, systemImage: "music.note") } }
-            if store.document("music").array.isEmpty { Text("Add songs in Music first.") }
+            ForEach(store.document("music").array.filter { $0["source"].string == "appleMusic" }) { track in
+                Button {
+                    pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "appleMusicId", "source", "duration"].map { ($0, track[$0]) }))
+                    musicPicker = false; drawer = false
+                } label: { Label(track["title"].string, systemImage: "music.note") }
+            }
+            if store.document("music").array.allSatisfy({ $0["source"].string != "appleMusic" }) { Text("Add songs from Apple Music first.") }
         }.navigationTitle("Music").toolbar { Button("Done") { musicPicker = false } } }.presentationDetents([.medium, .large])
     }
     private var historySheet: some View {

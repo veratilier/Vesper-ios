@@ -23,6 +23,58 @@ private struct AttachmentRowAlignment: ViewModifier {
     }
 }
 
+private struct ChatPhotoGallery: View {
+    let photos: [JSONValue]
+    private let gap: CGFloat = 3
+
+    var body: some View {
+        Group {
+            switch photos.count {
+            case 1:
+                AsyncImage(url: URL(string: photos[0]["url"].string)) { image in
+                    image.resizable().scaledToFit().frame(maxWidth: 276, maxHeight: 320)
+                } placeholder: {
+                    placeholder.frame(width: 240, height: 240)
+                }
+            case 2:
+                HStack(spacing: gap) { tile(0, width: 138, height: 220); tile(1, width: 138, height: 220) }
+            case 3:
+                HStack(spacing: gap) {
+                    tile(0, width: 178, height: 244)
+                    VStack(spacing: gap) { tile(1, width: 98, height: 120.5); tile(2, width: 98, height: 120.5) }
+                }
+            default:
+                VStack(spacing: gap) {
+                    HStack(spacing: gap) { tile(0, width: 138, height: 138); tile(1, width: 138, height: 138) }
+                    if photos.count == 4 {
+                        HStack(spacing: gap) { tile(2, width: 138, height: 138); tile(3, width: 138, height: 138) }
+                    } else {
+                        HStack(spacing: gap) {
+                            ForEach(2..<min(photos.count, 5), id: \.self) { index in tile(index, width: 91, height: 91) }
+                        }
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(photos.count) \(photos.count == 1 ? "photo" : "photos")")
+    }
+
+    private func tile(_ index: Int, width: CGFloat, height: CGFloat) -> some View {
+        AsyncImage(url: URL(string: photos[index]["url"].string)) { image in
+            image.resizable().scaledToFill().frame(width: width, height: height).clipped()
+        } placeholder: {
+            placeholder.frame(width: width, height: height)
+        }
+        .frame(width: width, height: height)
+    }
+
+    private var placeholder: some View {
+        ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+    }
+}
+
 private struct ChatAttachmentPreviewButton<Label: View>: View {
     let url: URL
     let name: String
@@ -490,14 +542,20 @@ struct ChatView: View {
     }
     private func messageRow(_ message: JSONValue, activities: [JSONValue]) -> some View {
         let user = ChatPresentation.isUser(message)
+        let attachments = message["metadata"]["attachments"].array
+        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
+        let otherAttachments = attachments.filter { !$0["type"].string.hasPrefix("image/") }
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
                 if !user && message["metadata"]["showTurnStatus"] != .bool(false) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
-                if !message["metadata"]["attachments"].array.isEmpty {
-                    ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
+                if !photos.isEmpty {
+                    ChatPhotoGallery(photos: photos)
+                        .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+                }
+                if !otherAttachments.isEmpty {
+                    ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
                         else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { HStack(spacing: 12) {
                             Image(systemName: "doc.text").font(.title2)
                             VStack(alignment: .leading, spacing: 4) {
@@ -506,7 +564,7 @@ struct ChatView: View {
                             }
                             Image(systemName: "arrow.down.to.line").font(.subheadline)
                         }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-                    } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
+                    } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
                 if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: message["metadata"]["musicCard"]) }
                 if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }

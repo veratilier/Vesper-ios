@@ -439,6 +439,7 @@ enum ChatConnectionStage: String {
         do { try await loadConversation(conversation.id); return true }
         catch is CancellationError { return false }
         catch {
+            if Task.isCancelled { return false }
             if (error as? ServiceError)?.statusCode == 404 {
                 self.error = "Could not load this conversation (HTTP 404). This does not confirm deletion. The conversation remains in your list. Check the history service."
             } else { self.error = error.localizedDescription }
@@ -543,7 +544,7 @@ enum ChatConnectionStage: String {
             }
             return saved
         } catch is CancellationError { return false }
-        catch { self.error = error.localizedDescription; return false }
+        catch { if Task.isCancelled { return false }; self.error = error.localizedDescription; return false }
     }
     func loadOlder() async {
         guard !loadingOlder, hasOlderMessages, let api else { return }

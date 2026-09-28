@@ -50,10 +50,15 @@ struct WakeView: View {
     @State private var status = ""
     private var supported: Bool { runtime["permissionVersion"].number >= 1 }
     private var jobs: [JSONValue] { runtime["jobs"].array.sorted { $0["created"].number > $1["created"].number } }
+    private var nextWakeAt: Date? {
+        guard case .number(let timestamp) = runtime["nextAt"], timestamp.isFinite, timestamp > 0 else { return nil }
+        return Date(timeIntervalSince1970: timestamp)
+    }
     var body: some View {
         List {
             Section {
                 Toggle("Automatic wake-up", isOn: $enabled).disabled(!supported || busy)
+                if runtime != .null { nextWakeRow }
                 NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
                 NavigationLink("Recent activity") { activityPage }
@@ -74,6 +79,29 @@ struct WakeView: View {
     private var saveBar: some View {
         WakeSaveButton(title: busy ? "Saving…" : "Save changes", disabled: !supported || busy) {
             Task { await save() }
+        }
+    }
+    private var nextWakeRow: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { timeline in
+            HStack(alignment: .center, spacing: 12) {
+                Text("Next wake")
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 3) {
+                    if !runtime["config"]["enabled"].bool {
+                        Text("Paused")
+                    } else if let nextWakeAt {
+                        if nextWakeAt > timeline.date {
+                            Text(nextWakeAt, style: .relative)
+                        } else {
+                            Text("Scheduled time passed")
+                        }
+                        Text(nextWakeAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                    } else {
+                        Text("No wake scheduled")
+                    }
+                }.foregroundStyle(VesperTheme.muted)
+            }.accessibilityElement(children: .combine)
         }
     }
     private var permissionsPage: some View {

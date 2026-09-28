@@ -14,6 +14,7 @@ import SwiftUI
     @Published var error: String?
     @Published var mode = "order"
     @Published var resolving = false
+    @Published private(set) var currentArtwork: MusicKit.Artwork?
     private let native = ApplicationMusicPlayer.shared
     private var songs: [String: Song] = [:]
     private var library: [JSONValue] = []
@@ -49,6 +50,7 @@ import SwiftUI
         if !tracks.contains(where: { $0.id == track.id }) {
             pause()
             track = tracks.first ?? .null
+            currentArtwork = songs[track["appleMusicId"].string]?.artwork
             position = 0
             duration = track["duration"].number
             synchronize()
@@ -66,6 +68,7 @@ import SwiftUI
         let requested = selection
         native.pause()
         track = value
+        currentArtwork = songs[value["appleMusicId"].string]?.artwork
         if !tracks.contains(where: { $0.id == value.id }) { tracks.append(value) }
         playing = false
         position = 0
@@ -87,6 +90,16 @@ import SwiftUI
                 let selected = try await song(for: id)
                 try Task.checkCancellation()
                 guard selection == requested else { return }
+                currentArtwork = selected.artwork
+                if currentArtwork == nil {
+                    Task {
+                        // Some library songs have no song-level artwork even
+                        // though the catalog album has a cover.
+                        let detail = try? await selected.with([.albums])
+                        guard selection == requested else { return }
+                        currentArtwork = detail?.albums?.first?.artwork
+                    }
+                }
                 // Use the selected song as a native MusicKit queue. Keep the
                 // visible Vesper queue for previous/next and chat controls.
                 native.queue = ApplicationMusicPlayer.Queue(for: [selected])

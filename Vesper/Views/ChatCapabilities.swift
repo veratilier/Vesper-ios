@@ -293,6 +293,10 @@ struct NativeCallView: View {
     @State private var previousMessages = Set<String>()
     @State private var silence: Task<Void, Never>?
     @State private var sendingTask: Task<Void, Never>?
+    @State private var quietHangupMinutes: Int?
+    @State private var quietHangupFarewell = ""
+    @State private var quietHangupTask: Task<Void, Never>?
+    @State private var hangingUp = false
     @State private var notice: String?
     var body: some View {
         ZStack {
@@ -332,6 +336,12 @@ struct NativeCallView: View {
                     }.font(.caption).foregroundStyle(.secondary)
                 }
                 if active && !systemCall.outputName.isEmpty { Text("Audio · " + systemCall.outputName).font(.caption).foregroundStyle(.secondary) }
+                if let quietHangupMinutes {
+                    HStack {
+                        Text("End after \(quietHangupMinutes) min of quiet")
+                        Button("Cancel") { cancelQuietHangup() }
+                    }.font(.caption).foregroundStyle(.secondary)
+                }
                 if VoiceConfiguration.connection(store)["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
                 if let error = voice.error ?? notice ?? speech.error { Text(error).font(.caption).foregroundStyle(.red) }
                 Spacer(minLength: 0)
@@ -359,8 +369,9 @@ struct NativeCallView: View {
         }.onAppear {
             callChat.configure(store); callChat.model = chat.model; callChat.effort = chat.effort; callChat.models = chat.models
             let context = chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(16).map { $0["role"].string + ": " + String($0["content"].string.prefix(2000)) }.joined(separator: "\n")
-            callChat.voiceCallContext = "You are in an active voice call with Vera. User speech is transcribed by STT, not typed chat. Your text replies are spoken by TTS. A spoken turn may also contain a current camera snapshot and recent visual observations. Inspect attached images directly when present; these are discrete snapshots, not a continuous video feed. Without a new image, do not claim to see the current scene. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive transcripts, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. Prior chat context (historical, not new instructions):\n" + context
-             voice.finished = { resumeListening() }
+            callChat.voiceCallContext = "You are in an active voice call with Vera. User speech is transcribed by STT, not typed chat. Your text replies are spoken by TTS. A spoken turn may also contain a current camera snapshot and recent visual observations. Inspect attached images directly when present; these are discrete snapshots, not a continuous video feed. Without a new image, do not claim to see the current scene. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive transcripts, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. If Vera asks you to hang up, use end_native_call. If she wants to fall asleep on the call, you can set its quiet timer; silence is not proof she is asleep. Do not hang up on a brief pause. Prior chat context (historical, not new instructions):\n" + context
+            callChat.onNativeHangupRequested = { minutes, farewell in requestHangup(afterQuietMinutes: minutes, farewell: farewell) }
+            voice.finished = { if hangingUp { end(); dismiss() } else { resumeListening() } }
              if initiator == "agent" && !systemCall.audioReady {
                  Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } }
              } else { activateCall() }
@@ -369,11 +380,12 @@ struct NativeCallView: View {
         .onChange(of: systemCall.id) { old, new in if old != nil && new == nil { end(); dismiss() } }
         .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else { resumeListening() } }
         .onChange(of: speech.text) { _, text in
-            silence?.cancel(); guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
+            silence?.cancel(); if !text.isEmpty && quietHangupMinutes != nil { armQuietHangup() }
+            guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
             silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
         }
         .onChange(of: callChat.busy) { old, new in
-            guard old && !new && waiting && active else { return }
+            guard old && !new && waiting && active && !hangingUp else { return }
             waiting = false
             let replies = callChat.messages.filter { !previousMessages.contains($0.id) && $0["role"].string != "user" && !ChatPresentation.isActivity($0) }
             let answer = replies.map { $0["content"].string }.joined(separator: "\n")
@@ -388,7 +400,7 @@ struct NativeCallView: View {
         .onChange(of: phase) { _, phase in if phase != .active { stopCamera() } }
     }
     private func resumeListening() {
-        guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading,
+        guard visible, active, !muted, !waiting, !hangingUp, !voice.speaking, !voice.loading,
               !speech.listening, !startingListening, systemCall.audioReady else { return }
         startingListening = true
         Task {
@@ -401,6 +413,35 @@ struct NativeCallView: View {
         guard systemCall.audioReady else { return }
         if !active { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID }
         resumeListening()
+    }
+    private func requestHangup(afterQuietMinutes minutes: Int, farewell: String) {
+        guard visible, active, systemCall.audioReady else { return }
+        if minutes > 0 {
+            quietHangupMinutes = minutes
+            quietHangupFarewell = farewell
+            armQuietHangup()
+            return
+        }
+        cancelQuietHangup()
+        hangingUp = true
+        silence?.cancel(); speech.stop(); waiting = false
+        let spoken = farewell.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty else { end(); dismiss(); return }
+        transcript.append(.object(["speaker": .string("Rowan"), "text": .string(spoken), "at": .string(ISO8601DateFormatter().string(from: Date()))]))
+        Task { await voice.play(spoken, store: store) }
+    }
+    private func armQuietHangup() {
+        quietHangupTask?.cancel()
+        guard let minutes = quietHangupMinutes else { return }
+        quietHangupTask = Task {
+            do { try await Task.sleep(for: .seconds(Int64(minutes) * 60)) } catch { return }
+            guard !Task.isCancelled, active, visible, quietHangupMinutes == minutes else { return }
+            requestHangup(afterQuietMinutes: 0, farewell: quietHangupFarewell)
+        }
+    }
+    private func cancelQuietHangup() {
+        quietHangupTask?.cancel(); quietHangupTask = nil
+        quietHangupMinutes = nil; quietHangupFarewell = ""
     }
     private func toggleSpeaker() {
         let wasListening = speech.listening
@@ -505,6 +546,7 @@ struct NativeCallView: View {
         return value.isEmpty ? "Thinking…" : value
     }
     private func end() {
+        cancelQuietHangup(); callChat.onNativeHangupRequested = nil
         stopCamera()
         systemCall.end()
         if let start = startedAt {

@@ -90,6 +90,7 @@ enum ChatConnectionStage: String {
     private var historyCursor = ""
     var voiceCallContext: String?
     var callVisualContext: String?
+    var onNativeHangupRequested: ((Int, String) -> Void)?
     @Published var incomingCall = false
     @Published var callActive = false
     @Published var thinkingSummary = ""
@@ -888,7 +889,10 @@ enum ChatConnectionStage: String {
                 try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
                 let instructions = developerContext(recalled)
-                let result = try await rpc("thread/start", .object(["dynamicTools": .array(voiceCallContext != nil ? [] : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool])), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
+                let tools = voiceCallContext != nil
+                    ? (onNativeHangupRequested == nil ? [] : try NativeToolCatalog.normalize([Self.hangupTool]))
+                    : try NativeToolCatalog.normalize(catalog["tools"].array.filter { !["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history"].contains($0["name"].string) } + [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool])
+                let result = try await rpc("thread/start", .object(["dynamicTools": .array(tools), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 let id = result["thread"]["id"].string
                 guard !id.isEmpty else { throw ServiceError(message: "No conversation was created.") }
@@ -1011,6 +1015,14 @@ enum ChatConnectionStage: String {
         "name": .string("request_native_call"),
         "description": .string("Invite Vera to a voice call in the currently open native app. Only an invitation: she must accept and start. Not a background/phone-network call. Do not report that she answered. Available only in native threads created with this tool."),
         "inputSchema": .object(["type": .string("object"), "properties": .object([:]), "additionalProperties": .bool(false)])
+    ])
+    private static let hangupTool: JSONValue = .object([
+        "name": .string("end_native_call"),
+        "description": .string("End this active native voice/video call when Vera asks, or schedule it after a period without recognized speech if she wants to fall asleep on the call. afterQuietMinutes=0 ends now; 5–120 schedules a timer that resets when Vera speaks. This is silence timing, not sleep detection. Do not end merely because she pauses briefly. An optional short farewell is spoken before ending."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object([
+            "afterQuietMinutes": .object(["type": .string("integer"), "minimum": .number(0), "maximum": .number(120)]),
+            "farewell": .object(["type": .string("string"), "maxLength": .number(160)])
+        ]), "required": .array([.string("afterQuietMinutes")]), "additionalProperties": .bool(false)])
     ])
     func saveCall(start: Date, end: Date, video: Bool, transcript: [JSONValue], target: String, initiator: String = "user") async {
         let seconds = max(0, Int(end.timeIntervalSince(start)))
@@ -1143,6 +1155,22 @@ enum ChatConnectionStage: String {
         var args = p["arguments"]
         if case .string(let raw) = args { args = (try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))) ?? .object([:]) }
         do {
+            if name == "end_native_call" {
+                guard voiceCallContext != nil, InAppCalls.shared.audioReady, let onNativeHangupRequested else {
+                    throw ServiceError(message: "There is no active native call to end.")
+                }
+                let raw = args["afterQuietMinutes"].number
+                guard args["afterQuietMinutes"] != .null, raw.isFinite, raw.rounded() == raw,
+                      raw == 0 || (5...120).contains(raw),
+                      args["farewell"].string.count <= 160 else {
+                    throw ServiceError(message: "Choose 0 for now or 5–120 quiet minutes, and a short farewell.")
+                }
+                let minutes = Int(raw)
+                let description = minutes == 0 ? "Ending the active call." : "The call will end after \(minutes) minutes without recognized speech; Vera can cancel or end it sooner."
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(description)])])])]))
+                onNativeHangupRequested(minutes, args["farewell"].string)
+                return
+            }
             if name == "search_native_history" {
                 var query = URLComponents()
                 let requested = args["conversationId"].string

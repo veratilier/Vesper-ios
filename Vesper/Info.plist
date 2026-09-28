@@ -40,13 +40,15 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Take a photo or share camera frames during a call you start.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Read the sleep, heart rate, steps and wrist temperature you choose to share, for your private on-device Health page.</string>
+	<string>Read the Health data types you choose to share, including activity, sleep, heart, cycle, body, nutrition and vitals, to show summaries in Vesper. Summaries requested in chat are sent to the Vesper chat service.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Add your current location to a message you choose to send.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Use voice input and calls when you tap the microphone.</string>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Show your Apple Music library and play songs you choose in Vesper.</string>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Schedule the alarms you create in Vesper and show them with the iPhone system alarm interface.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Show your reminder lists and save or complete reminders you choose in Vesper.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

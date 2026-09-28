@@ -1,4 +1,5 @@
 import SwiftUI
+import MusicKit
 
 struct HomeView: View {
     @EnvironmentObject private var store: AppStore
@@ -183,16 +184,20 @@ struct HomeView: View {
         }.first?.element
     }
     private func notesCard(height: CGFloat) -> some View {
-        Button { navigate(.notes) } label: {
-            HomeCard {
-                VStack(alignment: .leading, spacing: 7) {
-                    cardTitle("Notes")
+        HomeCard {
+            VStack(alignment: .leading, spacing: 7) {
+                Button { navigate(.notes) } label: { cardTitle("Notes") }
+                    .accessibilityLabel("Open Notes")
+                ScrollView(.vertical) {
                     Text(latestNote?["text"].string ?? "A little space for your thoughts.")
-                        .font(.system(size: 10.5)).lineSpacing(2).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
-                    Spacer(minLength: 0)
+                        .font(.system(size: 10.5)).lineSpacing(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }.frame(height: height)
-        }
+                .frame(maxHeight: .infinity)
+                .scrollIndicators(.visible)
+            }
+        }.frame(height: height)
     }
     private func remindersCard(height: CGFloat) -> some View {
         HomeCard {
@@ -211,7 +216,18 @@ struct HomeView: View {
         HomeCard {
             VStack(spacing: 5) {
                 Button { navigate(.music) } label: { cardTitle("Music") }
-                Artwork(url: player.track["cover"].string).frame(width: 76, height: 76).clipShape(Circle())
+                Group {
+                    if let artwork = player.currentArtwork ?? player.artwork(for: player.track) {
+                        MusicKit.ArtworkImage(artwork, width: 76, height: 76)
+                    } else {
+                        Artwork(url: player.track["cover"].string)
+                    }
+                }
+                .frame(width: 76, height: 76)
+                .clipShape(Circle())
+                .task(id: player.track["appleMusicId"].string) {
+                    await player.ensureArtwork(for: player.track)
+                }
                 Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string).font(.system(size: 11)).lineLimit(1)
                 Text(player.track["artist"].string).font(.system(size: 10)).foregroundStyle(VesperTheme.muted).lineLimit(1)
                 PlaybackControls().font(.system(size: 18)).frame(height: 36)

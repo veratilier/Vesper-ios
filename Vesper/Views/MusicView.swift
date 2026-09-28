@@ -50,18 +50,21 @@ struct MusicView: View {
                 VStack(spacing: 12) {
                     HStack {
                         Spacer()
-                        Menu {
-                            Button("Change playback mode: \(player.mode)") { player.cycleMode() }
-                        } label: {
-                            Image(systemName: "ellipsis").frame(width: 42, height: 42)
-                        }.accessibilityLabel("Playback options")
-                        Button { sheet = .library } label: {
-                            Label("My Music", systemImage: "books.vertical")
-                                .font(.system(size: 14, weight: .medium))
-                                .padding(.horizontal, 16).frame(height: 42)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25)))
+                        Button { player.cycleMode() } label: {
+                            Image(systemName: playbackModeIcon)
+                                .font(.system(size: 19))
+                                .frame(width: 42, height: 42)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
+                        .accessibilityLabel("Playback mode: \(playbackModeName). Tap to change")
+                        Button { sheet = .library } label: {
+                            Image(systemName: "books.vertical")
+                                .font(.system(size: 19))
+                                .frame(width: 42, height: 42)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .overlay(Circle().stroke(VesperTheme.accent.opacity(0.25)))
+                        }
+                        .accessibilityLabel("My Music")
                     }
                     let artworkSize = max(220, min(geometry.size.width - 52, 460))
                     TabView(selection: $showingLyrics) {
@@ -89,6 +92,22 @@ struct MusicView: View {
         }
         .alert("Music", isPresented: Binding(get: { player.error != nil }, set: { if !$0 { player.error = nil } })) { Button("OK") { player.error = nil } } message: { Text(player.error ?? "") }
     }
+    private var playbackModeIcon: String {
+        switch player.mode {
+        case "repeat": "repeat"
+        case "single": "repeat.1"
+        case "random": "shuffle"
+        default: "text.line.first.and.arrowtriangle.forward"
+        }
+    }
+    private var playbackModeName: String {
+        switch player.mode {
+        case "repeat": "Repeat all"
+        case "single": "Repeat one"
+        case "random": "Shuffle"
+        default: "In order"
+        }
+    }
     private var lyricsPanel: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
@@ -102,11 +121,14 @@ struct MusicView: View {
             }
             ScrollViewReader { proxy in
                 ScrollView {
-                    let lines = player.track["lyrics"].array
-                    if lines.isEmpty {
+                    let lines = player.lyrics
+                    if player.lyricsLoading {
+                        ProgressView("Finding timed lyrics…")
+                            .frame(maxWidth: .infinity, minHeight: 220)
+                    } else if lines.isEmpty {
                         VStack(spacing: 14) {
                             Image(systemName: "text.quote").font(.largeTitle)
-                            Text("Lyrics aren't available inside Vesper yet.")
+                            Text("No matching timed lyrics found for this version.")
                                 .multilineTextAlignment(.center)
                             if let url = URL(string: player.track["appleMusicURL"].string),
                                url.scheme == "https" {
@@ -127,10 +149,14 @@ struct MusicView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                        if let source = player.lyricSource {
+                            Text("Lyrics: \(source)")
+                                .font(.caption).foregroundStyle(VesperTheme.muted).padding(.horizontal, 18)
+                        }
                     }
                 }
                 .onChange(of: Int(player.position)) { _, _ in
-                    let lines = player.track["lyrics"].array
+                    let lines = player.lyrics
                     if let index = lines.indices.last(where: { lines[$0]["time"].number <= player.position }) {
                         withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(index, anchor: .center) }
                     }
@@ -191,15 +217,23 @@ struct MusicView: View {
 }
 
 private struct MusicTrackRow: View {
+    @EnvironmentObject private var player: MusicPlayer
     let track: JSONValue
     var active = false
     var body: some View {
         HStack(spacing: 12) {
-            Artwork(url: track["cover"].string).frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 7))
+            Group {
+                if let artwork = player.artwork(for: track) {
+                    MusicKit.ArtworkImage(artwork, width: 44, height: 44)
+                } else {
+                    Artwork(url: track["cover"].string)
+                }
+            }.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 4) { Text(track["title"].string).font(.system(size: 15, weight: .medium)).lineLimit(2); Text(track["artist"].string).font(.caption).foregroundStyle(VesperTheme.muted).lineLimit(1) }
             Spacer(minLength: 4)
             if active { Image(systemName: "waveform").foregroundStyle(VesperTheme.accent) }
         }.foregroundStyle(VesperTheme.ink).padding(.vertical, 3).contentShape(Rectangle())
+            .task(id: track["appleMusicId"].string) { await player.ensureArtwork(for: track) }
     }
 }
 
@@ -219,13 +253,30 @@ private struct MusicLibraryView: View {
                 if catalog.collection != .null { collection }
                 else {
                     Picker("Music", selection: $tab) { Text("My Music").tag("mine"); Text("Discover").tag("discover") }.pickerStyle(.segmented)
-                    if tab == "mine" { account; playlists }
+                    if tab == "mine" {
+                        if store.legacyNetEaseCount > 0 || store.legacyMusicCleanupStatus != nil { legacyCleanup }
+                        playlists
+                    }
                     else { search }
                 }
             }.scrollContentBackground(.hidden).background { Background() }
                 .navigationTitle("My Music").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            Task { if catalog.connected { await catalog.refresh(player: player) }
+                                   else { await catalog.connect(player: player) } }
+                        } label: {
+                            Image(systemName: catalog.connected ? "checkmark.circle.fill" : "music.note")
+                                .foregroundStyle(catalog.connected ? Color.green : VesperTheme.ink)
+                        }
+                        .disabled(catalog.busy)
+                        .accessibilityLabel(catalog.connected ? "Apple Music connected. Refresh library" : "Connect Apple Music")
+                    }
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
                 .task {
+                    catalog.connected = MusicAuthorization.currentStatus == .authorized
                     if catalog.connected { await catalog.refresh(player: player) }
                 }
                 .confirmationDialog("Remove old NetEase music data?", isPresented: $showLegacyCleanup) {
@@ -237,13 +288,8 @@ private struct MusicLibraryView: View {
                 }
         }.presentationDragIndicator(.visible)
     }
-    private var account: some View {
+    private var legacyCleanup: some View {
         Section {
-            Text(catalog.connected ? "Apple Music connected on this iPhone" : "Connect Apple Music to browse your library and play songs.")
-                .font(.subheadline).foregroundStyle(VesperTheme.muted)
-            if !catalog.connected {
-                Button("Connect Apple Music") { Task { await catalog.connect(player: player) } }.disabled(catalog.busy)
-            }
             if store.legacyNetEaseCount > 0 {
                 Button("Remove old NetEase data · \(store.legacyNetEaseCount)") { showLegacyCleanup = true }
                     .disabled(!store.connected || store.saving)
@@ -255,21 +301,41 @@ private struct MusicLibraryView: View {
     }
     private var playlists: some View {
         Section {
-            Button("My songs · \(catalog.songs.count)") { Task { await catalog.mySongs(player: player) } }
-                .disabled(!catalog.connected || catalog.busy)
-            Button("Refresh library") { Task { await catalog.refresh(player: player) } }
-                .disabled(!catalog.connected || catalog.busy)
             if catalog.playlists.isEmpty { Text("Your Apple Music playlists will appear here.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
             ForEach(catalog.playlists) { playlist in
                 Button { Task { await catalog.playlist(playlist.id, player: player) } } label: {
                     HStack(spacing: 12) {
-                        Artwork(url: playlist["cover"].string).frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
+                        Group {
+                            if let artwork = catalog.artwork(for: playlist) {
+                                MusicKit.ArtworkImage(artwork, width: 48, height: 48)
+                            } else {
+                                Artwork(url: playlist["cover"].string)
+                            }
+                        }.frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
                         VStack(alignment: .leading, spacing: 4) { Text(playlist["name"].string).font(.subheadline) }
                         Spacer(); Image(systemName: "chevron.right").font(.caption)
                     }.foregroundStyle(VesperTheme.ink)
                 }.disabled(catalog.busy)
+                    .task(id: playlist.id) { await catalog.ensurePlaylistArtwork(for: playlist.id, player: player) }
             }
-        } header: { Text("Apple Music library") }
+        } header: {
+            HStack {
+                Text("Apple Music library")
+                Spacer()
+                Button { Task { await catalog.mySongs(player: player) } } label: {
+                    Image(systemName: "music.note.list").frame(width: 36, height: 32)
+                }
+                .accessibilityLabel("My songs")
+                Button { Task { await catalog.refresh(player: player) } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 36, height: 32)
+                }
+                .accessibilityLabel("Refresh library")
+            }
+            .font(.system(size: 15))
+            .textCase(nil)
+            .buttonStyle(.borderless)
+            .disabled(!catalog.connected || catalog.busy)
+        }
     }
     private var search: some View {
         Section {

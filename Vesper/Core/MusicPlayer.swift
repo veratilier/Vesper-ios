@@ -15,8 +15,13 @@ import SwiftUI
     @Published var mode = "order"
     @Published var resolving = false
     @Published private(set) var currentArtwork: MusicKit.Artwork?
+    @Published private(set) var resolvedArtwork: [String: MusicKit.Artwork] = [:]
+    @Published private(set) var lyrics: [JSONValue] = []
+    @Published private(set) var lyricsLoading = false
+    @Published private(set) var lyricSource: String?
     private let native = ApplicationMusicPlayer.shared
     private var songs: [String: Song] = [:]
+    private var artworkLookups = Set<String>()
     private var library: [JSONValue] = []
     private weak var store: AppStore?
     private var timer: Timer?
@@ -28,6 +33,8 @@ import SwiftUI
     private var lastSyncPlaying = false
     private var syncTask: Task<Void, Never>?
     private var playTask: Task<Void, Never>?
+    private var lyricTask: Task<Void, Never>?
+    private var lyricCache: [String: [JSONValue]] = [:]
 
     func configure(_ store: AppStore) {
         self.store = store
@@ -43,14 +50,34 @@ import SwiftUI
         for song in values { songs[song.id.rawValue] = song }
     }
 
+    func artwork(for value: JSONValue) -> MusicKit.Artwork? {
+        let id = value["appleMusicId"].string
+        return songs[id]?.artwork ?? resolvedArtwork[id]
+    }
+
+    func ensureArtwork(for value: JSONValue) async {
+        guard let id = value["appleMusicId"].string.nonEmpty,
+              artwork(for: value) == nil,
+              artworkLookups.insert(id).inserted else { return }
+        guard let song = try? await song(for: id) else { return }
+        let detail = try? await song.with([.albums])
+        guard let image = detail?.albums?.first?.artwork else { return }
+        resolvedArtwork[id] = image
+        if track["appleMusicId"].string == id { currentArtwork = image }
+    }
+
     func updateLibrary(_ values: [JSONValue]) { library = values }
     func setQueue(_ values: [JSONValue], append: Bool = false) {
         var seen = Set<String>()
         tracks = (append ? tracks + values : values).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
         if !tracks.contains(where: { $0.id == track.id }) {
             pause()
+            lyricTask?.cancel()
             track = tracks.first ?? .null
-            currentArtwork = songs[track["appleMusicId"].string]?.artwork
+            currentArtwork = artwork(for: track)
+            lyrics = track["lyrics"].array
+            lyricsLoading = false
+            lyricSource = nil
             position = 0
             duration = track["duration"].number
             synchronize()
@@ -60,6 +87,36 @@ import SwiftUI
     func cycleMode() {
         let modes = ["order", "repeat", "single", "random"]
         mode = modes[((modes.firstIndex(of: mode) ?? 0) + 1) % modes.count]
+        applyPlaybackMode()
+    }
+    private func applyPlaybackMode() {
+        native.state.repeatMode = mode == "single" ? .one : mode == "repeat" ? .all : .none
+        native.state.shuffleMode = mode == "random" ? .songs : .off
+    }
+    private func loadLyrics(for value: JSONValue) {
+        lyricTask?.cancel()
+        lyrics = value["lyrics"].array
+        lyricsLoading = false
+        lyricSource = nil
+        guard lyrics.isEmpty, let id = value["appleMusicId"].string.nonEmpty else { return }
+        if let cached = lyricCache[id] {
+            lyrics = cached
+            lyricSource = cached.isEmpty ? nil : "NetEase Cloud Music"
+        } else {
+            lyricsLoading = true
+            lyricTask = Task {
+                let found = await NetEaseTimedLyrics.fetch(
+                    title: value["title"].string,
+                    artist: value["artist"].string,
+                    duration: value["duration"].number
+                )
+                guard !Task.isCancelled, track.id == value.id else { return }
+                lyrics = found
+                lyricsLoading = false
+                lyricSource = found.isEmpty ? nil : "NetEase Cloud Music"
+                lyricCache[id] = found
+            }
+        }
     }
 
     func select(_ value: JSONValue) {
@@ -68,19 +125,21 @@ import SwiftUI
         let requested = selection
         native.pause()
         track = value
-        currentArtwork = songs[value["appleMusicId"].string]?.artwork
+        currentArtwork = artwork(for: value)
+        loadLyrics(for: value)
         if !tracks.contains(where: { $0.id == value.id }) { tracks.append(value) }
         playing = false
         position = 0
         duration = value["duration"].number
         error = nil
+        resolving = true
         synchronize()
         guard value["source"].string == "appleMusic",
               let id = value["appleMusicId"].string.nonEmpty else {
+            resolving = false
             error = MusicError.unavailable.localizedDescription
             return
         }
-        resolving = true
         playTask = Task {
             do {
                 let authorized = await MusicAuthorization.request()
@@ -90,19 +149,15 @@ import SwiftUI
                 let selected = try await song(for: id)
                 try Task.checkCancellation()
                 guard selection == requested else { return }
-                currentArtwork = selected.artwork
+                currentArtwork = artwork(for: value)
                 if currentArtwork == nil {
-                    Task {
-                        // Some library songs have no song-level artwork even
-                        // though the catalog album has a cover.
-                        let detail = try? await selected.with([.albums])
-                        guard selection == requested else { return }
-                        currentArtwork = detail?.albums?.first?.artwork
-                    }
+                    Task { await ensureArtwork(for: value) }
                 }
-                // Use the selected song as a native MusicKit queue. Keep the
-                // visible Vesper queue for previous/next and chat controls.
-                native.queue = ApplicationMusicPlayer.Queue(for: [selected])
+                // Play the songs already resolved from this Vesper queue so
+                // native automatic transitions follow the same playlist.
+                let queueSongs = tracks.compactMap { songs[$0["appleMusicId"].string] }
+                native.queue = ApplicationMusicPlayer.Queue(for: queueSongs, startingAt: selected)
+                applyPlaybackMode()
                 try await native.play()
                 guard selection == requested else { native.pause(); return }
                 resolving = false
@@ -160,6 +215,18 @@ import SwiftUI
     }
     func synchronize() {
         playing = native.state.playbackStatus == .playing
+        if playing, !resolving, let item = native.queue.currentEntry?.item,
+           case .song(let currentSong) = item,
+           track["appleMusicId"].string != currentSong.id.rawValue {
+            songs[currentSong.id.rawValue] = currentSong
+            let value = tracks.first { $0["appleMusicId"].string == currentSong.id.rawValue }
+                ?? MusicCatalog.metadata(currentSong)
+            track = value
+            currentArtwork = native.queue.currentEntry?.artwork ?? artwork(for: value)
+            duration = currentSong.duration ?? value["duration"].number
+            loadLyrics(for: value)
+            if currentArtwork == nil { Task { await ensureArtwork(for: value) } }
+        }
         let elapsed = native.playbackTime
         position = track["source"].string == "appleMusic" && elapsed.isFinite ? max(0, elapsed) : 0
         syncPlayback()
@@ -232,6 +299,98 @@ import SwiftUI
     }
 }
 
+// Only fetch timed lyric text. Apple Music remains the sole playback source;
+// NetEase login, audio URLs, playlists and server-side lyric storage are unused.
+enum NetEaseTimedLyrics {
+    static func fetch(title: String, artist: String, duration: Double) async -> [JSONValue] {
+        guard !title.isEmpty, !artist.isEmpty, duration > 0 else { return [] }
+        do {
+            let searchURL = URL(string: "https://music.163.com/api/search/get")!
+            var search = URLRequest(url: searchURL)
+            search.httpMethod = "POST"
+            search.timeoutInterval = 8
+            search.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            search.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
+            search.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            var form = URLComponents()
+            form.queryItems = [URLQueryItem(name: "s", value: "\(title) \(artist)"),
+                               URLQueryItem(name: "type", value: "1"),
+                               URLQueryItem(name: "limit", value: "10")]
+            search.httpBody = form.percentEncodedQuery?.data(using: .utf8)
+            let searchData = try await data(for: search)
+            let searchObject = try JSONSerialization.jsonObject(with: searchData) as? [String: Any]
+            let candidates = (searchObject?["result"] as? [String: Any])?["songs"] as? [[String: Any]] ?? []
+            let matching = candidates.compactMap { song -> (id: Int, distance: Double)? in
+                guard normalized(song["name"] as? String ?? "") == normalized(title),
+                      let names = song["artists"] as? [[String: Any]],
+                      normalized(names.compactMap { $0["name"] as? String }.joined()) == normalized(artist),
+                      let id = (song["id"] as? NSNumber)?.intValue else { return nil }
+                let ms = (song["duration"] as? NSNumber ?? song["dt"] as? NSNumber)?.doubleValue ?? 0
+                guard ms > 0 else { return nil }
+                let distance = abs(ms / 1000 - duration)
+                guard distance <= 8 else { return nil }
+                return (id, distance)
+            }
+            guard let song = matching.min(by: { $0.distance < $1.distance }) else { return [] }
+            var components = URLComponents(string: "https://music.163.com/api/song/lyric")!
+            components.queryItems = [URLQueryItem(name: "id", value: String(song.id)),
+                                     URLQueryItem(name: "lv", value: "1"),
+                                     URLQueryItem(name: "tv", value: "-1")]
+            var lyricRequest = URLRequest(url: components.url!)
+            lyricRequest.timeoutInterval = 8
+            lyricRequest.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
+            lyricRequest.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            let lyricData = try await data(for: lyricRequest)
+            let lyricObject = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any]
+            let lrc = (lyricObject?["lrc"] as? [String: Any])?["lyric"] as? String ?? ""
+            return parse(lrc)
+        } catch { return [] }
+    }
+
+    private static func data(for request: URLRequest) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse,
+              response.statusCode == 200, data.count <= 256_000 else { return Data() }
+        return data
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init).joined()
+    }
+
+    static func parse(_ lrc: String) -> [JSONValue] {
+        guard lrc.utf8.count <= 256_000,
+              let timestamps = try? NSRegularExpression(pattern: #"\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]"#) else { return [] }
+        var parsed: [(Double, String)] = []
+        for raw in lrc.split(separator: "\n").prefix(1000) {
+            let line = String(raw)
+            let range = NSRange(line.startIndex..., in: line)
+            let matches = timestamps.matches(in: line, range: range)
+            guard let last = matches.last,
+                  let end = Range(NSRange(location: last.range.location + last.range.length, length: 0), in: line) else { continue }
+            let lyric = String(line[end.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !lyric.isEmpty else { continue }
+            for match in matches {
+                guard let minutesRange = Range(match.range(at: 1), in: line),
+                      let secondsRange = Range(match.range(at: 2), in: line),
+                      let minutes = Double(line[minutesRange]),
+                      let seconds = Double(line[secondsRange]) else { continue }
+                var fraction = 0.0
+                if let fractionRange = Range(match.range(at: 3), in: line) {
+                    let digits = line[fractionRange]
+                    fraction = (Double(digits) ?? 0) / pow(10, Double(digits.count))
+                }
+                parsed.append((minutes * 60 + seconds + fraction, lyric))
+            }
+        }
+        return parsed.sorted { $0.0 < $1.0 }.map { time, text in
+            .object(["time": .number(time), "text": .string(text)])
+        }
+    }
+}
+
 private extension String {
     var nonEmpty: String? { isEmpty ? nil : self }
 }
@@ -244,6 +403,33 @@ private extension String {
     @Published var message = ""
     @Published var connected = MusicAuthorization.currentStatus == .authorized
     private var playlistItems: [String: Playlist] = [:]
+    @Published private(set) var playlistCovers: [String: MusicKit.Artwork] = [:]
+    private var playlistCoverLookups = Set<String>()
+
+    func artwork(for playlist: JSONValue) -> MusicKit.Artwork? {
+        playlistItems[playlist.id]?.artwork ?? playlistCovers[playlist.id]
+    }
+
+    func ensurePlaylistArtwork(for id: String, player: MusicPlayer) async {
+        guard let playlist = playlistItems[id], playlist.artwork == nil, playlistCovers[id] == nil,
+              playlistCoverLookups.insert(id).inserted else { return }
+        do {
+            let detailed = try await playlist.with([.tracks])
+            playlistItems[id] = detailed
+            let songs = detailed.tracks?.compactMap { item -> Song? in
+                if case .song(let song) = item { return song }
+                return nil
+            } ?? []
+            if let image = songs.lazy.compactMap(\.artwork).first {
+                playlistCovers[id] = image
+            } else if let song = songs.first {
+                player.register([song])
+                let value = Self.metadata(song)
+                await player.ensureArtwork(for: value)
+                if let image = player.artwork(for: value) { playlistCovers[id] = image }
+            }
+        } catch { playlistCoverLookups.remove(id) }
+    }
 
     static func metadata(_ song: Song) -> JSONValue {
         let id = song.id.rawValue
@@ -279,14 +465,30 @@ private extension String {
             playlistRequest.limit = 100
             let items = try await playlistRequest.response().items
             playlistItems = Dictionary(uniqueKeysWithValues: items.map { ($0.id.rawValue, $0) })
+            playlistCovers = [:]
+            playlistCoverLookups = []
             playlists = items.map { .object(["id": .string($0.id.rawValue),
                                             "name": .string($0.name),
                                             "cover": .string($0.artwork?.url(width: 200, height: 200)?.absoluteString ?? "")]) }
         } catch { message = error.localizedDescription }
     }
     func mySongs(player: MusicPlayer) async {
-        await refresh(player: player)
-        collection = .object(["title": .string("My songs"), "tracks": .array(songs)])
+        guard !busy, connected else { return }
+        busy = true; message = ""
+        defer { busy = false }
+        do {
+            var request = MusicLibraryRequest<Song>()
+            request.limit = 100
+            var page = try await request.response().items
+            var allSongs = Array(page)
+            while page.hasNextBatch, let next = try await page.nextBatch(limit: 100), !next.isEmpty {
+                allSongs.append(contentsOf: next)
+                page = next
+            }
+            player.register(allSongs)
+            songs = allSongs.map(Self.metadata)
+            collection = .object(["title": .string("My songs"), "tracks": .array(songs)])
+        } catch { message = error.localizedDescription }
     }
     func playlist(_ id: String, player: MusicPlayer) async {
         guard !busy, let playlist = playlistItems[id] else { return }
@@ -330,7 +532,7 @@ private extension String {
             }
             return .array(merged)
         }
-        message = saved ? "Added \(values.count) songs" : "Queue updated on this phone; library sync failed."
+        message = saved ? "" : "Queue updated on this phone; library sync failed."
         if autoplay, let first = values.first { player.select(first) }
     }
 }

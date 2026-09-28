@@ -50,18 +50,21 @@ struct MusicView: View {
                 VStack(spacing: 12) {
                     HStack {
                         Spacer()
-                        Menu {
-                            Button("Change playback mode: \(player.mode)") { player.cycleMode() }
-                        } label: {
-                            Image(systemName: "ellipsis").frame(width: 42, height: 42)
-                        }.accessibilityLabel("Playback options")
-                        Button { sheet = .library } label: {
-                            Label("My Music", systemImage: "books.vertical")
-                                .font(.system(size: 14, weight: .medium))
-                                .padding(.horizontal, 16).frame(height: 42)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25)))
+                        Button { player.cycleMode() } label: {
+                            Image(systemName: playbackModeIcon)
+                                .font(.system(size: 19))
+                                .frame(width: 42, height: 42)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
+                        .accessibilityLabel("Playback mode: \(playbackModeName). Tap to change")
+                        Button { sheet = .library } label: {
+                            Image(systemName: "books.vertical")
+                                .font(.system(size: 19))
+                                .frame(width: 42, height: 42)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .overlay(Circle().stroke(VesperTheme.accent.opacity(0.25)))
+                        }
+                        .accessibilityLabel("My Music")
                     }
                     let artworkSize = max(220, min(geometry.size.width - 52, 460))
                     TabView(selection: $showingLyrics) {
@@ -88,6 +91,22 @@ struct MusicView: View {
             else { queueSheet.presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
         }
         .alert("Music", isPresented: Binding(get: { player.error != nil }, set: { if !$0 { player.error = nil } })) { Button("OK") { player.error = nil } } message: { Text(player.error ?? "") }
+    }
+    private var playbackModeIcon: String {
+        switch player.mode {
+        case "repeat": "repeat"
+        case "single": "repeat.1"
+        case "random": "shuffle"
+        default: "text.line.first.and.arrowtriangle.forward"
+        }
+    }
+    private var playbackModeName: String {
+        switch player.mode {
+        case "repeat": "Repeat all"
+        case "single": "Repeat one"
+        case "random": "Shuffle"
+        default: "In order"
+        }
     }
     private var lyricsPanel: some View {
         VStack(alignment: .leading, spacing: 18) {

@@ -72,11 +72,9 @@ struct WakeView: View {
             .task { if runtime == .null { await load() } }.refreshable { await load() }
     }
     private var saveBar: some View {
-        Button(busy ? "Saving…" : "Save changes") { Task { await save() } }
-            .disabled(!supported || busy)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .padding(.horizontal, 20).padding(.vertical, 10)
-            .background(.regularMaterial)
+        WakeSaveButton(title: busy ? "Saving…" : "Save changes", disabled: !supported || busy) {
+            Task { await save() }
+        }
     }
     private var permissionsPage: some View {
         List {
@@ -189,11 +187,9 @@ private struct WakePromptView: View {
         }.scrollContentBackground(.hidden).background { Background() }
             .navigationTitle("Wake prompt").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
             .safeAreaInset(edge: .bottom) {
-                Button(busy ? "Saving…" : "Save prompt") { Task { await save() } }
-                    .disabled(!supported || busy || prompt.count > limit)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .padding(.horizontal, 20).padding(.vertical, 10)
-                    .background(.regularMaterial)
+                WakeSaveButton(title: busy ? "Saving…" : "Save prompt", disabled: !supported || busy || prompt.count > limit) {
+                    Task { await save() }
+                }
             }
             .task { await load() }
     }
@@ -221,6 +217,29 @@ private struct WakePromptView: View {
             prompt = requested
             status = "Saved on the VPS. The next wake will use these instructions."
         } catch { status = error.localizedDescription }
+    }
+}
+private struct WakeSaveButton: View {
+    let title: String
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(VesperTheme.ink)
+                .frame(maxWidth: .infinity, minHeight: 56)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.6), lineWidth: 1))
+                .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.55 : 1)
+        .padding(.horizontal, 24)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
     }
 }
 private struct WakeRunDetail: View {

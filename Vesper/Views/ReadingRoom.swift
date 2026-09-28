@@ -228,6 +228,7 @@ struct ReaderView: View {
     @State private var chapters: [ReadingChapter] = []
     @State private var pages: [ReadingPage] = []
     @State private var pageIndex = 0
+    @State private var progressSave: Task<Void, Never>?
     @State private var target: ReadingNoteTarget?
     @State private var draft = ""
     private var book: JSONValue { store.document("readingRoom").array.first { $0.id == bookID } ?? .null }
@@ -293,7 +294,9 @@ struct ReaderView: View {
             .onChange(of: pageIndex) { _, next in
                 guard pages.indices.contains(next) else { return }
                 let location = pages[next].range.location
-                Task {
+                progressSave?.cancel()
+                progressSave = Task {
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
                     _ = await store.mutate("readingRoom") { current in
                         .array(current.array.map { item in
                             guard item.id == bookID else { return item }

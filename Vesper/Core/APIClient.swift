@@ -25,6 +25,15 @@ enum CredentialStore {
             guard SecItemAdd(q.merging(values) { _, v in v } as CFDictionary, nil) == errSecSuccess else { throw ServiceError(message: "Could not save the device token.") }
         } else if status != errSecSuccess { throw ServiceError(message: "Could not update the device token.") }
     }
+    static func delete(account: String) throws {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw ServiceError(message: "Could not remove the old music credential.")
+        }
+    }
 }
 
 struct APIClient {

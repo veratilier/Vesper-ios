@@ -5,6 +5,8 @@ struct NativeChatHome: View {
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
     @State private var open = false
+    @State private var loadingChat = false
+    @State private var openingTask: Task<Void, Never>?
     @State private var searching = false
     @State private var openedOnce = false
     @State private var deletingConversation: JSONValue?
@@ -18,7 +20,7 @@ struct NativeChatHome: View {
     }
     private var mainConversation: JSONValue? { chat.conversations.first { $0.id == mainConversationID } }
     private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
-    private var rowDisabled: Bool { chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming }
+    private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming }
     var body: some View {
         NavigationStack {
             List {
@@ -33,13 +35,13 @@ struct NativeChatHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                Button { Task { if await chat.openMainRoom() { open = true } } } label: {
+                Button { enterChat() } label: {
                     conversationRow(mainConversation, title: agentName, emptyPreview: "Start chatting")
                 }
                 .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
 
                 ForEach(otherConversations) { item in
-                    Button { Task { if await chat.open(item) { open = true } } } label: {
+                    Button { enterChat(item) } label: {
                         conversationRow(item, title: item["title"].string.isEmpty ? agentName : item["title"].string, emptyPreview: "No messages yet")
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -64,15 +66,27 @@ struct NativeChatHome: View {
                 }
             }
             .navigationDestination(isPresented: $open) {
-                ChatView(restoreLatest: false, native: true)
-                    .background { Background() }.toolbar(.hidden, for: .navigationBar)
+                if loadingChat {
+                    ProgressView("Opening chat…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background { Background() }
+                        .navigationTitle("Chat")
+                } else {
+                    ChatView(restoreLatest: false, native: true)
+                        .background { Background() }.toolbar(.hidden, for: .navigationBar)
+                }
             }
             .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
             .task {
                 chat.configure(store); await chat.loadConversations()
                 if !openedOnce { openedOnce = true }
             }
-            .onChange(of: open) { _, isOpen in if !isOpen { Task { await chat.loadConversations() } } }
+            .onChange(of: open) { _, isOpen in
+                if !isOpen {
+                    openingTask?.cancel(); openingTask = nil; loadingChat = false
+                    Task { await chat.loadConversations() }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
             .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) {
@@ -101,6 +115,21 @@ struct NativeChatHome: View {
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
             } message: { Text(chat.error ?? "") }
+        }
+    }
+
+    private func enterChat(_ item: JSONValue? = nil) {
+        guard !rowDisabled else { return }
+        loadingChat = true
+        open = true
+        openingTask = Task {
+            let opened: Bool
+            if let item { opened = await chat.open(item) }
+            else { opened = await chat.openMainRoom() }
+            guard !Task.isCancelled else { return }
+            openingTask = nil
+            loadingChat = false
+            if !opened { open = false }
         }
     }
 

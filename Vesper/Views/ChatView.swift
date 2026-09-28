@@ -23,6 +23,112 @@ private struct AttachmentRowAlignment: ViewModifier {
     }
 }
 
+private struct ChatPhotoStack: View {
+    let photos: [JSONValue]
+    @State private var front = 0
+    @State private var dragX: CGFloat = 0
+    @State private var advancing = false
+    @State private var showingPhoto = false
+    @State private var advanceGeneration = UUID()
+    private let cardWidth: CGFloat = 256
+    private let cardHeight: CGFloat = 330
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if photos.count > 1 {
+                Label("\(photos.count) Photos", systemImage: "square.grid.2x2.fill")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(VesperTheme.accent)
+                ZStack(alignment: .topLeading) {
+                    ForEach((0..<min(photos.count, 4)).reversed(), id: \.self) { depth in
+                        card((front + depth) % photos.count)
+                            .offset(x: depth == 0 ? dragX : CGFloat(depth) * 8,
+                                    y: CGFloat(depth) * 3)
+                            .zIndex(Double(4 - depth))
+                            .allowsHitTesting(depth == 0)
+                    }
+                }
+                .frame(width: cardWidth + 24, height: cardHeight + 12, alignment: .topLeading)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 12)
+                    .onChanged { value in
+                        guard !advancing, abs(value.translation.width) > abs(value.translation.height) else { return }
+                        dragX = min(0, value.translation.width)
+                    }
+                    .onEnded { value in
+                        guard !advancing else { return }
+                        if abs(value.translation.width) > abs(value.translation.height),
+                           value.translation.width < -65 || value.predictedEndTranslation.width < -110 {
+                            advance()
+                        } else { withAnimation(.spring(response: 0.25)) { dragX = 0 } }
+                    })
+                .accessibilityHint("Swipe left to see the next photo")
+                .accessibilityAction(named: "Next photo") { advance() }
+            } else if !photos.isEmpty {
+                AsyncImage(url: URL(string: photos[0]["url"].string)) { image in
+                    image.resizable().scaledToFit().frame(maxWidth: 276, maxHeight: 320)
+                } placeholder: {
+                    ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+                        .frame(width: 240, height: 240)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .onTapGesture { showingPhoto = true }
+            }
+        }
+        .onChange(of: photos) { _, _ in
+            resetStack()
+            showingPhoto = false
+        }
+        .onDisappear { resetStack() }
+        .sheet(isPresented: $showingPhoto) {
+            NavigationStack {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    if photos.indices.contains(front) {
+                        AsyncImage(url: URL(string: photos[front]["url"].string)) { image in
+                            image.resizable().scaledToFit()
+                        } placeholder: { ProgressView().tint(.white) }
+                    }
+                }
+                .toolbar { Button("Done") { showingPhoto = false } }
+            }
+        }
+    }
+
+    private func card(_ index: Int) -> some View {
+        AsyncImage(url: URL(string: photos[index]["url"].string)) { image in
+            image.resizable().scaledToFill().frame(width: cardWidth, height: cardHeight).clipped()
+        } placeholder: {
+            ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+                .frame(width: cardWidth, height: cardHeight)
+        }
+        .frame(width: cardWidth, height: cardHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .shadow(color: .black.opacity(0.12), radius: 7, y: 5)
+        .onTapGesture { if index == front && !advancing { showingPhoto = true } }
+        .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
+    }
+
+    private func advance() {
+        guard photos.count > 1, !advancing else { return }
+        advancing = true
+        let generation = UUID()
+        advanceGeneration = generation
+        withAnimation(.easeOut(duration: 0.2)) { dragX = -cardWidth - 30 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard advanceGeneration == generation else { return }
+            front = (front + 1) % photos.count
+            dragX = 0
+            advancing = false
+        }
+    }
+    private func resetStack() {
+        advanceGeneration = UUID()
+        front = 0
+        dragX = 0
+        advancing = false
+    }
+}
+
 private struct ChatAttachmentPreviewButton<Label: View>: View {
     let url: URL
     let name: String
@@ -490,14 +596,20 @@ struct ChatView: View {
     }
     private func messageRow(_ message: JSONValue, activities: [JSONValue]) -> some View {
         let user = ChatPresentation.isUser(message)
+        let attachments = message["metadata"]["attachments"].array
+        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
+        let otherAttachments = attachments.filter { !$0["type"].string.hasPrefix("image/") }
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
                 if !user && message["metadata"]["showTurnStatus"] != .bool(false) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
-                if !message["metadata"]["attachments"].array.isEmpty {
-                    ScrollView(.horizontal) { HStack { ForEach(Array(message["metadata"]["attachments"].array.enumerated()), id: \.offset) { _, attachment in
+                if !photos.isEmpty {
+                    ChatPhotoStack(photos: photos)
+                        .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+                }
+                if !otherAttachments.isEmpty {
+                    ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if attachment["type"].string.hasPrefix("image/") { Artwork(url: attachment["url"].string).frame(width: 160, height: 160).clipShape(RoundedRectangle(cornerRadius: 15)) }
                         else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { HStack(spacing: 12) {
                             Image(systemName: "doc.text").font(.title2)
                             VStack(alignment: .leading, spacing: 4) {
@@ -506,7 +618,7 @@ struct ChatView: View {
                             }
                             Image(systemName: "arrow.down.to.line").font(.subheadline)
                         }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-                    } }.modifier(AttachmentRowAlignment(single: message["metadata"]["attachments"].array.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
+                    } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
                 if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: message["metadata"]["musicCard"]) }
                 if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }

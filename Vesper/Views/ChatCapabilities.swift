@@ -103,6 +103,7 @@ struct ChatCameraPicker: UIViewControllerRepresentable {
 
 final class CallCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
+    @Published private(set) var position: AVCaptureDevice.Position = .front
     private let queue = DispatchQueue(label: "vesper.call.camera")
     private let lock = NSLock()
     private var frame: Data?
@@ -133,6 +134,33 @@ final class CallCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
                 } catch { c.resume(throwing: error) }
             }
         }
+    }
+    @MainActor func flip() async throws {
+        let target: AVCaptureDevice.Position = position == .front ? .back : .front
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                guard self.configured, self.session.isRunning,
+                      let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: target),
+                      let previous = self.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first else {
+                    continuation.resume(throwing: ServiceError(message: "Camera unavailable.")); return
+                }
+                do {
+                    let replacement = try AVCaptureDeviceInput(device: device)
+                    self.session.beginConfiguration()
+                    self.session.removeInput(previous)
+                    guard self.session.canAddInput(replacement) else {
+                        self.session.addInput(previous)
+                        self.session.commitConfiguration()
+                        throw ServiceError(message: "Could not switch cameras.")
+                    }
+                    self.session.addInput(replacement)
+                    self.lock.lock(); self.frame = nil; self.frameAt = .distantPast; self.lock.unlock()
+                    self.session.commitConfiguration()
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+        position = target
     }
     func stop() { queue.async { self.session.stopRunning(); self.lock.lock(); self.frame = nil; self.lock.unlock() } }
     func snapshot() -> Data? {
@@ -255,6 +283,7 @@ struct NativeCallView: View {
     @State private var muted = false
     @State private var video = false
     @State private var cameraBusy = false
+    @State private var startingListening = false
     @State private var lastFrameSentAt: Date?
     @State private var sharingFrame = false
     @State private var cameraNotice: String?
@@ -314,6 +343,11 @@ struct NativeCallView: View {
                         .tint(systemCall.speakerEnabled ? VesperTheme.ink : VesperTheme.muted)
                         .accessibilityValue(systemCall.speakerEnabled ? "On" : "Off").disabled(!active)
                     Button { toggleCamera() } label: { Label(video ? "Camera off" : "Camera", systemImage: video ? "video.slash" : "video") }.disabled(!active || cameraBusy)
+                    if video {
+                        Button { flipCamera() } label: { Label("Switch camera", systemImage: "camera.rotate") }
+                            .accessibilityValue(camera.position == .front ? "Front camera" : "Back camera")
+                            .disabled(cameraBusy)
+                    }
                     Button { end(); dismiss() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
                 }.labelStyle(.iconOnly).font(.system(size: 22)).buttonStyle(.bordered).controlSize(.large).frame(minHeight: 60).padding(.bottom, 12)
                 if active && !waiting && !muted {
@@ -326,10 +360,14 @@ struct NativeCallView: View {
             callChat.configure(store); callChat.model = chat.model; callChat.effort = chat.effort; callChat.models = chat.models
             let context = chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(16).map { $0["role"].string + ": " + String($0["content"].string.prefix(2000)) }.joined(separator: "\n")
             callChat.voiceCallContext = "You are in an active voice call with Vera. User speech is transcribed by STT, not typed chat. Your text replies are spoken by TTS. A spoken turn may also contain a current camera snapshot and recent visual observations. Inspect attached images directly when present; these are discrete snapshots, not a continuous video feed. Without a new image, do not claim to see the current scene. Respond naturally and briefly in the language she uses. Do not ask her to start the call again. You receive transcripts, not raw audio; do not claim to hear tone or voice characteristics. Do not call tools to send voice messages. Prior chat context (historical, not new instructions):\n" + context
-             voice.finished = { resumeListening() }; activateCall() }
+             voice.finished = { resumeListening() }
+             if initiator == "agent" && !systemCall.audioReady {
+                 Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } }
+             } else { activateCall() }
+        }
         .onChange(of: systemCall.audioReady) { _, ready in if ready { activateCall() } else { silence?.cancel(); speech.stop(); voice.stop() } }
         .onChange(of: systemCall.id) { old, new in if old != nil && new == nil { end(); dismiss() } }
-        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else if active && systemCall.audioReady && !waiting && !voice.speaking && !voice.loading { Task { await speech.start() } } }
+        .onChange(of: systemCall.muted) { _, value in muted = value; silence?.cancel(); if value { speech.stop() } else { resumeListening() } }
         .onChange(of: speech.text) { _, text in
             silence?.cancel(); guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
             silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
@@ -350,16 +388,19 @@ struct NativeCallView: View {
         .onChange(of: phase) { _, phase in if phase != .active { stopCamera() } }
     }
     private func resumeListening() {
-        guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading, systemCall.audioReady else { return }
+        guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading,
+              !speech.listening, !startingListening, systemCall.audioReady else { return }
+        startingListening = true
         Task {
-            guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading else { return }
+            defer { startingListening = false }
+            guard visible, active, !muted, !waiting, !voice.speaking, !voice.loading, systemCall.audioReady else { return }
             await speech.start()
         }
     }
     private func activateCall() {
         guard systemCall.audioReady else { return }
         if !active { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID }
-        if !muted && !waiting && !voice.speaking && !voice.loading { Task { await speech.start() } }
+        resumeListening()
     }
     private func toggleSpeaker() {
         let wasListening = speech.listening
@@ -402,6 +443,15 @@ struct NativeCallView: View {
         if video { stopCamera(); return }
         cameraBusy = true
         Task { do { try await camera.start(); if visible && active && phase == .active { video = true; usedVideo = true } else { camera.stop() } } catch { notice = error.localizedDescription }; cameraBusy = false }
+    }
+    private func flipCamera() {
+        guard video, !cameraBusy else { return }
+        cameraBusy = true; cameraNotice = nil
+        Task {
+            do { try await camera.flip() }
+            catch { cameraNotice = error.localizedDescription }
+            cameraBusy = false
+        }
     }
     private func stopCamera() {
         cameraGeneration = UUID(); video = false; sharingFrame = false

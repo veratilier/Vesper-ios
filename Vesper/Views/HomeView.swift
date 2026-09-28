@@ -1,4 +1,5 @@
 import SwiftUI
+import MusicKit
 
 struct HomeView: View {
     @EnvironmentObject private var store: AppStore
@@ -211,7 +212,18 @@ struct HomeView: View {
         HomeCard {
             VStack(spacing: 5) {
                 Button { navigate(.music) } label: { cardTitle("Music") }
-                Artwork(url: player.track["cover"].string).frame(width: 76, height: 76).clipShape(Circle())
+                Group {
+                    if let artwork = player.currentArtwork ?? player.artwork(for: player.track) {
+                        MusicKit.ArtworkImage(artwork, width: 76, height: 76)
+                    } else {
+                        Artwork(url: player.track["cover"].string)
+                    }
+                }
+                .frame(width: 76, height: 76)
+                .clipShape(Circle())
+                .task(id: player.track["appleMusicId"].string) {
+                    await player.ensureArtwork(for: player.track)
+                }
                 Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string).font(.system(size: 11)).lineLimit(1)
                 Text(player.track["artist"].string).font(.system(size: 10)).foregroundStyle(VesperTheme.muted).lineLimit(1)
                 PlaybackControls().font(.system(size: 18)).frame(height: 36)

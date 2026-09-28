@@ -90,7 +90,7 @@ struct MusicView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(player.track["title"].string.isEmpty ? "No song selected" : player.track["title"].string).font(.system(size: 25, weight: .semibold)).lineLimit(2)
             Text([player.track["artist"].string, player.track["album"].string].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 14)).foregroundStyle(VesperTheme.muted).lineLimit(2)
-            if player.track == .null { Text("Open My Music to connect NetEase or search for songs.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
+            if player.track == .null { Text("Open My Music to connect Apple Music or search for songs.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var progress: some View {
@@ -153,7 +153,6 @@ private struct MusicLibraryView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: MusicPlayer
     @Environment(\.dismiss) private var dismiss
-    @State private var accountOpen = false
     @State private var tab = "mine"
     @State private var query = ""
     var body: some View {
@@ -164,51 +163,43 @@ private struct MusicLibraryView: View {
                 if catalog.collection != .null { collection }
                 else {
                     Picker("Music", selection: $tab) { Text("My Music").tag("mine"); Text("Discover").tag("discover") }.pickerStyle(.segmented)
-                    if tab == "mine" { account; shortcuts; playlists }
-                    else { search; shortcuts }
+                    if tab == "mine" { account; playlists }
+                    else { search }
                 }
             }.scrollContentBackground(.hidden).background { Background() }
                 .navigationTitle("My Music").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-                .task { if catalog.uid.isEmpty || catalog.cookie.isEmpty { accountOpen = true } else if !catalog.connected { await catalog.connect(store) } }
+                .task {
+                    if catalog.connected { await catalog.refresh(player: player) }
+                }
         }.presentationDragIndicator(.visible)
     }
     private var account: some View {
         Section {
-            DisclosureGroup(catalog.connected ? "NetEase account connected" : "Connect NetEase account", isExpanded: $accountOpen) {
-                TextField("NetEase UID", text: $catalog.uid).keyboardType(.numberPad).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("MUSIC_U", text: $catalog.cookie).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Saved securely on this iPhone. Enter your account once to load playlists.").font(.caption).foregroundStyle(VesperTheme.muted)
-                Button("Connect and load playlists") { Task { await catalog.connect(store); if catalog.connected { accountOpen = false } } }.disabled(catalog.busy)
+            Text(catalog.connected ? "Apple Music connected on this iPhone" : "Connect Apple Music to browse your library and play songs.")
+                .font(.subheadline).foregroundStyle(VesperTheme.muted)
+            if !catalog.connected {
+                Button("Connect Apple Music") { Task { await catalog.connect(player: player) } }.disabled(catalog.busy)
             }
         }
     }
-    private var shortcuts: some View {
-        Section("Made for you") {
-            shortcut("Daily mix", "sparkles", "recommendations")
-            shortcut("Personal FM", "music.note", "personal-fm")
-            shortcut("Recently played", "clock", "recent-plays")
-            shortcut("Liked songs", "heart", "liked-songs")
-            shortcut("Weekly favorites", "repeat", "play-history")
-        }.disabled(catalog.busy || !catalog.connected)
-    }
-    private func shortcut(_ title: String, _ icon: String, _ action: String) -> some View {
-        Button { Task { await catalog.load(action, store: store) } } label: { Label(title, systemImage: icon).frame(minHeight: 32) }
-    }
     private var playlists: some View {
         Section {
-            Button("Refresh playlists") { Task { await catalog.connect(store) } }.disabled(catalog.busy)
-            if catalog.playlists.isEmpty { Text("Connect your account to see your playlists here.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
+            Button("My songs · \(catalog.songs.count)") { Task { await catalog.mySongs(player: player) } }
+                .disabled(!catalog.connected || catalog.busy)
+            Button("Refresh library") { Task { await catalog.refresh(player: player) } }
+                .disabled(!catalog.connected || catalog.busy)
+            if catalog.playlists.isEmpty { Text("Your Apple Music playlists will appear here.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
             ForEach(catalog.playlists) { playlist in
-                Button { Task { await catalog.load("playlist", store: store, payload: ["playlistId": .string(playlist.id)]) } } label: {
+                Button { Task { await catalog.playlist(playlist.id, player: player) } } label: {
                     HStack(spacing: 12) {
                         Artwork(url: playlist["cover"].string).frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
-                        VStack(alignment: .leading, spacing: 4) { Text(playlist["name"].string).font(.subheadline); Text("\(Int(playlist["trackCount"].number)) songs").font(.caption).foregroundStyle(VesperTheme.muted) }
+                        VStack(alignment: .leading, spacing: 4) { Text(playlist["name"].string).font(.subheadline) }
                         Spacer(); Image(systemName: "chevron.right").font(.caption)
                     }.foregroundStyle(VesperTheme.ink)
                 }.disabled(catalog.busy)
             }
-        } header: { Text("My playlists") }
+        } header: { Text("Apple Music library") }
     }
     private var search: some View {
         Section {
@@ -216,7 +207,7 @@ private struct MusicLibraryView: View {
             Button("Search", action: searchSongs).disabled(catalog.busy || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
-    private func searchSongs() { guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; Task { await catalog.load("search", store: store, payload: ["query": .string(query), "limit": .number(30)]) } }
+    private func searchSongs() { guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; Task { await catalog.search(query, player: player) } }
     private var collection: some View {
         Section {
             Button { catalog.collection = .null } label: { Label("Back", systemImage: "chevron.left") }

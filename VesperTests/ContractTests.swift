@@ -278,6 +278,13 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(player.track, .null)
     }
 
+    func testTimedLRCParsesRepeatedTimestampsAndSkipsMetadata() {
+        let lines = NetEaseTimedLyrics.parse("[ar:Artist]\n[00:03.50][00:05.125]First line\n[00:08.00]Second line")
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines.map { $0["time"].number }, [3.5, 5.125, 8])
+        XCTAssertEqual(lines.map { $0["text"].string }, ["First line", "First line", "Second line"])
+    }
+
     func testLegacyTextRecoveryMatchesOnceAndPreservesRepeatedSends() throws {
         let saved = try JSONDecoder().decode([JSONValue].self, from: Data(#"[{"id":"local1","role":"user","content":"再试一次","createdAt":"2026-09-14T02:43:36.000Z"},{"id":"local2","role":"user","content":"再试一次","createdAt":"2026-09-14T02:50:30Z"}]"#.utf8))
         let snapshot = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"id":"t1","startedAt":"2026-09-14T02:43:37Z","items":[{"id":"remote1","type":"userMessage","text":"再试一次"}]},{"id":"t2","startedAt":"2026-09-14T02:50:32Z","items":[{"id":"remote2","type":"userMessage","text":"再试一次"}]}]}"#.utf8))

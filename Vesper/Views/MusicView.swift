@@ -102,11 +102,14 @@ struct MusicView: View {
             }
             ScrollViewReader { proxy in
                 ScrollView {
-                    let lines = player.track["lyrics"].array
-                    if lines.isEmpty {
+                    let lines = player.lyrics
+                    if player.lyricsLoading {
+                        ProgressView("Finding timed lyrics…")
+                            .frame(maxWidth: .infinity, minHeight: 220)
+                    } else if lines.isEmpty {
                         VStack(spacing: 14) {
                             Image(systemName: "text.quote").font(.largeTitle)
-                            Text("Lyrics aren't available inside Vesper yet.")
+                            Text("No matching timed lyrics found for this version.")
                                 .multilineTextAlignment(.center)
                             if let url = URL(string: player.track["appleMusicURL"].string),
                                url.scheme == "https" {
@@ -127,10 +130,14 @@ struct MusicView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                        if let source = player.lyricSource {
+                            Text("Lyrics: \(source)")
+                                .font(.caption).foregroundStyle(VesperTheme.muted).padding(.horizontal, 18)
+                        }
                     }
                 }
                 .onChange(of: Int(player.position)) { _, _ in
-                    let lines = player.track["lyrics"].array
+                    let lines = player.lyrics
                     if let index = lines.indices.last(where: { lines[$0]["time"].number <= player.position }) {
                         withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(index, anchor: .center) }
                     }

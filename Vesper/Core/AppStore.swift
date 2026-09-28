@@ -3,10 +3,14 @@ import SwiftUI
 @MainActor final class AppStore: ObservableObject {
     init() {
         // Remove the former NetEase login even when the server is offline.
+        UserDefaults.standard.removeObject(forKey: "netease-uid")
         do {
             try CredentialStore.delete(account: "netease-music-u")
-            UserDefaults.standard.removeObject(forKey: "netease-uid")
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            // Keychain can reject deletion in a simulator or before unlock.
+            // Keep the cleanup visible in Music without blocking startup.
+            legacyMusicCleanupStatus = error.localizedDescription
+        }
     }
     weak var musicPlayer: MusicPlayer?
     @Published var documents: [String: JSONValue] = [:]

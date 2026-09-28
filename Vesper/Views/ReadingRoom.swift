@@ -3,6 +3,19 @@ import PhotosUI
 import PDFKit
 import UniformTypeIdentifiers
 
+private func readingCoverData(from item: PhotosPickerItem?) async -> String? {
+    guard let data = try? await item?.loadTransferable(type: Data.self),
+          let image = UIImage(data: data), image.size.width > 0, image.size.height > 0 else { return nil }
+    let size = CGSize(width: 300, height: 420)
+    let scaled = UIGraphicsImageRenderer(size: size).jpegData(withCompressionQuality: 0.72) { _ in
+        let scale = max(size.width / image.size.width, size.height / image.size.height)
+        image.draw(in: CGRect(x: (size.width - image.size.width * scale) / 2,
+                              y: (size.height - image.size.height * scale) / 2,
+                              width: image.size.width * scale, height: image.size.height * scale))
+    }
+    return "data:image/jpeg;base64," + scaled.base64EncodedString()
+}
+
 struct ReadingRoomView: View {
     @EnvironmentObject private var store: AppStore
     @State private var adding = false
@@ -42,6 +55,25 @@ struct ReadingRoomView: View {
                                     .font(.caption2).foregroundStyle(VesperTheme.muted)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain)
+                        .overlay(alignment: .topTrailing) {
+                            PhotosPicker(selection: Binding<PhotosPickerItem?>(get: { nil }, set: { item in
+                                Task {
+                                    guard let cover = await readingCoverData(from: item) else { return }
+                                    _ = await store.mutate("readingRoom") { current in
+                                        .array(current.array.map { row in
+                                            guard row.id == book.id else { return row }
+                                            var changed = row; changed["cover"] = .string(cover); return changed
+                                        })
+                                    }
+                                }
+                            }), matching: .images) {
+                                Image(systemName: "photo.badge.plus")
+                                    .font(.caption.weight(.semibold)).frame(width: 34, height: 34)
+                                    .background(.regularMaterial, in: Circle())
+                            }
+                            .buttonStyle(.plain).padding(6)
+                            .accessibilityLabel("Change cover for \(book["title"].string)")
+                        }
                     }
                 }
             }.padding(20).frame(maxWidth: 700).frame(maxWidth: .infinity)
@@ -77,16 +109,7 @@ struct ReadingRoomView: View {
             }
             .onChange(of: coverItem) { _, item in
                 Task {
-                    guard let data = try? await item?.loadTransferable(type: Data.self),
-                          let image = UIImage(data: data) else { return }
-                    let size = CGSize(width: 300, height: 420)
-                    let scaled = UIGraphicsImageRenderer(size: size).jpegData(withCompressionQuality: 0.72) { context in
-                        let scale = max(size.width / image.size.width, size.height / image.size.height)
-                        image.draw(in: CGRect(x: (size.width - image.size.width * scale) / 2,
-                                              y: (size.height - image.size.height * scale) / 2,
-                                              width: image.size.width * scale, height: image.size.height * scale))
-                    }
-                    cover = "data:image/jpeg;base64," + scaled.base64EncodedString()
+                    if let selected = await readingCoverData(from: item) { cover = selected }
                 }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .pdf, UTType(filenameExtension: "md") ?? .plainText]) { result in
@@ -322,7 +345,7 @@ struct ReaderView: View {
     }
     private func notes(for selection: ReadingNoteTarget) -> [JSONValue] {
         book["notes"].array.filter { entry in
-            guard let range = selection.range else { return entry["quote"].string.isEmpty }
+            guard let range = selection.range else { return true }
             guard let span = ReadingTextPage.range(for: entry, in: book["text"].string) else { return false }
             return NSIntersectionRange(range, span).length > 0
         }
@@ -375,7 +398,12 @@ private struct ReadingNoteSheet: View {
                             Text("还没有批注").font(.subheadline).foregroundStyle(.secondary)
                         } else {
                             ForEach(authored) { entry in
-                                Text(entry["text"].string).textSelection(.enabled)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if target.range == nil && !entry["quote"].string.isEmpty {
+                                        Text(entry["quote"].string).font(.caption).italic().foregroundStyle(.secondary)
+                                    }
+                                    Text(entry["text"].string).textSelection(.enabled)
+                                }
                                     .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                             }

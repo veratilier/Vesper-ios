@@ -437,6 +437,7 @@ enum ChatConnectionStage: String {
         guard !busy, !callActive, !openingMainRoom else { return false }
         self.error = nil
         do { try await loadConversation(conversation.id); return true }
+        catch is CancellationError { return false }
         catch {
             if (error as? ServiceError)?.statusCode == 404 {
                 self.error = "Could not load this conversation (HTTP 404). This does not confirm deletion. The conversation remains in your list. Check the history service."
@@ -479,6 +480,7 @@ enum ChatConnectionStage: String {
             // Retry only this read without pagination; never recreate or remove a room.
             r = try await api.request("/conversations/\(id)", history: true)
         }
+        try Task.checkCancellation()
         try Self.validateHistoryRecord(r, expectedID: id)
         historyLoadTask?.cancel()
         composer.switchConversation(from: conversationID, to: id)
@@ -492,11 +494,15 @@ enum ChatConnectionStage: String {
         historyLoadTask = Task { await self.loadCompleteHistory(for: id) }
         status = "History loaded"
         if threadID != nil {
-            do {
-                try await connect()
-                // connect() resumes and merges the existing thread before becoming ready.
-            } catch {
-                if !(error is CancellationError) { scheduleRecovery() }
+            let openedIntent = intent
+            Task {
+                guard self.intent == openedIntent, self.conversationID == id else { return }
+                do {
+                    try await self.connect()
+                    // The validated history is already visible while the socket resumes.
+                } catch {
+                    if !(error is CancellationError), self.intent == openedIntent { self.scheduleRecovery() }
+                }
             }
         }
     }
@@ -536,7 +542,8 @@ enum ChatConnectionStage: String {
                 return next
             }
             return saved
-        } catch { self.error = error.localizedDescription; return false }
+        } catch is CancellationError { return false }
+        catch { self.error = error.localizedDescription; return false }
     }
     func loadOlder() async {
         guard !loadingOlder, hasOlderMessages, let api else { return }

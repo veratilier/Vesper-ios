@@ -149,15 +149,16 @@ struct MusicView: View {
                         .frame(maxWidth: .infinity, minHeight: 220)
                         .padding()
                     } else {
-                        LazyVStack(alignment: .leading, spacing: 22) {
+                        LazyVStack(alignment: .leading, spacing: 18) {
                             ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                                 Text(line["text"].string)
-                                    .font(.system(size: 23, weight: line["time"].number <= player.position ? .semibold : .regular))
+                                    .font(.system(size: 18, weight: line["time"].number <= player.position ? .semibold : .regular))
                                     .foregroundStyle(line["time"].number <= player.position ? VesperTheme.ink : VesperTheme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .id(index)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 16)
                         if let source = player.lyricSource {
                             Text("Lyrics: \(source)")
                                 .font(.caption).foregroundStyle(VesperTheme.muted).padding(.horizontal, 18)

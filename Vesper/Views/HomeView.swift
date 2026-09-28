@@ -184,16 +184,20 @@ struct HomeView: View {
         }.first?.element
     }
     private func notesCard(height: CGFloat) -> some View {
-        Button { navigate(.notes) } label: {
-            HomeCard {
-                VStack(alignment: .leading, spacing: 7) {
-                    cardTitle("Notes")
+        HomeCard {
+            VStack(alignment: .leading, spacing: 7) {
+                Button { navigate(.notes) } label: { cardTitle("Notes") }
+                    .accessibilityLabel("Open Notes")
+                ScrollView(.vertical) {
                     Text(latestNote?["text"].string ?? "A little space for your thoughts.")
-                        .font(.system(size: 10.5)).lineSpacing(2).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
-                    Spacer(minLength: 0)
+                        .font(.system(size: 10.5)).lineSpacing(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }.frame(height: height)
-        }
+                .frame(maxHeight: .infinity)
+                .scrollIndicators(.visible)
+            }
+        }.frame(height: height)
     }
     private func remindersCard(height: CGFloat) -> some View {
         HomeCard {

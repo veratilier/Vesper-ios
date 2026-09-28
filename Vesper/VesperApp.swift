@@ -146,28 +146,27 @@ struct RootView: View {
         }
         .overlay {
             if callPresentation.presented {
-                if callPresentation.minimized {
-                    GeometryReader { geometry in
-                        NativeCallView(initiator: callPresentation.initiator)
-                            .frame(width: min(320, geometry.size.width - 24))
-                            .position(floatingPosition(in: geometry.size))
-                            .simultaneousGesture(DragGesture(minimumDistance: 10)
-                                .updating($floatingCallDrag) { drag, offset, _ in offset = drag.translation }
-                                .onEnded { drag in
-                                    let center = clampedFloatingPosition(
-                                        floatingCallCenter ?? CGPoint(x: geometry.size.width - 172, y: 62),
-                                        in: geometry.size)
-                                    floatingCallCenter = clampedFloatingPosition(
-                                        CGPoint(x: center.x + drag.translation.width, y: center.y + drag.translation.height),
-                                        in: geometry.size)
-                                })
-                            .accessibilityHint("Drag to move the call window")
-                    }.zIndex(3)
-                } else {
+                GeometryReader { geometry in
                     NativeCallView(initiator: callPresentation.initiator)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .zIndex(3)
-                }
+                        .frame(width: callPresentation.minimized ? min(320, geometry.size.width - 24) : geometry.size.width,
+                               height: callPresentation.minimized ? nil : geometry.size.height)
+                        .position(callPresentation.minimized ? floatingPosition(in: geometry.size)
+                                  : CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2))
+                        .simultaneousGesture(DragGesture(minimumDistance: 10)
+                            .updating($floatingCallDrag) { drag, offset, _ in
+                                if callPresentation.minimized { offset = drag.translation }
+                            }
+                            .onEnded { drag in
+                                guard callPresentation.minimized else { return }
+                                let center = clampedFloatingPosition(
+                                    floatingCallCenter ?? CGPoint(x: geometry.size.width - 172, y: 62),
+                                    in: geometry.size)
+                                floatingCallCenter = clampedFloatingPosition(
+                                    CGPoint(x: center.x + drag.translation.width, y: center.y + drag.translation.height),
+                                    in: geometry.size)
+                            }, including: callPresentation.minimized ? .all : .none)
+                        .accessibilityHint(callPresentation.minimized ? "Drag to move the call window" : "")
+                }.zIndex(3)
             }
         }
     }

@@ -987,8 +987,10 @@ enum ChatConnectionStage: String {
         ]), "additionalProperties": .bool(false)])
     ])
     private static let healthTool: JSONValue = .object([
-        "name": .string("read_native_health"), "description": .string("Read fresh, authorized HealthKit summaries from Vera's current iPhone: steps, sleep, heart rate and wrist temperature. Missing data does not prove permission was denied. Requires the native app; do not claim access to other health data."),
-        "inputSchema": .object(["type": .string("object"), "properties": .object([:]), "additionalProperties": .bool(false)])
+        "name": .string("read_native_health"), "description": .string("Read fresh, authorized HealthKit summaries from Vera's current iPhone. Defaults to steps, sleep, heart rate and wrist temperature. Pass metrics as IDs (e.g. weight, blood_pressure, menstruation, blood_oxygen), a group name (e.g. nutrition, heart, cycle_tracking, me), or ['all'] only when Vera asks for a broad overview. Pass ['catalog'] to list available IDs without reading private data. Missing data does not prove permission was denied. Requires the native app; never infer a diagnosis."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object([
+            "metrics": .object(["type": .string("array"), "items": .object(["type": .string("string")]), "maxItems": .number(100)])
+        ]), "additionalProperties": .bool(false)])
     ])
     private static let voiceTool: JSONValue = .object([
         "name": .string("send_native_voice"), "description": .string("Send Vera an audio message synthesized using her configured ElevenLabs/MiniMax voice. Include the exact spoken text. Success means the audio message was saved, not listened to."),
@@ -1155,7 +1157,14 @@ enum ChatConnectionStage: String {
                 return
             }
             if name == "read_native_health" {
-                let reader = HealthReader(); await reader.refresh()
+                let requested = args["metrics"].array.map { $0.string }
+                if requested == ["catalog"] {
+                    let result: JSONValue = .object(["metrics": HealthReader.catalog])
+                    try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                    try checkCallback()
+                    return
+                }
+                let reader = HealthReader(); await reader.refresh(requestedIDs: requested.isEmpty ? ["heart_rate", "steps", "sleep", "wrist_temperature"] : requested)
                 try checkCallback()
                 let result = reader.snapshot
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(reader.available), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))

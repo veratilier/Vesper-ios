@@ -217,15 +217,23 @@ struct MusicView: View {
 }
 
 private struct MusicTrackRow: View {
+    @EnvironmentObject private var player: MusicPlayer
     let track: JSONValue
     var active = false
     var body: some View {
         HStack(spacing: 12) {
-            Artwork(url: track["cover"].string).frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 7))
+            Group {
+                if let artwork = player.artwork(for: track) {
+                    MusicKit.ArtworkImage(artwork, width: 44, height: 44)
+                } else {
+                    Artwork(url: track["cover"].string)
+                }
+            }.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 4) { Text(track["title"].string).font(.system(size: 15, weight: .medium)).lineLimit(2); Text(track["artist"].string).font(.caption).foregroundStyle(VesperTheme.muted).lineLimit(1) }
             Spacer(minLength: 4)
             if active { Image(systemName: "waveform").foregroundStyle(VesperTheme.accent) }
         }.foregroundStyle(VesperTheme.ink).padding(.vertical, 3).contentShape(Rectangle())
+            .task(id: track["appleMusicId"].string) { await player.ensureArtwork(for: track) }
     }
 }
 
@@ -245,13 +253,30 @@ private struct MusicLibraryView: View {
                 if catalog.collection != .null { collection }
                 else {
                     Picker("Music", selection: $tab) { Text("My Music").tag("mine"); Text("Discover").tag("discover") }.pickerStyle(.segmented)
-                    if tab == "mine" { account; playlists }
+                    if tab == "mine" {
+                        if store.legacyNetEaseCount > 0 || store.legacyMusicCleanupStatus != nil { legacyCleanup }
+                        playlists
+                    }
                     else { search }
                 }
             }.scrollContentBackground(.hidden).background { Background() }
                 .navigationTitle("My Music").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            Task { if catalog.connected { await catalog.refresh(player: player) }
+                                   else { await catalog.connect(player: player) } }
+                        } label: {
+                            Image(systemName: catalog.connected ? "checkmark.circle.fill" : "music.note")
+                                .foregroundStyle(catalog.connected ? Color.green : VesperTheme.ink)
+                        }
+                        .disabled(catalog.busy)
+                        .accessibilityLabel(catalog.connected ? "Apple Music connected. Refresh library" : "Connect Apple Music")
+                    }
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
                 .task {
+                    catalog.connected = MusicAuthorization.currentStatus == .authorized
                     if catalog.connected { await catalog.refresh(player: player) }
                 }
                 .confirmationDialog("Remove old NetEase music data?", isPresented: $showLegacyCleanup) {
@@ -263,13 +288,8 @@ private struct MusicLibraryView: View {
                 }
         }.presentationDragIndicator(.visible)
     }
-    private var account: some View {
+    private var legacyCleanup: some View {
         Section {
-            Text(catalog.connected ? "Apple Music connected on this iPhone" : "Connect Apple Music to browse your library and play songs.")
-                .font(.subheadline).foregroundStyle(VesperTheme.muted)
-            if !catalog.connected {
-                Button("Connect Apple Music") { Task { await catalog.connect(player: player) } }.disabled(catalog.busy)
-            }
             if store.legacyNetEaseCount > 0 {
                 Button("Remove old NetEase data · \(store.legacyNetEaseCount)") { showLegacyCleanup = true }
                     .disabled(!store.connected || store.saving)
@@ -281,7 +301,7 @@ private struct MusicLibraryView: View {
     }
     private var playlists: some View {
         Section {
-            Button("My songs · \(catalog.songs.count)") { Task { await catalog.mySongs(player: player) } }
+            Button("My songs") { Task { await catalog.mySongs(player: player) } }
                 .disabled(!catalog.connected || catalog.busy)
             Button("Refresh library") { Task { await catalog.refresh(player: player) } }
                 .disabled(!catalog.connected || catalog.busy)
@@ -289,11 +309,18 @@ private struct MusicLibraryView: View {
             ForEach(catalog.playlists) { playlist in
                 Button { Task { await catalog.playlist(playlist.id, player: player) } } label: {
                     HStack(spacing: 12) {
-                        Artwork(url: playlist["cover"].string).frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
+                        Group {
+                            if let artwork = catalog.artwork(for: playlist) {
+                                MusicKit.ArtworkImage(artwork, width: 48, height: 48)
+                            } else {
+                                Artwork(url: playlist["cover"].string)
+                            }
+                        }.frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
                         VStack(alignment: .leading, spacing: 4) { Text(playlist["name"].string).font(.subheadline) }
                         Spacer(); Image(systemName: "chevron.right").font(.caption)
                     }.foregroundStyle(VesperTheme.ink)
                 }.disabled(catalog.busy)
+                    .task(id: playlist.id) { await catalog.ensurePlaylistArtwork(for: playlist.id, player: player) }
             }
         } header: { Text("Apple Music library") }
     }

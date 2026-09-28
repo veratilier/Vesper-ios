@@ -36,8 +36,11 @@ struct ChatFile: Identifiable {
             let session = AVAudioSession.sharedInstance()
             if InAppCalls.shared.id == nil {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-                try session.setActive(true)
             }
+            // The system may deactivate the call's audio session while the app is away.
+            // Reactivate it before creating a new recognition tap on return.
+            try session.setActive(true)
+            engine.reset()
             let request = SFSpeechAudioBufferRecognitionRequest(); request.shouldReportPartialResults = true; self.request = request
             let input = engine.inputNode; let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0 else { throw ServiceError(message: "No microphone is available.") }
@@ -313,6 +316,9 @@ struct NativeCallView: View {
     @State private var quietHangupFarewell = ""
     @State private var quietHangupTask: Task<Void, Never>?
     @State private var hangingUp = false
+    @State private var leftForeground = false
+    @State private var listeningSince: Date?
+    @State private var quickRecognitionFailures = 0
     @State private var notice: String?
     var body: some View {
         ZStack {
@@ -347,6 +353,19 @@ struct NativeCallView: View {
             guard active, !muted, !waiting, !voice.speaking && !voice.loading, !text.isEmpty else { return }
             silence = Task { try? await Task.sleep(for: .milliseconds(1400)); guard !Task.isCancelled else { return }; submit() }
         }
+        .onChange(of: speech.listening) { wasListening, isListening in
+            if isListening { listeningSince = Date(); return }
+            guard wasListening, active, visible, !muted, !waiting, !hangingUp,
+                  !voice.loading, !voice.speaking, speech.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            if let listeningSince, Date().timeIntervalSince(listeningSince) > 15 { quickRecognitionFailures = 0 }
+            guard quickRecognitionFailures < 2 else { return }
+            quickRecognitionFailures += 1
+            Task {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard active, visible, !muted, !waiting, !hangingUp else { return }
+                resumeListening()
+            }
+        }
         .onChange(of: callChat.busy) { old, new in
             guard old && !new && waiting && active && !hangingUp else { return }
             waiting = false
@@ -360,7 +379,22 @@ struct NativeCallView: View {
             guard video, active, phase == .active else { return }
             await streamCamera()
         }
-        .onChange(of: phase) { _, phase in if phase != .active { stopCamera() } }
+        .onChange(of: phase) { _, phase in
+            if phase == .background {
+                leftForeground = true
+                stopCamera()
+            } else if phase == .active && leftForeground {
+                leftForeground = false
+                // A suspended WebSocket can look alive until the next send. Reconcile
+                // the call thread on return without issuing another turn.
+                callChat.sceneChanged(active: false)
+                callChat.sceneChanged(active: true)
+                if active && !waiting && !voice.speaking && !voice.loading {
+                    speech.stop()
+                    resumeListening()
+                }
+            }
+        }
         .onChange(of: video) { _, enabled in CallLiveActivity.shared.update(isVideo: enabled) }
     }
     private var compactCall: some View {
@@ -488,7 +522,8 @@ struct NativeCallView: View {
         guard systemCall.audioReady else { return }
         if !active {
             player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID
-            if let startedAt { CallLiveActivity.shared.start(at: startedAt, isVideo: video) }
+            if let startedAt { CallLiveActivity.shared.start(at: startedAt, isVideo: video,
+                avatar: store.document("profile")["agentAvatar"].string) }
         }
         resumeListening()
     }

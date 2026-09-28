@@ -278,6 +278,7 @@ struct ChatView: View {
     @State private var renameText = ""
     @State private var removingConversation: JSONValue?
     @State private var modelPicker = false
+    @State private var connectionDetails = false
     @State private var drawer = false
     @State private var photoPicker = false
     @State private var cameraPicker = false
@@ -525,18 +526,20 @@ struct ChatView: View {
     }
     var body: some View {
         attachmentContent
-        .safeAreaInset(edge: .top) {
-            if chat.reconnecting {
-                VStack(spacing: 4) {
-                    HStack { ProgressView(); Text("Reconnecting…") }
-                    Text("\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5").font(.caption2)
-                }.font(.caption).padding(8)
-            } else if chat.connectionNeedsRetry || chat.unconfirmedSend {
-                HStack {
-                    Text(chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected. Tap Retry.") : "Send unconfirmed; checking server history avoids duplicates.")
-                    Button(chat.connectionNeedsRetry ? "Retry" : "Check status") { chat.retryConnection() }
-                }.font(.caption).padding(8)
-            }
+        .sheet(isPresented: $connectionDetails) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
+                         chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
+                         "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5")
+                    Button(chat.connectionNeedsRetry ? "Retry" : "Check status") {
+                        chat.retryConnection(); connectionDetails = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Spacer()
+                }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { connectionDetails = false } } }
+            }.presentationDetents([.medium])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
@@ -555,6 +558,15 @@ struct ChatView: View {
         HStack(spacing: 5) {
             if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
             else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
+            if chat.reconnecting || chat.connectionNeedsRetry || chat.unconfirmedSend {
+                Button { connectionDetails = true } label: {
+                    Group {
+                        if chat.reconnecting { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "exclamationmark.circle") }
+                    }.frame(width: 28, height: 40)
+                }
+                .accessibilityLabel(chat.reconnecting ? "Chat reconnecting, details" : "Chat connection needs attention, details")
+            }
             Spacer()
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)

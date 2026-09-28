@@ -12,6 +12,23 @@ import Combine
     private var interruption: AnyCancellable?
     private var routeChange: AnyCancellable?
     init() {
+        VesperCallControlBridge.handle = { [weak self] control in
+            guard let self, self.id != nil else {
+                throw NSError(domain: "Vesper.Call", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "The call is no longer active."])
+            }
+            switch control {
+            case "speaker":
+                self.setSpeaker(!self.speakerEnabled)
+                if let error = self.error {
+                    throw NSError(domain: "Vesper.Call", code: 3,
+                                  userInfo: [NSLocalizedDescriptionKey: error])
+                }
+            case "mute": self.mute(!self.muted)
+            case "end": self.end()
+            default: throw NSError(domain: "Vesper.Call", code: 2)
+            }
+        }
         interruption = NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .sink { [weak self] notification in
                 guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -34,7 +51,7 @@ import Combine
             refreshOutput()
         } catch { self.error = error.localizedDescription; throw error }
     }
-    func mute(_ value: Bool) { muted = value }
+    func mute(_ value: Bool) { muted = value; syncActivityControls() }
     func setSpeaker(_ enabled: Bool) {
         guard audioReady else { return }
         error = nil
@@ -45,6 +62,7 @@ import Combine
             try session.overrideOutputAudioPort(enabled ? .speaker : .none)
         } catch { self.error = "Could not change audio output: " + error.localizedDescription }
         refreshOutput()
+        syncActivityControls()
     }
     private func refreshOutput() {
         guard id != nil else { speakerEnabled = false; outputName = ""; return }
@@ -52,10 +70,14 @@ import Combine
         speakerEnabled = outputs.contains { $0.portType == .builtInSpeaker }
         outputName = outputs.map { $0.portName }.joined(separator: ", ")
     }
+    private func syncActivityControls() {
+        CallLiveActivity.shared.updateControls(muted: muted, speakerEnabled: speakerEnabled)
+    }
     func end() {
         guard id != nil else { return }
         id = nil; audioReady = false; muted = false
         speakerEnabled = false; outputName = ""
+        CallLiveActivity.shared.end()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }

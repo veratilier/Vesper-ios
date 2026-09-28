@@ -7,14 +7,13 @@ import UIKit
 private struct CallIslandAvatar: View {
     let size: CGFloat
     var body: some View {
-        Group {
+        ZStack {
+            Circle().fill(Color(red: 0.28, green: 0.27, blue: 0.37))
+            Text("R").font(.system(size: size * 0.48, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
             if let data = UserDefaults(suiteName: "group.com.vera.vesper.native")?.data(forKey: "activeCallAvatar"),
                let avatar = UIImage(data: data) {
                 Image(uiImage: avatar).resizable().scaledToFill()
-            } else {
-                Text("R").font(.system(size: size * 0.48, weight: .semibold, design: .rounded))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(red: 0.28, green: 0.27, blue: 0.37))
             }
         }.frame(width: size, height: size).clipShape(Circle())
     }
@@ -223,11 +222,11 @@ struct VesperCallWidget: Widget {
             .widgetURL(URL(string: "vesper://call"))
         } dynamicIsland: { context in
             DynamicIsland {
-                DynamicIslandExpandedRegion(.leading) {
+                DynamicIslandExpandedRegion(.leading, priority: 1) {
                     HStack(spacing: 10) {
                         CallIslandAvatar(size: 46)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Rowan").font(.headline)
+                            Text("Rowan").font(.headline).lineLimit(1).fixedSize(horizontal: true, vertical: false)
                             Text(context.attributes.startedAt, style: .timer)
                                 .font(.subheadline).foregroundStyle(.white.opacity(0.7)).monospacedDigit()
                         }
@@ -240,17 +239,29 @@ struct VesperCallWidget: Widget {
                         .padding(.trailing, 8)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "speaker.wave.2.fill")
-                        Image(systemName: context.state.isVideo ? "video.fill" : "mic.fill")
-                        Spacer()
-                        Text("Return to call")
-                        Image(systemName: "arrow.up.right")
+                    HStack(spacing: 16) {
+                        Button(intent: VesperCallControlIntent("speaker")) {
+                            Image(systemName: context.state.speakerEnabled ? "speaker.wave.2.fill" : "speaker.fill")
+                                .frame(width: 42, height: 42)
+                                .background(.white.opacity(context.state.speakerEnabled ? 0.26 : 0.12), in: Circle())
+                        }.accessibilityLabel(context.state.speakerEnabled ? "Turn speaker off" : "Turn speaker on")
+                        Button(intent: VesperCallControlIntent("mute")) {
+                            Image(systemName: context.state.muted ? "mic.slash.fill" : "mic.fill")
+                                .frame(width: 42, height: 42)
+                                .background(.white.opacity(context.state.muted ? 0.26 : 0.12), in: Circle())
+                        }.accessibilityLabel(context.state.muted ? "Unmute" : "Mute")
+                        Spacer(minLength: 0)
+                        Link(destination: URL(string: "vesper://call")!) {
+                            Image(systemName: "arrow.up.right").frame(width: 42, height: 42)
+                                .background(.white.opacity(0.12), in: Circle())
+                        }.accessibilityLabel("Return to call")
+                        Button(intent: VesperCallControlIntent("end")) {
+                            Image(systemName: "phone.down.fill").frame(width: 46, height: 46)
+                                .background(.red, in: Circle())
+                        }.accessibilityLabel("End call")
                     }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .buttonStyle(.plain).font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.white).padding(.horizontal, 10).padding(.vertical, 6)
                 }
             } compactLeading: {
                 CallIslandAvatar(size: 22)

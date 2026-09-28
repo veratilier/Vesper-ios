@@ -4,9 +4,15 @@ import Foundation
 @MainActor final class CallLiveActivity {
     static let shared = CallLiveActivity()
     private var activity: Activity<VesperCallAttributes>?
+    private var isVideo = false
+    private var muted = false
+    private var speakerEnabled = false
 
     func start(at date: Date, isVideo: Bool, avatar: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        self.isVideo = isVideo
+        muted = InAppCalls.shared.muted
+        speakerEnabled = InAppCalls.shared.speakerEnabled
         if avatar.hasPrefix("data:image/"), let comma = avatar.firstIndex(of: ","),
            let data = Data(base64Encoded: String(avatar[avatar.index(after: comma)...])) {
             UserDefaults(suiteName: "group.com.vera.vesper.native")?.set(data, forKey: "activeCallAvatar")
@@ -19,7 +25,8 @@ import Foundation
         do {
             activity = try Activity.request(
                 attributes: VesperCallAttributes(startedAt: date),
-                content: ActivityContent(state: .init(isVideo: isVideo), staleDate: nil),
+                content: ActivityContent(state: .init(isVideo: isVideo, muted: muted,
+                                                     speakerEnabled: speakerEnabled), staleDate: nil),
                 pushType: nil
             )
         } catch {
@@ -30,8 +37,21 @@ import Foundation
     }
 
     func update(isVideo: Bool) {
+        self.isVideo = isVideo
+        updateContent()
+    }
+
+    func updateControls(muted: Bool, speakerEnabled: Bool) {
+        self.muted = muted
+        self.speakerEnabled = speakerEnabled
+        updateContent()
+    }
+
+    private func updateContent() {
         guard let activity else { return }
-        Task { await activity.update(ActivityContent(state: .init(isVideo: isVideo), staleDate: nil)) }
+        let state = VesperCallAttributes.ContentState(isVideo: isVideo, muted: muted,
+                                                      speakerEnabled: speakerEnabled)
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
     }
 
     func end() {

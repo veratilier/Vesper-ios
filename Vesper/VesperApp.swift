@@ -37,6 +37,13 @@ enum Destination: String, CaseIterable, Identifiable {
         }
     }
 }
+private struct FloatingCallSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let measured = nextValue()
+        if measured != .zero { value = measured }
+    }
+}
 struct RootView: View {
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var store: AppStore
@@ -47,6 +54,7 @@ struct RootView: View {
     @State private var vesperPage: Destination = .desire
     @StateObject private var callPresentation = NativeCallPresentation.shared
     @State private var floatingCallCenter: CGPoint?
+    @State private var floatingCallSize = CGSize(width: 220, height: 64)
     @GestureState private var floatingCallDrag = CGSize.zero
     @State private var opening = true
     @Environment(\.scenePhase) private var phase
@@ -148,10 +156,21 @@ struct RootView: View {
             if callPresentation.presented {
                 GeometryReader { geometry in
                     NativeCallView(initiator: callPresentation.initiator)
-                        .frame(width: callPresentation.minimized ? min(320, geometry.size.width - 24) : geometry.size.width,
+                        .fixedSize(horizontal: callPresentation.minimized, vertical: callPresentation.minimized)
+                        .background {
+                            if callPresentation.minimized {
+                                GeometryReader { bubble in
+                                    Color.clear.preference(key: FloatingCallSizeKey.self, value: bubble.size)
+                                }
+                            }
+                        }
+                        .frame(width: callPresentation.minimized ? nil : geometry.size.width,
                                height: callPresentation.minimized ? nil : geometry.size.height)
                         .position(callPresentation.minimized ? floatingPosition(in: geometry.size)
                                   : CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2))
+                        .onPreferenceChange(FloatingCallSizeKey.self) { measured in
+                            if measured.width > 0 && measured.height > 0 { floatingCallSize = measured }
+                        }
                         .simultaneousGesture(DragGesture(minimumDistance: 10)
                             .updating($floatingCallDrag) { drag, offset, _ in
                                 if callPresentation.minimized { offset = drag.translation }
@@ -159,7 +178,7 @@ struct RootView: View {
                             .onEnded { drag in
                                 guard callPresentation.minimized else { return }
                                 let center = clampedFloatingPosition(
-                                    floatingCallCenter ?? CGPoint(x: geometry.size.width - 172, y: 62),
+                                    floatingCallCenter ?? defaultFloatingPosition(in: geometry.size),
                                     in: geometry.size)
                                 floatingCallCenter = clampedFloatingPosition(
                                     CGPoint(x: center.x + drag.translation.width, y: center.y + drag.translation.height),
@@ -170,15 +189,20 @@ struct RootView: View {
             }
         }
     }
+    private func defaultFloatingPosition(in size: CGSize) -> CGPoint {
+        CGPoint(x: size.width - floatingCallSize.width / 2 - 12,
+                y: floatingCallSize.height / 2 + 12)
+    }
     private func floatingPosition(in size: CGSize) -> CGPoint {
-        let center = floatingCallCenter ?? CGPoint(x: size.width - 172, y: 62)
+        let center = floatingCallCenter ?? defaultFloatingPosition(in: size)
         return clampedFloatingPosition(
             CGPoint(x: center.x + floatingCallDrag.width, y: center.y + floatingCallDrag.height), in: size)
     }
     private func clampedFloatingPosition(_ point: CGPoint, in size: CGSize) -> CGPoint {
-        let halfWidth = min(160, (size.width - 24) / 2)
+        let halfWidth = min(floatingCallSize.width / 2, (size.width - 24) / 2)
+        let halfHeight = min(floatingCallSize.height / 2, (size.height - 24) / 2)
         return CGPoint(x: min(max(point.x, halfWidth + 12), size.width - halfWidth - 12),
-                       y: min(max(point.y, 54), max(54, size.height - 54)))
+                       y: min(max(point.y, halfHeight + 12), size.height - halfHeight - 12))
     }
     private var lifecycle: some View {
         scene

@@ -5,50 +5,74 @@ struct NativeChatHome: View {
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
     @State private var open = false
+    @State private var searching = false
     @State private var openedOnce = false
     @State private var deletingConversation: JSONValue?
     @State private var deleting = false
     @State private var renamingConversation: JSONValue?
     @State private var conversationTitle = ""
     @State private var renaming = false
+    private var mainConversationID: String {
+        let saved = store.document("profile")["mainConversationId"].string
+        return saved.isEmpty ? (chat.conversations.first?.id ?? "") : saved
+    }
+    private var mainConversation: JSONValue? { chat.conversations.first { $0.id == mainConversationID } }
+    private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
+    private var rowDisabled: Bool { chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming }
     var body: some View {
         NavigationStack {
             List {
-                Button { Task { if await chat.openMainRoom() { open = true } } } label: { Label("Main room", systemImage: "house") }
-                Button { Task { if await chat.createConversation() { open = true } } } label: { Label("New Chat", systemImage: "plus") }
-                NavigationLink { ChatSearchView { open = true } } label: { Label("Search messages", systemImage: "magnifyingglass") }
-                Section("Conversations") {
-                    ForEach(chat.conversations) { item in
-                        Button { Task { if await chat.open(item) { open = true } } } label: {
-                            VStack(alignment: .leading, spacing: 7) {
-                                Text(item["title"].string).font(.headline)
-                                Text(item["preview"].string).lineLimit(2).font(.subheadline)
-                                Text(ChatPresentation.time(item["updatedAt"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
-                            }
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
-                            Button(role: .destructive) { deletingConversation = item } label: { Label("Delete", systemImage: "trash") }
-                        }
-                        .contextMenu {
-                            Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename conversation", systemImage: "pencil") }
-                            Button(role: .destructive) { deletingConversation = item } label: { Label("Delete conversation", systemImage: "trash") }
-                        }
+                Button { searching = true } label: {
+                    Label("Search messages", systemImage: "magnifyingglass")
+                        .font(.subheadline)
+                        .foregroundStyle(VesperTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(VesperTheme.muted.opacity(0.11), in: RoundedRectangle(cornerRadius: 11))
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+
+                Button { Task { if await chat.openMainRoom() { open = true } } } label: {
+                    conversationRow(mainConversation, title: agentName, emptyPreview: "开始和 Rowan 聊天")
+                }
+                .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "开始和 Rowan 聊天"))")
+
+                ForEach(otherConversations) { item in
+                    Button { Task { if await chat.open(item) { open = true } } } label: {
+                        conversationRow(item, title: item["title"].string.isEmpty ? agentName : item["title"].string, emptyPreview: "暂无消息")
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
+                        Button(role: .destructive) { deletingConversation = item } label: { Label("Delete", systemImage: "trash") }
+                    }
+                    .contextMenu {
+                        Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename conversation", systemImage: "pencil") }
+                        Button(role: .destructive) { deletingConversation = item } label: { Label("Delete conversation", systemImage: "trash") }
                     }
                 }
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
-            .disabled(chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming)
-            .navigationTitle("Chat").toolbar {
+            .listStyle(.plain)
+            .refreshable { await chat.loadConversations() }
+            .disabled(rowDisabled)
+            .navigationTitle("Chat").navigationBarTitleDisplayMode(.large).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
-                ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("New Chat")
+                        .disabled(rowDisabled || chat.loadingModels)
+                }
+            }
             .navigationDestination(isPresented: $open) {
                 ChatView(restoreLatest: false, native: true)
                     .background { Background() }.toolbar(.hidden, for: .navigationBar)
             }
+            .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
             .task {
                 chat.configure(store); await chat.loadConversations()
                 if !openedOnce { openedOnce = true }
             }
+            .onChange(of: open) { _, isOpen in if !isOpen { Task { await chat.loadConversations() } } }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
             .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) {
@@ -77,6 +101,62 @@ struct NativeChatHome: View {
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
             } message: { Text(chat.error ?? "") }
+        }
+    }
+
+    private var agentName: String {
+        let name = store.document("profile")["agentName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Rowan" : name
+    }
+    private func preview(_ item: JSONValue?, empty: String) -> String {
+        guard let item else { return empty }
+        let text = item["preview"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? empty : text
+    }
+    private func conversationRow(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
+        HStack(spacing: 13) {
+            ChatListAvatar(source: store.document("profile")["agentAvatar"].string, baseURL: store.baseURL)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let item {
+                        Text(ChatPresentation.time(item["updatedAt"].string.isEmpty ? item["createdAt"].string : item["updatedAt"].string))
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
+                }
+                Text(preview(item, empty: emptyPreview))
+                    .font(.subheadline).foregroundStyle(VesperTheme.muted).lineLimit(1)
+            }
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct ChatListAvatar: View {
+    let source: String
+    let baseURL: String
+    var body: some View {
+        Group {
+            if source.hasPrefix("data:image/"),
+               let comma = source.firstIndex(of: ","),
+               let data = Data(base64Encoded: String(source[source.index(after: comma)...])),
+               let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if !source.isEmpty,
+                      let url = URL(string: source, relativeTo: URL(string: baseURL))?.absoluteURL,
+                      url.scheme == "https" {
+                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { placeholder }
+            } else { placeholder }
+        }
+        .frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityHidden(true)
+    }
+    private var placeholder: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12).fill(VesperTheme.muted.opacity(0.19))
+            Image(systemName: "person.fill").font(.system(size: 22)).foregroundStyle(VesperTheme.muted)
         }
     }
 }
@@ -188,4 +268,3 @@ struct ChatSearchView: View {
         } catch { self.error = "Could not search saved history: " + error.localizedDescription }
     }
 }
-

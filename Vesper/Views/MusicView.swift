@@ -24,17 +24,29 @@ struct MusicView: View {
     @EnvironmentObject private var player: MusicPlayer
     @StateObject private var catalog = MusicCatalog()
     @State private var sheet: MusicSheet?
+    @State private var showingLyrics = false
     private enum MusicSheet: String, Identifiable { case library, queue; var id: String { rawValue } }
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 12) {
                     HStack { Spacer(); Button { sheet = .library } label: { Label("My Music", systemImage: "books.vertical").font(.system(size: 14, weight: .medium)).padding(.horizontal, 16).frame(height: 42).background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25))) } }
-                    together
-                    Artwork(url: player.track["cover"].string).id(player.track.id + player.track["cover"].string)
-                        .frame(width: max(180, min(geometry.size.width - 88, 340)), height: max(180, min(geometry.size.width - 88, 340)))
-                        .clipShape(Circle()).overlay(Circle().stroke(VesperTheme.accent.opacity(0.6), lineWidth: 5))
-                        .padding(.vertical, 2)
+                    Picker("Now playing display", selection: $showingLyrics) {
+                        Text("Artwork").tag(false)
+                        Text("Lyrics").tag(true)
+                    }.pickerStyle(.segmented).padding(.top, 6)
+                    Group {
+                        if showingLyrics { lyricsPanel }
+                        else {
+                            Artwork(url: player.track["cover"].string)
+                                .id(player.track.id + player.track["cover"].string)
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(VesperTheme.accent.opacity(0.6), lineWidth: 5))
+                        }
+                    }
+                    .frame(width: max(180, min(geometry.size.width - 88, 340)),
+                           height: max(180, min(geometry.size.width - 88, 340)))
+                    .padding(.vertical, 2)
                     trackCopy
                     progress
                     controls
@@ -50,41 +62,44 @@ struct MusicView: View {
         }
         .alert("Music", isPresented: Binding(get: { player.error != nil }, set: { if !$0 { player.error = nil } })) { Button("OK") { player.error = nil } } message: { Text(player.error ?? "") }
     }
-    private var together: some View {
-        Button {
-            Task { _ = await store.mutate("musicTogether") { current in
-                guard current["status"].string != "connected" else { return current }
-                var next = current; next["status"] = .string("invited"); next["inviteRequestedAt"] = .string(isoNow()); next["updatedAt"] = .string(isoNow()); return next
-            } }
-        } label: {
-            VStack(spacing: 6) {
-                HStack(spacing: 4) { avatar("user"); avatar("agent") }
-                TimelineView(.periodic(from: .now, by: 60)) { timeline in Text(togetherLabel(timeline.date)).font(.system(size: 13)).foregroundStyle(VesperTheme.muted) }
-            }.frame(maxWidth: .infinity).contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(store.saving || store.document("musicTogether")["status"].string == "connected")
-    }
-    private func avatar(_ role: String) -> some View {
-        let source = store.document("profile")["\(role)Avatar"].string
-        return Group {
-            if source.hasPrefix("data:image/"), let comma = source.firstIndex(of: ","), let data = Data(base64Encoded: String(source[source.index(after: comma)...])), let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFill()
-            } else if !source.isEmpty, let url = URL(string: source, relativeTo: URL(string: store.baseURL))?.absoluteURL, url.scheme == "https" {
-                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { avatarPlaceholder }
-            } else { avatarPlaceholder }
-        }.frame(width: 44, height: 44).clipShape(Circle()).overlay(Circle().stroke(.white.opacity(0.65)))
-    }
-    private var avatarPlaceholder: some View { LinearGradient(colors: [.gray.opacity(0.8), .white.opacity(0.5)], startPoint: .top, endPoint: .bottom) }
-    private func togetherLabel(_ now: Date) -> String {
-        let state = store.document("musicTogether")
-        switch state["status"].string {
-        case "connected":
-            let started = ISO8601DateFormatter().date(from: state["sessionStartedAt"].string)
-            let seconds = max(0, state["totalListeningSeconds"].number) + (started.map { max(0, now.timeIntervalSince($0)) } ?? 0)
-            return "Listening together for \(Int(seconds) / 3600)h \(Int(seconds) % 3600 / 60)m"
-        case "invited": return "Listen-together invitation sent"
-        case "offline": return "The other listener is offline."
-        default: return "Invite to listen together"
+    private var lyricsPanel: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                let lines = player.track["lyrics"].array
+                if lines.isEmpty {
+                    VStack(spacing: 14) {
+                        Image(systemName: "text.quote").font(.largeTitle)
+                        Text("Apple Music does not provide lyric text or line timings to this app.")
+                            .multilineTextAlignment(.center)
+                        if let url = URL(string: player.track["appleMusicURL"].string),
+                           url.scheme == "https" {
+                            Link("View lyrics in Apple Music", destination: url)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .foregroundStyle(VesperTheme.muted)
+                    .frame(maxWidth: .infinity, minHeight: 300)
+                    .padding()
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 22) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                            Text(line["text"].string)
+                                .font(.system(size: 23, weight: line["time"].number <= player.position ? .semibold : .regular))
+                                .foregroundStyle(line["time"].number <= player.position ? VesperTheme.ink : VesperTheme.muted)
+                                .id(index)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                }
+            }
+            .onChange(of: Int(player.position)) { _, _ in
+                let lines = player.track["lyrics"].array
+                if let index = lines.indices.last(where: { lines[$0]["time"].number <= player.position }) {
+                    withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(index, anchor: .center) }
+                }
+            }
         }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(0.5)))
     }
     private var trackCopy: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -155,6 +170,7 @@ private struct MusicLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var tab = "mine"
     @State private var query = ""
+    @State private var showLegacyCleanup = false
     var body: some View {
         NavigationStack {
             List {
@@ -172,6 +188,13 @@ private struct MusicLibraryView: View {
                 .task {
                     if catalog.connected { await catalog.refresh(player: player) }
                 }
+                .confirmationDialog("Remove old NetEase music data?", isPresented: $showLegacyCleanup) {
+                    Button("Remove old NetEase data", role: .destructive) {
+                        Task { await store.removeLegacyNetEaseMusic() }
+                    }
+                } message: {
+                    Text("Only NetEase songs and their playback data will be removed. Apple Music songs and chat history will stay.")
+                }
         }.presentationDragIndicator(.visible)
     }
     private var account: some View {
@@ -180,6 +203,13 @@ private struct MusicLibraryView: View {
                 .font(.subheadline).foregroundStyle(VesperTheme.muted)
             if !catalog.connected {
                 Button("Connect Apple Music") { Task { await catalog.connect(player: player) } }.disabled(catalog.busy)
+            }
+            if store.legacyNetEaseCount > 0 {
+                Button("Remove old NetEase data · \(store.legacyNetEaseCount)") { showLegacyCleanup = true }
+                    .disabled(!store.connected || store.saving)
+            }
+            if let status = store.legacyMusicCleanupStatus {
+                Text(status).font(.caption).foregroundStyle(VesperTheme.muted)
             }
         }
     }

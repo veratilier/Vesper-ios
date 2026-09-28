@@ -34,13 +34,13 @@ struct NativeChatHome: View {
                 .listRowSeparator(.hidden)
 
                 Button { Task { if await chat.openMainRoom() { open = true } } } label: {
-                    conversationRow(mainConversation, title: agentName, emptyPreview: "开始和 Rowan 聊天")
+                    conversationRow(mainConversation, title: agentName, emptyPreview: "Start chatting")
                 }
-                .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "开始和 Rowan 聊天"))")
+                .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
 
                 ForEach(otherConversations) { item in
                     Button { Task { if await chat.open(item) { open = true } } } label: {
-                        conversationRow(item, title: item["title"].string.isEmpty ? agentName : item["title"].string, emptyPreview: "暂无消息")
+                        conversationRow(item, title: item["title"].string.isEmpty ? agentName : item["title"].string, emptyPreview: "No messages yet")
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
@@ -55,7 +55,7 @@ struct NativeChatHome: View {
             .listStyle(.plain)
             .refreshable { await chat.loadConversations() }
             .disabled(rowDisabled)
-            .navigationTitle("Chat").navigationBarTitleDisplayMode(.large).toolbar {
+            .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }

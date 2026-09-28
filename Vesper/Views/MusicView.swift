@@ -43,6 +43,7 @@ struct MusicView: View {
     @StateObject private var catalog = MusicCatalog()
     @State private var sheet: MusicSheet?
     @State private var showingLyrics = false
+    @AppStorage("music.lyricsFrostedBackground") private var lyricsFrostedBackground = true
     private enum MusicSheet: String, Identifiable { case library, queue; var id: String { rawValue } }
     var body: some View {
         GeometryReader { geometry in
@@ -67,6 +68,7 @@ struct MusicView: View {
                         .accessibilityLabel("My Music")
                     }
                     let artworkSize = max(220, min(geometry.size.width - 52, 460))
+                    let lyricsHeight = max(artworkSize + 100, min(geometry.size.height - 210, 650))
                     TabView(selection: $showingLyrics) {
                         NowPlayingArtwork(artwork: player.currentArtwork,
                                           url: player.track["cover"].string, size: artworkSize)
@@ -74,7 +76,7 @@ struct MusicView: View {
                         lyricsPanel.tag(true)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(width: artworkSize, height: artworkSize)
+                    .frame(width: artworkSize, height: showingLyrics ? lyricsHeight : artworkSize)
                     .padding(.vertical, 8)
                     .accessibilityHint("Swipe sideways to switch between the album cover and lyrics")
                     if !showingLyrics { trackCopy }
@@ -118,6 +120,13 @@ struct MusicView: View {
                     Text(player.track["artist"].string).font(.subheadline)
                         .foregroundStyle(VesperTheme.muted).lineLimit(1)
                 }
+                Spacer(minLength: 0)
+                Button { lyricsFrostedBackground.toggle() } label: {
+                    Image(systemName: lyricsFrostedBackground ? "square.on.square.fill" : "square.dashed")
+                        .font(.system(size: 19))
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(lyricsFrostedBackground ? "Turn off frosted lyrics background" : "Turn on frosted lyrics background")
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -163,8 +172,13 @@ struct MusicView: View {
                 }
             }
         }.padding(14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.5)))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                if lyricsFrostedBackground {
+                    RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial)
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(lyricsFrostedBackground ? 0.5 : 0)))
     }
     private var trackCopy: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -339,20 +353,34 @@ private struct MusicLibraryView: View {
     }
     private var search: some View {
         Section {
-            TextField("Search songs, artists or albums", text: $query).submitLabel(.search).onSubmit(searchSongs)
-            Button("Search", action: searchSongs).disabled(catalog.busy || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            HStack(spacing: 8) {
+                TextField("Search songs, artists or albums", text: $query).submitLabel(.search).onSubmit(searchSongs)
+                Button(action: searchSongs) {
+                    Image(systemName: "magnifyingglass").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Search")
+                .disabled(catalog.busy || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
     }
     private func searchSongs() { guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; Task { await catalog.search(query, player: player) } }
     private var collection: some View {
         Section {
             Button { catalog.collection = .null } label: { Label("Back", systemImage: "chevron.left") }
-            Text(catalog.collection["title"].string.isEmpty ? "Songs" : catalog.collection["title"].string).font(.headline)
-            HStack {
-                Button("Play all") { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player) } }
+            HStack(spacing: 8) {
+                Text(catalog.collection["title"].string.isEmpty ? "Songs" : catalog.collection["title"].string)
+                    .font(.headline)
                 Spacer()
-                Button("Sync queue") { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player, autoplay: false) } }
-            }.disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
+                Button { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player, autoplay: false) } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Sync queue")
+                .disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
+            }
+            Button("Play all") { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player) } }
+                .disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
             if catalog.collection["tracks"].array.isEmpty { Text("No songs to show yet.").foregroundStyle(VesperTheme.muted) }
             ForEach(catalog.collection["tracks"].array) { track in
                 HStack {

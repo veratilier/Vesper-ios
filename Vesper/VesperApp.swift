@@ -46,6 +46,8 @@ struct RootView: View {
     @State private var libraryPath: [Destination] = []
     @State private var vesperPage: Destination = .desire
     @StateObject private var callPresentation = NativeCallPresentation.shared
+    @State private var floatingCallCenter: CGPoint?
+    @GestureState private var floatingCallDrag = CGSize.zero
     @State private var opening = true
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
@@ -142,15 +144,41 @@ struct RootView: View {
                     .padding(28).transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
-        .overlay(alignment: .topTrailing) {
+        .overlay {
             if callPresentation.presented {
-                NativeCallView(initiator: callPresentation.initiator)
-                    .frame(maxWidth: callPresentation.minimized ? nil : .infinity,
-                           maxHeight: callPresentation.minimized ? nil : .infinity)
-                    .padding(callPresentation.minimized ? 12 : 0)
-                    .zIndex(3)
+                GeometryReader { geometry in
+                    NativeCallView(initiator: callPresentation.initiator)
+                        .frame(width: callPresentation.minimized ? min(320, geometry.size.width - 24) : geometry.size.width,
+                               height: callPresentation.minimized ? nil : geometry.size.height)
+                        .position(callPresentation.minimized ? floatingPosition(in: geometry.size)
+                                  : CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2))
+                        .simultaneousGesture(DragGesture(minimumDistance: 10)
+                            .updating($floatingCallDrag) { drag, offset, _ in
+                                if callPresentation.minimized { offset = drag.translation }
+                            }
+                            .onEnded { drag in
+                                guard callPresentation.minimized else { return }
+                                let center = clampedFloatingPosition(
+                                    floatingCallCenter ?? CGPoint(x: geometry.size.width - 172, y: 62),
+                                    in: geometry.size)
+                                floatingCallCenter = clampedFloatingPosition(
+                                    CGPoint(x: center.x + drag.translation.width, y: center.y + drag.translation.height),
+                                    in: geometry.size)
+                            }, including: callPresentation.minimized ? .all : .none)
+                        .accessibilityHint(callPresentation.minimized ? "Drag to move the call window" : "")
+                }.zIndex(3)
             }
         }
+    }
+    private func floatingPosition(in size: CGSize) -> CGPoint {
+        let center = floatingCallCenter ?? CGPoint(x: size.width - 172, y: 62)
+        return clampedFloatingPosition(
+            CGPoint(x: center.x + floatingCallDrag.width, y: center.y + floatingCallDrag.height), in: size)
+    }
+    private func clampedFloatingPosition(_ point: CGPoint, in size: CGSize) -> CGPoint {
+        let halfWidth = min(160, (size.width - 24) / 2)
+        return CGPoint(x: min(max(point.x, halfWidth + 12), size.width - halfWidth - 12),
+                       y: min(max(point.y, 54), max(54, size.height - 54)))
     }
     private var lifecycle: some View {
         scene

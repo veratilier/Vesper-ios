@@ -1,4 +1,5 @@
 import ActivityKit
+import Foundation
 
 @MainActor final class CallLiveActivity {
     static let shared = CallLiveActivity()

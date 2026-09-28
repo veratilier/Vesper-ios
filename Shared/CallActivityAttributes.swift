@@ -1,4 +1,5 @@
 import ActivityKit
+import Foundation
 
 struct VesperCallAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {

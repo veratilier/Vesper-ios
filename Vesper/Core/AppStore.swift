@@ -1,12 +1,20 @@
 import SwiftUI
 
 @MainActor final class AppStore: ObservableObject {
+    init() {
+        // Remove the former NetEase login even when the server is offline.
+        do {
+            try CredentialStore.delete(account: "netease-music-u")
+            UserDefaults.standard.removeObject(forKey: "netease-uid")
+        } catch { self.error = error.localizedDescription }
+    }
     weak var musicPlayer: MusicPlayer?
     @Published var documents: [String: JSONValue] = [:]
     @Published var error: String?
     @Published var loading = false
     @Published var saving = false
     @Published var connected = false
+    @Published var legacyMusicCleanupStatus: String?
     @Published var connectionError: String?
     @Published var baseURL: String = UserDefaults.standard.string(forKey: "apiURL") ?? "https://api.vesper.r-vera.com" {
         didSet { if oldValue != baseURL { connected = false } }
@@ -36,6 +44,7 @@ import SwiftUI
         } catch { connectionError = error.localizedDescription }
     }
     private var documentRevision = 0
+    private var cleaningLegacyMusic = false
     func refresh() async {
         guard !loading, !saving else { return }
         guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -57,6 +66,50 @@ import SwiftUI
             documents = docs.mapValues { $0["value"] }; connected = true
             WidgetSync.notes(document("notes"))
         } catch { connectionError = error.localizedDescription; connected = false }
+    }
+    private func isNetEase(_ value: JSONValue) -> Bool {
+        value["id"].string.hasPrefix("netease-")
+        || value["trackId"].string.hasPrefix("netease-")
+        || !value["neteaseId"].string.isEmpty
+        || value["source"].string == "netease"
+    }
+    var legacyNetEaseCount: Int {
+        let tracks = ["music", "musicQueue", "musicFavorites"].reduce(0) { count, key in
+            count + document(key).array.filter(isNetEase).count
+        }
+        let annotations = document("musicAnnotations").object.filter {
+            $0.key.hasPrefix("netease-") || isNetEase($0.value)
+        }.count
+        let playback = isNetEase(document("musicPlayback")) || isNetEase(document("musicPlayback")["nativePlayback"]["track"]) ? 1 : 0
+        let control = isNetEase(document("musicControl")) ? 1 : 0
+        return tracks + annotations + playback + control
+    }
+    /// Called only after the user confirms removal in Music. Preserve every
+    /// Apple Music song and unrelated shared music or chat document.
+    func removeLegacyNetEaseMusic() async {
+        guard !cleaningLegacyMusic, !token.isEmpty else { return }
+        cleaningLegacyMusic = true
+        defer { cleaningLegacyMusic = false }
+        var success = true
+        for key in ["music", "musicQueue", "musicFavorites"] {
+            guard document(key).array.contains(where: isNetEase) else { continue }
+            if !(await mutate(key) { current in
+                .array(current.array.filter { !self.isNetEase($0) })
+            }) { success = false }
+        }
+        let annotations = document("musicAnnotations").object
+        if annotations.contains(where: { $0.key.hasPrefix("netease-") || isNetEase($0.value) }) {
+            if !(await mutate("musicAnnotations") { current in
+                .object(current.object.filter { !$0.key.hasPrefix("netease-") && !self.isNetEase($0.value) })
+            }) { success = false }
+        }
+        if isNetEase(document("musicPlayback")) || isNetEase(document("musicPlayback")["nativePlayback"]["track"]) {
+            if !(await mutate("musicPlayback") { _ in .object([:]) }) { success = false }
+        }
+        if isNetEase(document("musicControl")) {
+            if !(await mutate("musicControl") { _ in .object([:]) }) { success = false }
+        }
+        legacyMusicCleanupStatus = success ? "Old NetEase songs were removed. Chat history was kept." : "Some old songs could not be removed. Try again when connected."
     }
     /// Re-read before applying an item-level mutation. Preserve unknown fields and unrelated rows.
     /// The legacy endpoint has no compare-and-swap; concurrent cross-device edits remain a server limitation.

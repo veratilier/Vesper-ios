@@ -29,15 +29,20 @@ struct NativeChatHome: View {
                         .font(.subheadline)
                         .foregroundStyle(VesperTheme.muted)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(VesperTheme.muted.opacity(0.11), in: RoundedRectangle(cornerRadius: 11))
+                        .contactGlassSurface(verticalPadding: 12)
                 }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
                 Button { enterChat() } label: {
                     conversationRow(mainConversation, title: agentName, emptyPreview: "Start chatting")
                 }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
                 .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
 
                 ForEach(otherConversations) { item in
@@ -52,6 +57,10 @@ struct NativeChatHome: View {
                         Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename conversation", systemImage: "pencil") }
                         Button(role: .destructive) { deletingConversation = item } label: { Label("Delete conversation", systemImage: "trash") }
                     }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
             .listStyle(.plain)
@@ -158,8 +167,26 @@ struct NativeChatHome: View {
                     .font(.subheadline).foregroundStyle(VesperTheme.muted).lineLimit(1)
             }
         }
-        .padding(.vertical, 5)
+        .contactGlassSurface()
         .contentShape(Rectangle())
+    }
+}
+
+private extension View {
+    func contactGlassSurface(verticalPadding: CGFloat = 15) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        return self
+            .padding(.horizontal, 16).padding(.vertical, verticalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                shape.fill(.ultraThinMaterial)
+                    .overlay {
+                        shape.fill(Color(red: 0.45, green: 0.66, blue: 0.86)
+                            .opacity(VesperTheme.palette == .blue ? 0.15 : 0.03))
+                    }
+            }
+            .overlay(shape.strokeBorder(.white.opacity(VesperTheme.palette == .black ? 0.24 : 0.7), lineWidth: 1))
+            .shadow(color: .black.opacity(0.09), radius: 12, y: 5)
     }
 }
 

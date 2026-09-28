@@ -15,7 +15,8 @@ struct ChatMusicCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(track["title"].string).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text(track["artist"].string).font(.caption).foregroundStyle(VesperTheme.muted).lineLimit(1)
-                    Text("Listen together").font(.caption2).foregroundStyle(VesperTheme.muted)
+                    Text(track["source"].string == "appleMusic" ? "Apple Music" : "Shared song")
+                        .font(.caption2).foregroundStyle(VesperTheme.muted)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: selected ? "pause.fill" : "play.fill")

@@ -60,7 +60,7 @@ struct NativeChatHome: View {
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { enterChat(new: true) } label: { Image(systemName: "plus") }
+                    Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
                         .accessibilityLabel("New Chat")
                         .disabled(rowDisabled || chat.loadingModels)
                 }
@@ -118,14 +118,13 @@ struct NativeChatHome: View {
         }
     }
 
-    private func enterChat(_ item: JSONValue? = nil, new: Bool = false) {
+    private func enterChat(_ item: JSONValue? = nil) {
         guard !rowDisabled else { return }
         loadingChat = true
         open = true
         openingTask = Task {
             let opened: Bool
-            if new { opened = await chat.createConversation() }
-            else if let item { opened = await chat.open(item) }
+            if let item { opened = await chat.open(item) }
             else { opened = await chat.openMainRoom() }
             guard !Task.isCancelled else { return }
             openingTask = nil

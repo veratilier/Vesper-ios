@@ -241,6 +241,7 @@ private extension String {
                         "artist": .string(song.artistName),
                         "album": .string(song.albumTitle ?? ""),
                         "cover": .string(song.artwork?.url(width: 500, height: 500)?.absoluteString ?? ""),
+                        "appleMusicURL": .string(song.url?.absoluteString ?? ""),
                         "duration": .number(song.duration ?? 0)])
     }
     func connect(player: MusicPlayer) async {
@@ -307,8 +308,8 @@ private extension String {
         guard !values.isEmpty else { return }
         player.setQueue(values, append: append)
         let saved = await store.mutate("music") { current in
-            // Do not erase old cards; the source field lets the player explain
-            // which songs need to be selected again from Apple Music.
+            // The app cleanup removes old NetEase tracks; keep only songs
+            // explicitly selected from Apple Music in the shared library.
             var merged = current.array
             for value in values {
                 if let index = merged.firstIndex(where: { $0.id == value.id }) { merged[index] = value }

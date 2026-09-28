@@ -49,6 +49,8 @@
 	<string>Show your Apple Music library and play songs you choose in Vesper.</string>
 	<key>NSAlarmKitUsageDescription</key>
 	<string>Schedule the alarms you create in Vesper and show them with the iPhone system alarm interface.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Show your reminder lists and save or complete reminders you choose in Vesper.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

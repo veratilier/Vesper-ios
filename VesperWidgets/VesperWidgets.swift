@@ -1,6 +1,7 @@
 import WidgetKit
 import SwiftUI
 import AppIntents
+import ActivityKit
 
 struct DateWidgetConfiguration: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Vesper day"
@@ -185,6 +186,49 @@ struct VesperNotesWidget: Widget {
             .configurationDisplayName("Vesper · Notes").description("Keep your latest note close.").supportedFamilies([.systemSmall, .systemMedium])
     }
 }
+
+struct VesperCallWidget: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: VesperCallAttributes.self) { context in
+            HStack(spacing: 14) {
+                Image(systemName: context.state.isVideo ? "video.fill" : "phone.fill")
+                    .font(.title2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Rowan · Vesper").font(.headline)
+                    Text(context.attributes.startedAt, style: .timer).monospacedDigit()
+                }
+                Spacer()
+                Text("Return to call").font(.caption)
+            }
+            .foregroundStyle(.white).padding()
+            .activityBackgroundTint(Color(red: 0.08, green: 0.12, blue: 0.16))
+            .activitySystemActionForegroundColor(.white)
+            .widgetURL(URL(string: "vesper://call"))
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    Label("Rowan", systemImage: context.state.isVideo ? "video.fill" : "phone.fill")
+                        .font(.headline)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    Text(context.attributes.startedAt, style: .timer)
+                        .font(.headline).monospacedDigit()
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    Text("Vesper · Tap to return to call").font(.caption)
+                }
+            } compactLeading: {
+                Image(systemName: context.state.isVideo ? "video.fill" : "phone.fill")
+            } compactTrailing: {
+                Text(context.attributes.startedAt, style: .timer)
+                    .font(.caption2).monospacedDigit()
+            } minimal: {
+                Image(systemName: "phone.fill")
+            }
+            .widgetURL(URL(string: "vesper://call"))
+        }
+    }
+}
 @main struct VesperWidgetBundle: WidgetBundle {
-    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperNotesWidget() }
+    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperNotesWidget(); VesperCallWidget() }
 }

@@ -1,10 +1,28 @@
 import SwiftUI
+import MusicKit
 struct Artwork: View {
     let url: String
     var body: some View {
         AsyncImage(url: URL(string: url)) { image in image.resizable().scaledToFill() } placeholder: {
             ZStack { VesperTheme.accent.opacity(0.2); Image(systemName: "music.note").font(.largeTitle).foregroundStyle(VesperTheme.muted) }
         }.clipped()
+    }
+}
+private struct NowPlayingArtwork: View {
+    let artwork: MusicKit.Artwork?
+    let url: String
+    let size: CGFloat
+    var body: some View {
+        Group {
+            if let artwork {
+                MusicKit.ArtworkImage(artwork, width: size, height: size)
+            } else {
+                Artwork(url: url)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityLabel("Album cover")
     }
 }
 struct PlaybackControls: View {
@@ -30,24 +48,33 @@ struct MusicView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 12) {
-                    HStack { Spacer(); Button { sheet = .library } label: { Label("My Music", systemImage: "books.vertical").font(.system(size: 14, weight: .medium)).padding(.horizontal, 16).frame(height: 42).background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25))) } }
-                    Picker("Now playing display", selection: $showingLyrics) {
-                        Text("Artwork").tag(false)
-                        Text("Lyrics").tag(true)
-                    }.pickerStyle(.segmented).padding(.top, 6)
-                    Group {
-                        if showingLyrics { lyricsPanel }
-                        else {
-                            Artwork(url: player.track["cover"].string)
-                                .id(player.track.id + player.track["cover"].string)
-                                .clipShape(Circle())
-                                .overlay(Circle().stroke(VesperTheme.accent.opacity(0.6), lineWidth: 5))
+                    HStack {
+                        Spacer()
+                        Menu {
+                            Button("Change playback mode: \(player.mode)") { player.cycleMode() }
+                        } label: {
+                            Image(systemName: "ellipsis").frame(width: 42, height: 42)
+                        }.accessibilityLabel("Playback options")
+                        Button { sheet = .library } label: {
+                            Label("My Music", systemImage: "books.vertical")
+                                .font(.system(size: 14, weight: .medium))
+                                .padding(.horizontal, 16).frame(height: 42)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(VesperTheme.accent.opacity(0.25)))
                         }
                     }
-                    .frame(width: max(180, min(geometry.size.width - 88, 340)),
-                           height: max(180, min(geometry.size.width - 88, 340)))
-                    .padding(.vertical, 2)
-                    trackCopy
+                    let artworkSize = max(220, min(geometry.size.width - 52, 460))
+                    TabView(selection: $showingLyrics) {
+                        NowPlayingArtwork(artwork: player.currentArtwork,
+                                          url: player.track["cover"].string, size: artworkSize)
+                            .tag(false)
+                        lyricsPanel.tag(true)
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(width: artworkSize, height: artworkSize)
+                    .padding(.vertical, 8)
+                    .accessibilityHint("Swipe sideways to switch between the album cover and lyrics")
+                    if !showingLyrics { trackCopy }
                     progress
                     controls
                 }.padding(.horizontal, 26).padding(.top, 4).padding(.bottom, 40)
@@ -63,43 +90,55 @@ struct MusicView: View {
         .alert("Music", isPresented: Binding(get: { player.error != nil }, set: { if !$0 { player.error = nil } })) { Button("OK") { player.error = nil } } message: { Text(player.error ?? "") }
     }
     private var lyricsPanel: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                let lines = player.track["lyrics"].array
-                if lines.isEmpty {
-                    VStack(spacing: 14) {
-                        Image(systemName: "text.quote").font(.largeTitle)
-                        Text("Apple Music does not provide lyric text or line timings to this app.")
-                            .multilineTextAlignment(.center)
-                        if let url = URL(string: player.track["appleMusicURL"].string),
-                           url.scheme == "https" {
-                            Link("View lyrics in Apple Music", destination: url)
-                                .font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                NowPlayingArtwork(artwork: player.currentArtwork,
+                                  url: player.track["cover"].string, size: 64)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(player.track["title"].string).font(.headline).lineLimit(1)
+                    Text(player.track["artist"].string).font(.subheadline)
+                        .foregroundStyle(VesperTheme.muted).lineLimit(1)
+                }
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    let lines = player.track["lyrics"].array
+                    if lines.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "text.quote").font(.largeTitle)
+                            Text("Lyrics aren't available inside Vesper yet.")
+                                .multilineTextAlignment(.center)
+                            if let url = URL(string: player.track["appleMusicURL"].string),
+                               url.scheme == "https" {
+                                Link("View lyrics in Apple Music", destination: url)
+                                    .font(.subheadline.weight(.semibold))
+                            }
                         }
+                        .foregroundStyle(VesperTheme.muted)
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                        .padding()
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 22) {
+                            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                                Text(line["text"].string)
+                                    .font(.system(size: 23, weight: line["time"].number <= player.position ? .semibold : .regular))
+                                    .foregroundStyle(line["time"].number <= player.position ? VesperTheme.ink : VesperTheme.muted)
+                                    .id(index)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(18)
                     }
-                    .foregroundStyle(VesperTheme.muted)
-                    .frame(maxWidth: .infinity, minHeight: 300)
-                    .padding()
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 22) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                            Text(line["text"].string)
-                                .font(.system(size: 23, weight: line["time"].number <= player.position ? .semibold : .regular))
-                                .foregroundStyle(line["time"].number <= player.position ? VesperTheme.ink : VesperTheme.muted)
-                                .id(index)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                }
+                .onChange(of: Int(player.position)) { _, _ in
+                    let lines = player.track["lyrics"].array
+                    if let index = lines.indices.last(where: { lines[$0]["time"].number <= player.position }) {
+                        withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(index, anchor: .center) }
+                    }
                 }
             }
-            .onChange(of: Int(player.position)) { _, _ in
-                let lines = player.track["lyrics"].array
-                if let index = lines.indices.last(where: { lines[$0]["time"].number <= player.position }) {
-                    withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(index, anchor: .center) }
-                }
-            }
-        }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(0.5)))
+        }.padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.5)))
     }
     private var trackCopy: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -116,7 +155,9 @@ struct MusicView: View {
     }
     private var controls: some View {
         HStack(spacing: 0) {
-            control(modeIcon, label: "Playback mode: \(player.mode)") { player.cycleMode() }
+            control(showingLyrics ? "quote.bubble.fill" : "quote.bubble", label: showingLyrics ? "Show album cover" : "Show lyrics") {
+                withAnimation(.easeInOut(duration: 0.25)) { showingLyrics.toggle() }
+            }
             Spacer(minLength: 5)
             control("backward.end", label: "Previous song") { player.next(-1) }
             Spacer(minLength: 5)
@@ -131,7 +172,6 @@ struct MusicView: View {
                 .overlay(alignment: .topTrailing) { Text("\(player.tracks.count)").font(.system(size: 9)).foregroundStyle(VesperTheme.muted).allowsHitTesting(false) }
         }.padding(.vertical, 4)
     }
-    private var modeIcon: String { switch player.mode { case "repeat": return "repeat"; case "single": return "repeat.1"; case "random": return "shuffle"; default: return "line.3.horizontal" } }
     private func control(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: icon).font(.system(size: 21)).frame(width: 46, height: 46).background(.ultraThinMaterial, in: Circle()).overlay(Circle().stroke(.white.opacity(0.6))) }.accessibilityLabel(label)
     }

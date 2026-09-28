@@ -164,6 +164,7 @@ struct RootView: View {
                 NotificationCenter.default.post(name: .init("VesperConversationOpened"), object: nil)
             }
         }
+        .task { if !callPresentation.presented { await CallLiveActivity.shared.endStale() } }
          .task(id: store.token) { await refreshUsage() }
         .onChange(of: store.token) { _, _ in WidgetSync.clear() }
         .onOpenURL { url in
@@ -172,6 +173,7 @@ struct RootView: View {
             case "desire": navigate(.desire)
             case "notes": navigate(.notes)
             case "usage": sidebar = true; Task { await refreshUsage() }
+            case "call": navigate(.chat); if callPresentation.presented { callPresentation.minimized = false }
             default: break
             }
         }

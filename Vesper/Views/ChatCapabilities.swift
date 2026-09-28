@@ -361,6 +361,7 @@ struct NativeCallView: View {
             await streamCamera()
         }
         .onChange(of: phase) { _, phase in if phase != .active { stopCamera() } }
+        .onChange(of: video) { _, enabled in CallLiveActivity.shared.update(isVideo: enabled) }
     }
     private var compactCall: some View {
         HStack(spacing: 12) {
@@ -485,7 +486,10 @@ struct NativeCallView: View {
     }
     private func activateCall() {
         guard systemCall.audioReady else { return }
-        if !active { player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID }
+        if !active {
+            player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID
+            if let startedAt { CallLiveActivity.shared.start(at: startedAt, isVideo: video) }
+        }
         resumeListening()
     }
     private func requestHangup(afterQuietMinutes minutes: Int, farewell: String) {
@@ -621,6 +625,7 @@ struct NativeCallView: View {
     }
     private func end() {
         cancelQuietHangup(); callChat.onNativeHangupRequested = nil
+        CallLiveActivity.shared.end()
         stopCamera()
         systemCall.end()
         if let start = startedAt {

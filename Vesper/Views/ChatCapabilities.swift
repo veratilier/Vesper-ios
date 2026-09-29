@@ -427,9 +427,21 @@ struct NativeCallView: View {
     }
     private var fullCall: some View {
         ZStack {
-            Background()
-            VStack(spacing: 16) {
+            if video {
+                CallCameraPreview(camera: camera).ignoresSafeArea()
+                LinearGradient(colors: [.black.opacity(0.42), .clear, .black.opacity(0.70)],
+                               startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+            } else {
+                Background()
+            }
+            VStack(spacing: 14) {
                 HStack {
+                    if video && active {
+                        Button { flipCamera() } label: {
+                            Image(systemName: "camera.rotate").font(.system(size: 18))
+                                .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                        }.buttonStyle(.plain).disabled(cameraBusy).accessibilityLabel("Switch camera")
+                    }
                     Spacer()
                     Button { presentation.minimized = true } label: {
                         Image(systemName: "arrow.down.right.and.arrow.up.left")
@@ -438,11 +450,22 @@ struct NativeCallView: View {
                             .background(.regularMaterial, in: Circle())
                     }.buttonStyle(.plain).accessibilityLabel("Minimize call")
                 }
-                Text(video ? "VIDEO CALL" : "VOICE CALL").font(.system(size: 11, weight: .medium)).tracking(3).foregroundStyle(VesperTheme.muted)
-                if video { CallCameraPreview(camera: camera).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 24)) }
-                else { CallPortrait().frame(width: 94, height: 94).padding(12).background(.ultraThinMaterial, in: Circle()).padding(.top, 18) }
-                Text(voice.loading ? "Preparing voice…" : voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active ? "Paused" : "Rowan").font(.system(size: 14, weight: .medium)).foregroundStyle(VesperTheme.muted)
-                if let startedAt { Text(startedAt, style: .timer).monospacedDigit().font(.subheadline) }
+                if !video && !typingFocused {
+                    CallPortrait().frame(width: 104, height: 104)
+                        .padding(10).background(.ultraThinMaterial, in: Circle())
+                }
+                VStack(spacing: 5) {
+                    Text("Rowan").font(.title2.weight(.semibold))
+                    HStack(spacing: 8) {
+                        Button {
+                            if active && !waiting && !muted { voice.stop(); resumeListening() }
+                        } label: {
+                            Text(voice.loading ? "Preparing voice…" : voice.speaking ? "Speaking…" : waiting ? "Thinking…" : speech.listening ? "Listening…" : active && !muted ? "Tap to listen" : active ? "Muted" : "Voice call")
+                        }.buttonStyle(.plain).disabled(!active || waiting || muted)
+                        if let startedAt { Text("·"); Text(startedAt, style: .timer).monospacedDigit() }
+                    }.font(.caption)
+                }.foregroundStyle(video ? Color.white : VesperTheme.ink)
+                    .shadow(color: video ? .black.opacity(0.8) : .clear, radius: 5)
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(spacing: 14) {
@@ -453,10 +476,27 @@ struct NativeCallView: View {
                             if waiting { transcriptRow("Rowan", text: liveAnswer, interim: true) }
                             Color.clear.frame(height: 1).id("call-bottom")
                         }
-                    }.padding(18).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24)).frame(maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
+                    }.frame(maxHeight: .infinity)
                     .onChange(of: speech.text) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                     .onChange(of: transcript.count) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
                     .onChange(of: liveAnswer) { _, _ in proxy.scrollTo("call-bottom", anchor: .bottom) }
+                }
+                if speech.listening && !speech.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !typingFocused {
+                    Button("Send speech now") { submit() }
+                        .font(.caption.weight(.medium)).foregroundStyle(video ? Color.white : VesperTheme.ink)
+                        .padding(.horizontal, 14).padding(.vertical, 7)
+                        .background(.regularMaterial, in: Capsule())
+                }
+                if let quietHangupMinutes {
+                    HStack {
+                        Text("End after \(quietHangupMinutes) min of quiet")
+                        Button("Cancel") { cancelQuietHangup() }
+                    }.font(.caption).foregroundStyle(video ? Color.white : VesperTheme.muted)
+                }
+                if let error = voice.error ?? notice ?? speech.error ?? cameraNotice ?? systemCall.error {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                        .padding(9).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
                 HStack(spacing: 10) {
                     TextField("Type to Rowan…", text: $typedMessage, axis: .vertical)
@@ -474,61 +514,64 @@ struct NativeCallView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
-                if video {
-                    VStack(spacing: 5) {
-                        Text("Camera sharing is on · frames update automatically")
-                        if sharingFrame { Text("Sending camera frame…") }
-                        else if let lastFrameSentAt { Text("Frame sent at \(lastFrameSentAt.formatted(date: .omitted, time: .standard))") }
-                        else { Text("Connecting camera…") }
-                        if let cameraNotice { Text(cameraNotice).foregroundStyle(.red) }
-                    }.font(.caption).foregroundStyle(.secondary)
+                if !active {
+                    Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: {
+                        Text(systemCall.id == nil ? "Start call" : "Connecting…")
+                            .foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12)
+                            .background(VesperTheme.ink, in: Capsule())
+                    }.buttonStyle(.plain).disabled(callChat.busy || systemCall.id != nil)
                 }
-                if active && !systemCall.outputName.isEmpty { Text("Audio · " + systemCall.outputName).font(.caption).foregroundStyle(.secondary) }
-                if let quietHangupMinutes {
-                    HStack {
-                        Text("End after \(quietHangupMinutes) min of quiet")
-                        Button("Cancel") { cancelQuietHangup() }
-                    }.font(.caption).foregroundStyle(.secondary)
+                if !typingFocused {
+                    HStack(alignment: .top) {
+                        callControl(muted ? "Mic off" : "Mic on", symbol: muted ? "mic.slash.fill" : "mic.fill", selected: !muted) {
+                            systemCall.mute(!muted)
+                        }
+                        Spacer(minLength: 8)
+                        callControl(systemCall.speakerEnabled ? "Speaker on" : "Speaker off", symbol: systemCall.speakerEnabled ? "speaker.wave.3.fill" : "speaker.slash.fill", selected: systemCall.speakerEnabled) {
+                            toggleSpeaker()
+                        }
+                        Spacer(minLength: 8)
+                        callControl(video ? "Camera on" : "Camera off", symbol: video ? "video.fill" : "video.slash.fill", selected: video) {
+                            toggleCamera()
+                        }.disabled(cameraBusy)
+                    }.disabled(!active)
+                    Button { end() } label: {
+                        Image(systemName: "phone.down.fill").font(.system(size: 25))
+                            .foregroundStyle(.white).frame(width: 68, height: 68)
+                            .background(Color.red, in: Circle())
+                    }.buttonStyle(.plain).accessibilityLabel("End call")
                 }
-                if VoiceConfiguration.connection(store)["apiKey"].string.isEmpty { Text("Using the iPhone voice. Configure Agent Voice for your custom voice.").font(.caption).foregroundStyle(.secondary) }
-                if let error = voice.error ?? notice ?? speech.error { Text(error).font(.caption).foregroundStyle(.red) }
-                Spacer(minLength: 0)
-                if let error = systemCall.error { Text(error).font(.caption).foregroundStyle(.red) }
-                if !active { Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: { Text(systemCall.id == nil ? "Start call" : "Connecting…").foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(callChat.busy || systemCall.id != nil) }
-                HStack(spacing: 18) {
-                    Button { systemCall.mute(!muted) } label: { Label(muted ? "Unmute" : "Mute", systemImage: muted ? "mic.slash" : "mic") }.disabled(!active)
-                    Button { toggleSpeaker() } label: { Label("Speaker", systemImage: systemCall.speakerEnabled ? "speaker.wave.3.fill" : "speaker.wave.1") }
-                        .tint(systemCall.speakerEnabled ? VesperTheme.ink : VesperTheme.muted)
-                        .accessibilityValue(systemCall.speakerEnabled ? "On" : "Off").disabled(!active)
-                    Button { toggleCamera() } label: { Label(video ? "Camera off" : "Camera", systemImage: video ? "video.slash" : "video") }.disabled(!active || cameraBusy)
-                    if video {
-                        Button { flipCamera() } label: { Label("Switch camera", systemImage: "camera.rotate") }
-                            .accessibilityValue(camera.position == .front ? "Front camera" : "Back camera")
-                            .disabled(cameraBusy)
-                    }
-                    Button { end() } label: { Label("End", systemImage: "phone.down.fill") }.foregroundStyle(.red)
-                }.labelStyle(.iconOnly).font(.system(size: 22)).buttonStyle(.bordered).controlSize(.large).frame(minHeight: 60).padding(.bottom, 12)
-                if active && !waiting && !muted {
-                    Button(speech.listening ? "Send now" : voice.speaking || voice.loading ? "Speak now" : "Resume listening") {
-                        if speech.listening && !speech.text.isEmpty { submit() } else { voice.stop(); resumeListening() }
-                    }
-                }
-            }.padding(24)
+            }.padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 18)
         }
+    }
+    private func callControl(_ title: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 7) {
+                Image(systemName: symbol).font(.system(size: 24))
+                    .foregroundStyle(selected ? Color.white : VesperTheme.ink)
+                    .frame(width: 62, height: 62)
+                    .background(selected ? VesperTheme.ink : Color.white.opacity(0.85), in: Circle())
+                Text(title).font(.caption2.weight(.medium))
+                    .foregroundStyle(video ? Color.white : VesperTheme.ink)
+            }.frame(minWidth: 76)
+        }.buttonStyle(.plain).accessibilityLabel(title)
     }
     private func transcriptRow(_ speaker: String, text: String, interim: Bool = false) -> some View {
         let isVera = speaker == "Vera"
         return HStack {
             if isVera { Spacer(minLength: 30) }
             VStack(alignment: .leading, spacing: 4) {
-                Text(speaker).font(.caption).foregroundStyle(VesperTheme.muted)
+                Text(speaker).font(.caption).foregroundStyle(video ? Color.white.opacity(0.8) : VesperTheme.muted)
                 Text(text).font(.system(size: 15)).lineSpacing(4)
-                    .foregroundStyle(interim ? VesperTheme.muted : VesperTheme.ink)
+                    .foregroundStyle(video ? Color.white : interim ? VesperTheme.muted : VesperTheme.ink)
                     .textSelection(.enabled)
             }
             .padding(12)
             .frame(maxWidth: 280, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+            .background {
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(video ? Color.black.opacity(0.28) : Color.white.opacity(0.40))
+            }
             if !isVera { Spacer(minLength: 30) }
         }.frame(maxWidth: .infinity)
     }

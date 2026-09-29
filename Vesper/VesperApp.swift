@@ -171,7 +171,8 @@ struct RootView: View {
                         .onPreferenceChange(FloatingCallSizeKey.self) { measured in
                             if measured.width > 0 && measured.height > 0 { floatingCallSize = measured }
                         }
-                        .simultaneousGesture(DragGesture(minimumDistance: 10)
+                        // A recognized drag must not also activate the compact call's open button.
+                        .highPriorityGesture(DragGesture(minimumDistance: 10)
                             .updating($floatingCallDrag) { drag, offset, _ in
                                 if callPresentation.minimized { offset = drag.translation }
                             }

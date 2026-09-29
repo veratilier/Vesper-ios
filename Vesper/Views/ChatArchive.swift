@@ -8,6 +8,7 @@ struct NativeChatHome: View {
     @State private var loadingChat = false
     @State private var openingTask: Task<Void, Never>?
     @State private var searching = false
+    @State private var showingFavorites = false
     @State private var openedOnce = false
     @State private var deletingConversation: JSONValue?
     @State private var deleting = false
@@ -68,7 +69,9 @@ struct NativeChatHome: View {
             .disabled(rowDisabled)
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showingFavorites = true } label: { Image(systemName: "bookmark") }
+                        .accessibilityLabel("Favorite messages")
                     Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
                         .accessibilityLabel("New Chat")
                         .disabled(rowDisabled || chat.loadingModels)
@@ -86,6 +89,7 @@ struct NativeChatHome: View {
                 }
             }
             .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
+            .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
             .task {
                 chat.configure(store); await chat.loadConversations()
                 if !openedOnce { openedOnce = true }
@@ -169,6 +173,68 @@ struct NativeChatHome: View {
         }
         .contactGlassSurface()
         .contentShape(Rectangle())
+    }
+}
+
+struct ChatFavoritesView: View {
+    @EnvironmentObject private var chat: ChatSession
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    var selected: () -> Void
+    @State private var query = ""
+    @State private var error = ""
+    @State private var opening = false
+
+    private var favorites: [JSONValue] {
+        store.document("favorites").array.filter {
+            query.isEmpty || $0["content"].string.localizedCaseInsensitiveContains(query)
+                || $0["conversationTitle"].string.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        List {
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            if favorites.isEmpty && error.isEmpty {
+                ContentUnavailableView(query.isEmpty ? "No favorite messages yet" : "No matching messages",
+                                       systemImage: "bookmark", description: Text(query.isEmpty ? "Bookmark a message in chat to keep it here." : "Try another search."))
+                    .listRowBackground(Color.clear)
+            }
+            ForEach(favorites) { item in
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(item["role"].string == "user" ? "You" : (store.document("profile")["agentName"].string.isEmpty ? "Rowan" : store.document("profile")["agentName"].string))
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(ChatPresentation.time(item["createdAt"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
+                    ChatMarkdownText(content: item["content"].string).font(.subheadline).lineLimit(6)
+                    Button {
+                        opening = true
+                        Task {
+                            let opened = await chat.openSearchResult(.object([
+                                "id": item["messageId"], "conversationId": item["conversationId"]
+                            ]))
+                            opening = false
+                            if opened { dismiss(); selected() }
+                            else { error = chat.error ?? "Could not open this message."; chat.error = nil }
+                        }
+                    } label: { Label("Open message", systemImage: "arrow.up.right") }
+                        .font(.caption.weight(.semibold)).disabled(opening || chat.busy || chat.callActive)
+                }
+                .padding(.vertical, 7)
+                .swipeActions {
+                    Button(role: .destructive) { Task { _ = await store.remove("favorites", id: item.id) } } label: {
+                        Label("Remove favorite", systemImage: "bookmark.slash")
+                    }.disabled(store.saving)
+                }
+            }
+        }
+        .listStyle(.plain).scrollContentBackground(.hidden).transparentNavigationTop()
+        .background { Background() }
+        .navigationTitle("Favorites").navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, prompt: "Search favorites")
+        .refreshable { await store.refresh() }
     }
 }
 

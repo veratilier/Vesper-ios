@@ -634,7 +634,7 @@ struct ChatView: View {
                 if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
                 if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
-                    Text(message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading).textSelection(.enabled)
+                    ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
                 if message["status"].string != "streaming" && !chat.replyIsStillRunning(message) {
@@ -769,10 +769,11 @@ struct ChatView: View {
             chat.memoryStatus = "Saved to Memory with its original source."
         } catch { chat.error = error.localizedDescription }
     }
-    private func isFavorite(_ message: JSONValue) -> Bool { store.document("favorites").array.contains { $0["messageId"].string == message.id } }
+    private func isFavorite(_ message: JSONValue) -> Bool { ChatFavorites.existing(message.id, conversationID: chat.conversationID, in: store) != nil }
     private func favorite(_ message: JSONValue) async {
-        if let item = store.document("favorites").array.first(where: { $0["messageId"].string == message.id }) { _ = await store.remove("favorites", id: item.id); return }
-        _ = await store.upsert("favorites", item: .object(["id": .string(UUID().uuidString), "folderId": .string("default"), "messageId": .string(message.id), "conversationId": .string(chat.conversationID), "conversationTitle": .string("Conversations"), "content": message["content"], "role": message["role"], "createdAt": message["createdAt"]]))
+        if let item = ChatFavorites.existing(message.id, conversationID: chat.conversationID, in: store) { _ = await store.remove("favorites", id: item.id); return }
+        let title = chat.conversations.first(where: { $0.id == chat.conversationID })?["title"].string ?? "Chat"
+        _ = await ChatFavorites.save(message, conversationID: chat.conversationID, title: title, in: store)
     }
     private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil } } }
     private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; NativeCallPresentation.shared.open(initiator: "user") }

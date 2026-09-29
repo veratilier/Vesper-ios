@@ -39,20 +39,34 @@ struct NativeChatHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                Button { enterChat() } label: {
-                    conversationRow(mainConversation, title: agentName, emptyPreview: "Start chatting")
+                HStack(spacing: 12) {
+                    Button { enterChat() } label: {
+                        conversationRowContent(mainConversation, title: agentName, emptyPreview: "Start chatting")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
+                    Button { beginEditingContactName() } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(VesperTheme.muted)
+                            .frame(width: 34, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit contact name")
                 }
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button { beginEditingContactName() } label: { Label("Edit name", systemImage: "pencil") }.tint(.blue)
-                }
+                .contactGlassSurface()
                 .contextMenu {
                     Button { beginEditingContactName() } label: { Label("Edit contact name", systemImage: "pencil") }
                 }
-                .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-                .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button { beginEditingContactName() } label: { Label("Edit name", systemImage: "pencil") }.tint(.blue)
+                }
 
                 ForEach(otherConversations) { item in
                     Button { enterChat(item) } label: {
@@ -185,6 +199,11 @@ struct NativeChatHome: View {
         return text.isEmpty ? empty : text
     }
     private func conversationRow(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
+        conversationRowContent(item, title: title, emptyPreview: emptyPreview)
+            .contactGlassSurface()
+            .contentShape(Rectangle())
+    }
+    private func conversationRowContent(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
         HStack(spacing: 13) {
             ChatListAvatar(source: store.document("profile")["agentAvatar"].string, baseURL: store.baseURL)
             VStack(alignment: .leading, spacing: 5) {
@@ -200,8 +219,6 @@ struct NativeChatHome: View {
                     .font(.subheadline).foregroundStyle(VesperTheme.muted).lineLimit(1)
             }
         }
-        .contactGlassSurface()
-        .contentShape(Rectangle())
     }
 }
 

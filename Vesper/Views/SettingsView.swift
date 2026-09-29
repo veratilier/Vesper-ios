@@ -50,6 +50,7 @@ struct WakeView: View {
     @State private var status = ""
     private var supported: Bool { runtime["permissionVersion"].number >= 1 }
     private var jobs: [JSONValue] { runtime["jobs"].array.sorted { $0["created"].number > $1["created"].number } }
+    private var recovery: JSONValue { runtime["recovery"] }
     private var nextWakeAt: Date? {
         guard case .number(let timestamp) = runtime["nextAt"], timestamp.isFinite, timestamp > 0 else { return nil }
         return Date(timeIntervalSince1970: timestamp)
@@ -59,6 +60,19 @@ struct WakeView: View {
             Section {
                 Toggle("Automatic wake-up", isOn: $enabled).disabled(!supported || busy)
                 if runtime != .null { nextWakeRow }
+                if runtime["recoveryVersion"].number >= 1 {
+                    Button("Check service connection") { Task { await checkService() } }.disabled(busy)
+                    ForEach(runtime["toolRecovery"].object.keys.sorted().filter {
+                        runtime["toolRecovery"][$0]["retryAt"].number > Date().timeIntervalSince1970
+                    }, id: \.self) { name in
+                        Text(name + " paused until " + Date(timeIntervalSince1970: runtime["toolRecovery"][name]["retryAt"].number).formatted(date: .omitted, time: .shortened))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !runtime["uncertainWrites"].array.isEmpty {
+                        Text("An external action has an uncertain result. Check the original service before repeating it.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
                 NavigationLink("Recent activity") { activityPage }
@@ -74,7 +88,15 @@ struct WakeView: View {
                     .disabled(busy).accessibilityLabel("Refresh wake service")
             } }
             .safeAreaInset(edge: .bottom) { saveBar }
-            .task { if runtime == .null { await load() } }.refreshable { await load() }
+            .task {
+                if runtime == .null { await load() }
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    guard !busy else { continue }
+                    // Refresh scheduler data without overwriting unsaved permission switches.
+                    if let value = try? await store.api.request("/wake", history: true), !busy { runtime = value }
+                }
+            }.refreshable { await load() }
     }
     private var saveBar: some View {
         WakeSaveButton(title: busy ? "Saving…" : "Save changes", disabled: !supported || busy) {
@@ -89,11 +111,21 @@ struct WakeView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     if !runtime["config"]["enabled"].bool {
                         Text("Paused")
+                    } else if recovery["paused"].bool {
+                        Text(recovery["reason"].string == "quota" ? "Waiting for account quota" :
+                             recovery["reason"].string == "authentication" ? "Login required" : "Paused after repeated failures")
+                        if recovery["failureCount"].number > 0 {
+                            Text("\(Int(recovery["failureCount"].number)) consecutive failures").font(.caption)
+                        }
+                        if recovery["retryAt"].number > 0 {
+                            Text("Check again: " + Date(timeIntervalSince1970: recovery["retryAt"].number).formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption)
+                        }
                     } else if let nextWakeAt {
                         if nextWakeAt > timeline.date {
                             Text(nextWakeAt, style: .relative)
                         } else {
-                            Text("Scheduled time passed")
+                            Text("Waiting for scheduler")
                         }
                         Text(nextWakeAt.formatted(date: .abbreviated, time: .shortened))
                             .font(.caption).foregroundStyle(VesperTheme.muted)
@@ -163,6 +195,13 @@ struct WakeView: View {
         runtime = value; enabled = value["config"]["enabled"].bool
         allowedTools = Set(value["permissions"]["tools"].array.map { $0.string })
         allowedMessages = Set(value["permissions"]["messages"].array.map { $0.string })
+    }
+    private func checkService() async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do {
+            runtime = try await store.api.request("/wake", method: "POST", body: .object(["action": .string("check")]), history: true)
+            status = "Connection check queued. This check does not generate a reply or repeat failed actions."
+        } catch { status = error.localizedDescription }
     }
     private func load() async {
         guard !busy else { return }; busy = true; defer { busy = false }

@@ -1,7 +1,9 @@
 import SwiftUI
+import CryptoKit
 
 @MainActor final class AppStore: ObservableObject {
     init() {
+        cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
         // Remove the former NetEase login even when the server is offline.
         UserDefaults.standard.removeObject(forKey: "netease-uid")
         do {
@@ -14,6 +16,7 @@ import SwiftUI
     }
     weak var musicPlayer: MusicPlayer?
     @Published var documents: [String: JSONValue] = [:]
+    @Published private var cachedProfile: JSONValue = .null
     @Published var error: String?
     @Published var loading = false
     @Published var saving = false
@@ -21,15 +24,19 @@ import SwiftUI
     @Published var legacyMusicCleanupStatus: String?
     @Published var connectionError: String?
     @Published var baseURL: String = UserDefaults.standard.string(forKey: "apiURL") ?? "https://api.vesper.r-vera.com" {
-        didSet { if oldValue != baseURL { connected = false } }
+        didSet { if oldValue != baseURL { connected = false; documents.removeValue(forKey: "profile"); cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token) } }
     }
     @Published var historyURL: String = UserDefaults.standard.string(forKey: "historyURL") ?? "https://codex.r-vera.com/history"
     @Published var socketURL: String = UserDefaults.standard.string(forKey: "socketURL") ?? "wss://codex.r-vera.com"
     @Published var token = CredentialStore.read() {
-        didSet { if oldValue != token { connected = false } }
+        didSet { if oldValue != token { connected = false; documents.removeValue(forKey: "profile"); cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token) } }
     }
     var api: APIClient { APIClient(baseURL: baseURL, historyURL: historyURL, token: token) }
-    func document(_ key: String) -> JSONValue { documents[key] ?? .null }
+    func document(_ key: String) -> JSONValue { documents[key] ?? (key == "profile" ? cachedProfile : .null) }
+    private func rememberProfile(_ value: JSONValue) {
+        cachedProfile = ProfileDisplayCache.displayFields(value)
+        ProfileDisplayCache.save(cachedProfile, baseURL: baseURL, token: token)
+    }
     func connect() async {
         guard !loading else { return }
         connected = false
@@ -68,6 +75,7 @@ import SwiftUI
             // A read started before a save must never replace the saved document.
             guard revision == documentRevision, !saving else { return }
             documents = docs.mapValues { $0["value"] }; connected = true
+            rememberProfile(documents["profile"] ?? .null)
             WidgetSync.notes(document("notes"))
         } catch { connectionError = error.localizedDescription; connected = false }
     }
@@ -138,9 +146,9 @@ import SwiftUI
             guard receipt["ok"].bool else { throw ServiceError(message: "The server did not confirm this save.") }
             if verifySavedValue {
                 let saved = try await api.request("/api/state?key=\(key)")
-                guard saved["value"] == value else { throw ServiceError(message: "The saved profile could not be verified. Please try changing the avatar again.") }
+                guard saved["value"] == value else { throw ServiceError(message: "The saved profile could not be verified. Please try again.") }
             }
-            documents[key] = value; if key == "notes" { WidgetSync.notes(value) }; return true
+            documents[key] = value; if key == "profile" { rememberProfile(value) }; if key == "notes" { WidgetSync.notes(value) }; return true
         } catch { if reportErrors { self.error = error.localizedDescription }; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {
@@ -154,5 +162,34 @@ import SwiftUI
     }
     func remove(_ key: String, id: String) async -> Bool {
         await mutate(key) { .array($0.array.filter { $0.id != id }) }
+    }
+}
+
+private enum ProfileDisplayCache {
+    static func displayFields(_ profile: JSONValue) -> JSONValue {
+        guard case .object = profile else { return .null }
+        return .object(Dictionary(uniqueKeysWithValues: ["userName", "agentName", "userAvatar", "agentAvatar"].compactMap { key in
+            let value = profile[key]
+            return value.string.isEmpty ? nil : (key, value)
+        }))
+    }
+    private static func file(baseURL: String, token: String) -> URL? {
+        guard !token.isEmpty, let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let identity = SHA256.hash(data: Data((baseURL + "\n" + token).utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent("profile-display-\(identity).json")
+    }
+    static func load(baseURL: String, token: String) -> JSONValue {
+        guard let url = file(baseURL: baseURL, token: token), let data = try? Data(contentsOf: url),
+              let profile = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .null }
+        return displayFields(profile)
+    }
+    static func save(_ profile: JSONValue, baseURL: String, token: String) {
+        guard let url = file(baseURL: baseURL, token: token) else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(profile)
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+        } catch { /* Cache failure must never block a confirmed server save. */ }
     }
 }

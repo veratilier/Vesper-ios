@@ -150,7 +150,9 @@ private struct HealthMetric {
         .array(HealthMetric.catalog.map { .object(["id": .string($0.id), "name": .string($0.title), "group": .string($0.group)]) } + HealthMetric.characteristicNames.map { .object(["id": .string($0.0), "name": .string($0.1), "group": .string("Me")]) })
     }
     private var types: Set<HKObjectType> {
-        var values = Set<HKObjectType>(HealthMetric.catalog.map { $0.type as HKObjectType })
+        // Blood pressure authorization is represented by its systolic and
+        // diastolic quantity types, not the correlation queried for display.
+        var values = Set<HKObjectType>(HealthMetric.catalog.filter { $0.id != "blood_pressure" }.map { $0.type as HKObjectType })
         if let systolic = HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic) { values.insert(systolic) }
         if let diastolic = HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic) { values.insert(diastolic) }
         for id: HKCharacteristicTypeIdentifier in [.bloodType, .dateOfBirth, .fitzpatrickSkinType, .biologicalSex, .wheelchairUse] {

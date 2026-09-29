@@ -22,11 +22,13 @@ private struct HealthMetric {
         let km = HKUnit.meterUnit(with: .kilo)
         let bpm = count.unitDivided(by: minute)
         let metersPerSecond = meter.unitDivided(by: .second())
-        func q(_ id: String, _ title: String, _ group: String, _ type: HKQuantityTypeIdentifier, _ unit: HKUnit, _ suffix: String, _ scale: Double = 1, _ days: Int = 365) -> HealthMetric {
-            HealthMetric(id: id, title: title, group: group, type: HKObjectType.quantityType(forIdentifier: type)!, unit: unit, suffix: suffix, scale: scale, days: days)
+        func q(_ id: String, _ title: String, _ group: String, _ type: HKQuantityTypeIdentifier, _ unit: HKUnit, _ suffix: String, _ scale: Double = 1, _ days: Int = 365) -> HealthMetric? {
+            guard let sampleType = HKObjectType.quantityType(forIdentifier: type) else { return nil }
+            return HealthMetric(id: id, title: title, group: group, type: sampleType, unit: unit, suffix: suffix, scale: scale, days: days)
         }
-        func c(_ id: String, _ title: String, _ group: String, _ type: HKCategoryTypeIdentifier, _ days: Int = 365) -> HealthMetric {
-            HealthMetric(id: id, title: title, group: group, type: HKObjectType.categoryType(forIdentifier: type)!, unit: nil, suffix: "", scale: 1, days: days)
+        func c(_ id: String, _ title: String, _ group: String, _ type: HKCategoryTypeIdentifier, _ days: Int = 365) -> HealthMetric? {
+            guard let sampleType = HKObjectType.categoryType(forIdentifier: type) else { return nil }
+            return HealthMetric(id: id, title: title, group: group, type: sampleType, unit: nil, suffix: "", scale: 1, days: days)
         }
         let nutrition: [(String, String, HKQuantityTypeIdentifier, HKUnit, String)] = [
             ("biotin", "Biotin", .dietaryBiotin, microgram, "µg"),
@@ -69,7 +71,7 @@ private struct HealthMetric {
             ("water", "Water", .dietaryWater, .literUnit(with: .milli), "mL"),
             ("zinc", "Zinc", .dietaryZinc, mg, "mg")
         ]
-        let main: [HealthMetric] = [
+        let main: [HealthMetric?] = [
             c("menstruation", "Menstruation", "Cycle tracking", .menstrualFlow),
             c("ovulation_test", "Ovulation test result", "Cycle tracking", .ovulationTestResult),
             q("active_energy", "Active energy", "Activity", .activeEnergyBurned, .kilocalorie(), "kcal"),
@@ -91,7 +93,7 @@ private struct HealthMetric {
             q("environmental_sound", "Environmental sound levels", "Hearing", .environmentalAudioExposure, .decibelAWeightedSoundPressureLevel(), "dBA"),
             q("headphone_audio", "Headphone audio levels", "Hearing", .headphoneAudioExposure, .decibelAWeightedSoundPressureLevel(), "dBA"),
             q("afib_history", "AFib history", "Heart", .atrialFibrillationBurden, percent, "%"),
-            HealthMetric(id: "blood_pressure", title: "Blood pressure", group: "Heart", type: HKObjectType.correlationType(forIdentifier: .bloodPressure)!, unit: nil, suffix: "", scale: 1, days: 365),
+            HKObjectType.correlationType(forIdentifier: .bloodPressure).map { HealthMetric(id: "blood_pressure", title: "Blood pressure", group: "Heart", type: $0, unit: nil, suffix: "", scale: 1, days: 365) },
             q("cardio_fitness", "Cardio fitness", "Heart", .vo2Max, HKUnit.literUnit(with: .milli).unitDivided(by: .gramUnit(with: .kilo)).unitDivided(by: minute), "mL/kg/min"),
             c("cardio_fitness_notification", "Cardio fitness notification", "Heart", .lowCardioFitnessEvent),
             HealthMetric(id: "ecg", title: "Electrocardiogram (ECG)", group: "Heart", type: HKObjectType.electrocardiogramType(), unit: nil, suffix: "", scale: 1, days: 365),
@@ -111,7 +113,7 @@ private struct HealthMetric {
             q("walking_speed", "Walking speed", "Mobility", .walkingSpeed, metersPerSecond, "m/s"),
             q("step_length", "Walking step length", "Mobility", .walkingStepLength, meter, "m"),
         ]
-        let tail: [HealthMetric] = [
+        let tail: [HealthMetric?] = [
             q("insulin", "Insulin delivery", "Other data", .insulinDelivery, .internationalUnit(), "IU"),
             q("blood_oxygen", "Blood oxygen", "Respiratory", .oxygenSaturation, percent, "%"),
             q("respiratory_rate", "Respiratory rate", "Respiratory", .respiratoryRate, bpm, "breaths/min"),
@@ -120,7 +122,7 @@ private struct HealthMetric {
             q("body_temperature", "Body temperature", "Vitals", .bodyTemperature, .degreeCelsius(), "°C"),
             q("wrist_temperature", "Sleeping wrist temperature", "Vitals", .appleSleepingWristTemperature, .degreeCelsius(), "°C", 1, 7)
         ]
-        return main + nutrition.map { q($0.0, $0.1, "Nutrition", $0.2, $0.3, $0.4) } + tail
+        return main.compactMap { $0 } + nutrition.compactMap { q($0.0, $0.1, "Nutrition", $0.2, $0.3, $0.4) } + tail.compactMap { $0 }
     }()
 
     static let characteristicNames: [(String, String)] = [
@@ -138,20 +140,27 @@ private struct HealthMetric {
     @Published var updated: Date?
     private(set) var requestedIDs: [String] = []
     var available: Bool { HKHealthStore.isHealthDataAvailable() }
+    private var accessError: String? {
+        guard available else { return "Health data is unavailable on this device." }
+        guard let purpose = Bundle.main.object(forInfoDictionaryKey: "NSHealthShareUsageDescription") as? String,
+              !purpose.isEmpty else { return "This app build is missing the Health read privacy description." }
+        return nil
+    }
     static var catalog: JSONValue {
         .array(HealthMetric.catalog.map { .object(["id": .string($0.id), "name": .string($0.title), "group": .string($0.group)]) } + HealthMetric.characteristicNames.map { .object(["id": .string($0.0), "name": .string($0.1), "group": .string("Me")]) })
     }
     private var types: Set<HKObjectType> {
         var values = Set<HKObjectType>(HealthMetric.catalog.map { $0.type as HKObjectType })
-        values.insert(HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic)!)
-        values.insert(HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic)!)
+        if let systolic = HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic) { values.insert(systolic) }
+        if let diastolic = HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic) { values.insert(diastolic) }
         for id: HKCharacteristicTypeIdentifier in [.bloodType, .dateOfBirth, .fitzpatrickSkinType, .biologicalSex, .wheelchairUse] {
             if let type = HKObjectType.characteristicType(forIdentifier: id) { values.insert(type) }
         }
         return values
     }
     func connect() async {
-        guard available, !busy else { return }
+        guard !busy else { return }
+        if let accessError { error = accessError; return }
         busy = true; error = ""; defer { busy = false }
         do {
             try await health.requestAuthorization(toShare: [], read: types)
@@ -159,7 +168,8 @@ private struct HealthMetric {
         } catch { self.error = error.localizedDescription }
     }
     func refresh(requestedIDs: [String] = HealthMetric.defaultIDs) async {
-        guard available, !busy else { return }
+        guard !busy else { return }
+        if let accessError { error = accessError; return }
         busy = true; error = ""; defer { busy = false }
         await read(requestedIDs: requestedIDs)
     }
@@ -222,8 +232,10 @@ private struct HealthMetric {
             return String(format: "%.1f %@ · %@", number, metric.suffix, when)
         }
         if let pressure = sample as? HKCorrelation {
-            let systolic = pressure.objects(for: HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic)!).compactMap { $0 as? HKQuantitySample }.first?.quantity.doubleValue(for: .millimeterOfMercury())
-            let diastolic = pressure.objects(for: HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic)!).compactMap { $0 as? HKQuantitySample }.first?.quantity.doubleValue(for: .millimeterOfMercury())
+            guard let systolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic),
+                  let diastolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic) else { return "No readable data" }
+            let systolic = pressure.objects(for: systolicType).compactMap { $0 as? HKQuantitySample }.first?.quantity.doubleValue(for: .millimeterOfMercury())
+            let diastolic = pressure.objects(for: diastolicType).compactMap { $0 as? HKQuantitySample }.first?.quantity.doubleValue(for: .millimeterOfMercury())
             if let systolic, let diastolic { return String(format: "%.0f/%.0f mmHg · %@", systolic, diastolic, when) }
         }
         if let category = sample as? HKCategorySample {
@@ -245,9 +257,10 @@ private struct HealthMetric {
         return "Recorded · \(when)"
     }
     private func stepsToday() async -> String {
+        guard let stepsType = HKObjectType.quantityType(forIdentifier: .stepCount) else { return "No readable data" }
         let start = Calendar.current.startOfDay(for: Date())
         let steps: Double? = await withCheckedContinuation { continuation in
-            let query = HKStatisticsQuery(quantityType: HKObjectType.quantityType(forIdentifier: .stepCount)!, quantitySamplePredicate: HKQuery.predicateForSamples(withStart: start, end: .now), options: .cumulativeSum) { _, result, _ in
+            let query = HKStatisticsQuery(quantityType: stepsType, quantitySamplePredicate: HKQuery.predicateForSamples(withStart: start, end: .now), options: .cumulativeSum) { _, result, _ in
                 continuation.resume(returning: result?.sumQuantity()?.doubleValue(for: .count()))
             }
             health.execute(query)
@@ -255,8 +268,9 @@ private struct HealthMetric {
         return steps.map { String(format: "%.0f steps", $0) } ?? "No readable data"
     }
     private func sleepPastDay() async -> String {
+        guard let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return "No readable data" }
         let now = Date(), since = now.addingTimeInterval(-86400)
-        let sleep = await safeSamples(HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!, since: since, limit: HKObjectQueryNoLimit).compactMap { $0 as? HKCategorySample }.filter {
+        let sleep = await safeSamples(sleepType, since: since, limit: HKObjectQueryNoLimit).compactMap { $0 as? HKCategorySample }.filter {
             [HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue, HKCategoryValueSleepAnalysis.asleepCore.rawValue, HKCategoryValueSleepAnalysis.asleepDeep.rawValue, HKCategoryValueSleepAnalysis.asleepREM.rawValue].contains($0.value)
         }
         let intervals = sleep.map { (max($0.startDate, since), min($0.endDate, now)) }.sorted { $0.0 < $1.0 }

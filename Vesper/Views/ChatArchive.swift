@@ -15,13 +15,16 @@ struct NativeChatHome: View {
     @State private var renamingConversation: JSONValue?
     @State private var conversationTitle = ""
     @State private var renaming = false
+    @State private var editingContactName = false
+    @State private var contactName = ""
+    @State private var savingContactName = false
     private var mainConversationID: String {
         let saved = store.document("profile")["mainConversationId"].string
         return saved.isEmpty ? (chat.conversations.first?.id ?? "") : saved
     }
     private var mainConversation: JSONValue? { chat.conversations.first { $0.id == mainConversationID } }
     private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
-    private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming }
+    private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
         NavigationStack {
             List {
@@ -37,14 +40,34 @@ struct NativeChatHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                Button { enterChat() } label: {
-                    conversationRow(mainConversation, title: agentName, emptyPreview: "Start chatting")
+                HStack(spacing: 12) {
+                    Button { enterChat() } label: {
+                        conversationRowContent(mainConversation, title: agentName, emptyPreview: "Start chatting")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
+                    Button { beginEditingContactName() } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(VesperTheme.muted)
+                            .frame(width: 34, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit contact name")
                 }
-                .buttonStyle(.plain)
+                .contactGlassSurface()
+                .contextMenu {
+                    Button { beginEditingContactName() } label: { Label("Edit contact name", systemImage: "pencil") }
+                }
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-                .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button { beginEditingContactName() } label: { Label("Edit name", systemImage: "pencil") }.tint(.blue)
+                }
 
                 ForEach(otherConversations) { item in
                     Button { enterChat(item) } label: {
@@ -125,6 +148,26 @@ struct NativeChatHome: View {
                 }.disabled(conversationTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) { renamingConversation = nil }
             }
+            .alert("Edit contact name", isPresented: $editingContactName) {
+                TextField("Name", text: $contactName)
+                Button("Save") {
+                    let name = String(contactName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
+                    savingContactName = true
+                    Task {
+                        defer { savingContactName = false }
+                        let saved = await store.mutate("profile", verifySavedValue: true) { current in
+                            var profile = current.object
+                            profile["agentName"] = .string(name)
+                            return .object(profile)
+                        }
+                        if !saved {
+                            chat.error = store.error ?? "The contact name could not be saved."
+                            store.error = nil
+                        }
+                    }
+                }.disabled(contactName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel", role: .cancel) {}
+            }
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
             } message: { Text(chat.error ?? "") }
@@ -150,12 +193,21 @@ struct NativeChatHome: View {
         let name = store.document("profile")["agentName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "Rowan" : name
     }
+    private func beginEditingContactName() {
+        contactName = agentName
+        editingContactName = true
+    }
     private func preview(_ item: JSONValue?, empty: String) -> String {
         guard let item else { return empty }
         let text = item["preview"].string.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? empty : text
     }
     private func conversationRow(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
+        conversationRowContent(item, title: title, emptyPreview: emptyPreview)
+            .contactGlassSurface()
+            .contentShape(Rectangle())
+    }
+    private func conversationRowContent(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
         HStack(spacing: 13) {
             ChatListAvatar(source: store.document("profile")["agentAvatar"].string, baseURL: store.baseURL)
             VStack(alignment: .leading, spacing: 5) {
@@ -171,8 +223,6 @@ struct NativeChatHome: View {
                     .font(.subheadline).foregroundStyle(VesperTheme.muted).lineLimit(1)
             }
         }
-        .contactGlassSurface()
-        .contentShape(Rectangle())
     }
 }
 

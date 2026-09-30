@@ -911,3 +911,76 @@ extension ChatConnectionRecoveryTests {
         await eventually { chat.userInputRequests.isEmpty }
     }
 }
+
+private func asyncQuestionEvent() -> JSONValue {
+    .object(["method": .string("item/completed"), "params": .object(["threadId": .string("thread"), "turnId": .string("turn"),
+        "item": .object(["type": .string("agentMessage"), "id": .string("call_probe"), "phase": .string("final_answer"),
+            "text": .string("Do you prefer tea or coffee?\n- Tea\n- Coffee"), "delivery": .string("async"),
+            "questions": .array([.object(["title": .string("Do you prefer tea or coffee?"), "options": .array([.string("Tea"), .string("Coffee")])])])])])])
+}
+
+extension ChatConnectionRecoveryTests {
+    func testLiveAsyncQuestionShapeSurvivesTurnAndReturnsCorrelatedAnswer() async throws {
+        let socket = RecoverySocket()
+        let chat = session([socket]); defer { chat.disconnect() }
+        var saved: [JSONValue] = []
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"),
+                                 endpoint: "wss://invalid.example", threadID: "thread", questionWriter: { saved.append($0) })
+        try await chat.connect()
+        try socket.emit(asyncQuestionEvent())
+        await eventually { saved.count == 1 }
+        try socket.emit(asyncQuestionEvent()) // Duplicate delivery must not create another card.
+        try socket.emit(.object(["method": .string("turn/completed"), "params": .object(["turn": .object(["id": .string("turn")])])]))
+        await Task.yield()
+        let request = try XCTUnwrap(chat.userInputRequests.first)
+        XCTAssertEqual(chat.userInputRequests.count, 1)
+        XCTAssertEqual(chat.messages.first?["metadata"]["userInput"]["status"].string, "waiting")
+        XCTAssertEqual(chat.messages.first?["content"].string, "Question")
+        XCTAssertTrue(ChatPresentation.isActivity(try XCTUnwrap(chat.messages.first)))
+        let sent = await chat.resolveQuestion(request.id, selections: ["0": "Coffee"])
+        XCTAssertTrue(sent)
+        let turn = try XCTUnwrap(socket.packets.last { $0["method"].string == "turn/start" })
+        let reply = turn["params"]["input"].array[0]["text"].string
+        XCTAssertTrue(reply.hasPrefix("<send_user_message_question_reply>"))
+        let json = reply.replacingOccurrences(of: "<send_user_message_question_reply>", with: "").replacingOccurrences(of: "</send_user_message_question_reply>", with: "")
+        let answers = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)).array
+        XCTAssertEqual(answers[0]["questionItemId"].string, "[\"request_user_input_async\",\"call_probe\",0]")
+        XCTAssertEqual(answers[0]["answer"].string, "Coffee")
+        XCTAssertFalse(chat.messages.contains { ChatPresentation.isUser($0) })
+        XCTAssertEqual(saved.last?["metadata"]["userInput"]["status"].string, "answered")
+        XCTAssertTrue(chat.userInputRequests.isEmpty)
+        XCTAssertFalse(socket.packets.contains { $0["id"] == .string("call_probe") }) // Async messages are not JSON-RPC requests.
+    }
+    func testAsyncCancelDoesNotStartTurnAndMalformedQuestionCannotShowCard() async throws {
+        let socket = RecoverySocket()
+        let chat = session([socket]); defer { chat.disconnect() }
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"),
+                                 endpoint: "wss://invalid.example", threadID: "thread", questionWriter: { _ in })
+        try await chat.connect()
+        var malformed = asyncQuestionEvent()
+        var item = malformed["params"]["item"]
+        item["questions"] = .array([.object(["title": .string(""), "options": .array([.string("Tea")])])])
+        malformed["params"]["item"] = item
+        try socket.emit(malformed)
+        await eventually { chat.error != nil }
+        XCTAssertTrue(chat.userInputRequests.isEmpty)
+        try socket.emit(asyncQuestionEvent())
+        await eventually { chat.userInputRequests.count == 1 }
+        let cancelled = await chat.resolveQuestion(try XCTUnwrap(chat.userInputRequests.first).id)
+        XCTAssertTrue(cancelled)
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "turn/start" })
+        XCTAssertEqual(chat.messages.first?["metadata"]["userInput"]["status"].string, "cancelled")
+    }
+    func testNonBlockingServerQuestionAlsoSurvivesTurnCompletion() async throws {
+        let socket = RecoverySocket()
+        let chat = session([socket]); defer { chat.disconnect() }
+        try await chat.connect()
+        var packet = questionPacket()
+        packet["params"]["isBlocking"] = .bool(false)
+        try socket.emit(packet)
+        await eventually { chat.userInputRequests.count == 1 }
+        try socket.emit(.object(["method": .string("turn/completed"), "params": .object(["turn": .object(["id": .string("turn")])])]))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(chat.userInputRequests.count, 1)
+    }
+}

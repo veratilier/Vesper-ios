@@ -312,7 +312,8 @@ struct ChatView: View {
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
                         ForEach(ChatPresentation.displayRows(chat.messages)) { row in
                             if let message = row.messages.first {
-                                if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
+                                if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
+                                else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
                                 else { messageRow(message, activities: row.activities).id(message.id) }
                             }
                         }
@@ -545,6 +546,10 @@ struct ChatView: View {
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $terminalVisible) {
             ChatTerminalView().environmentObject(chat).presentationDetents([.medium, .large])
+        }
+        .sheet(item: Binding(get: { chat.approval == nil ? chat.userInputRequests.first : nil }, set: { _ in })) { request in
+            ChatQuestionSheet(request: request).environmentObject(chat).id(request.id)
+                .presentationDetents([.medium, .large]).interactiveDismissDisabled()
         }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
             NavigationStack {
@@ -880,65 +885,265 @@ enum ChatTerminalRecords {
 }
 
 private struct ChatTerminalView: View {
-    @EnvironmentObject private var chat: ChatSession
+    @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var followOutput = true
-    private var entries: [JSONValue] { ChatTerminalRecords.entries(chat.messages) }
-    private let terminalColor = Color(red: 0.07, green: 0.08, blue: 0.10)
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var screen = ""
+    @State private var draft = ""
+    @State private var error = ""
+    @State private var connected = false
+    @State private var running = false
+    @State private var busy = false
+    @State private var retry = 0
 
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
-                        if entries.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Waiting for a command").font(.headline)
-                                Text("Commands, output and file changes from Codex in this chat appear here as they run.")
-                                    .foregroundStyle(.white.opacity(0.6))
-                            }.padding(.top, 24)
+            VStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
+                    Text(connected ? (running ? "Live · VPS Codex" : "No active terminal") : "Disconnected")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Reconnect terminal")
+                }
+                ScrollView([.horizontal, .vertical]) {
+                    Text(screen.isEmpty ? "Start or reconnect to the VPS Codex terminal." : screen)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.9)).textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                if !error.isEmpty {
+                    Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                }
+                if connected && !running {
+                    Button("Start VPS Codex") { perform("/terminal/start") }
+                        .buttonStyle(.bordered).disabled(busy)
+                }
+                HStack(spacing: 8) {
+                    ForEach(["Esc", "Tab", "^C", "←", "↑", "↓", "→", "↵"], id: \.self) { label in
+                        Button(label) { sendKey(label) }
+                            .font(.system(size: 13, design: .monospaced))
+                            .frame(maxWidth: .infinity, minHeight: 36)
+                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }.disabled(!connected || !running || busy)
+                HStack {
+                    TextField("Type into VPS terminal…", text: $draft)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onSubmit { sendDraft() }
+                    Button { sendDraft() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                        .accessibilityLabel("Send to terminal")
+                        .disabled(draft.isEmpty || !connected || !running || busy)
+                }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                Text("Persistent VPS session · closing this window keeps it running")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
+                .navigationTitle("Codex terminal").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }.preferredColorScheme(.dark)
+            .task(id: "\(scenePhase)-\(retry)") {
+                guard scenePhase == .active else { connected = false; return }
+                await followScreen()
+            }
+    }
+
+    private func followScreen() async {
+        connected = false
+        while !Task.isCancelled {
+            do {
+                let result = try await store.api.request("/terminal", history: true)
+                try Task.checkCancellation()
+                screen = result["screen"].string
+                running = result["running"].bool
+                connected = true
+                // A failed input is not automatically retried or erased by polling.
+                try await Task.sleep(for: .milliseconds(500))
+            } catch is CancellationError { return }
+            catch let failure {
+                guard !Task.isCancelled else { return }
+                connected = false
+                error = failure.localizedDescription
+                return
+            }
+        }
+    }
+
+    private func sendKey(_ label: String) {
+        let keys = ["Esc": "Escape", "Tab": "Tab", "^C": "C-c", "←": "Left",
+                    "↑": "Up", "↓": "Down", "→": "Right", "↵": "Enter"]
+        if let key = keys[label] { perform("/terminal/input", body: .object(["key": .string(key)])) }
+    }
+
+    private func sendDraft() {
+        guard !draft.isEmpty, connected, running, !busy else { return }
+        perform("/terminal/input", body: .object(["text": .string(draft)]), sentDraft: draft)
+    }
+
+    private func perform(_ path: String, body: JSONValue? = nil, sentDraft: String? = nil) {
+        guard !busy else { return }
+        busy = true
+        Task { @MainActor in
+            defer { busy = false }
+            do {
+                _ = try await store.api.request(path, method: "POST", body: body, history: true)
+                error = ""
+                if let sentDraft, draft == sentDraft { draft = "" }
+                retry += 1
+            } catch let failure {
+                error = "Not confirmed. Check the live screen before sending again. " + failure.localizedDescription
+            }
+        }
+    }
+}
+
+private struct ChatQuestionSheet: View {
+    @EnvironmentObject private var chat: ChatSession
+    let request: ChatQuestionRequest
+    @State private var answers: [String: String] = [:]
+    @State private var other: Set<String> = []
+    private var questions: [JSONValue] { request.packet["params"]["questions"].array }
+    private var valid: Bool { (try? ChatUserInput.answer(request.packet, selections: answers)) != nil }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    ForEach(questions) { question in
+                        VStack(alignment: .leading, spacing: 12) {
+                            if !question["header"].string.isEmpty {
+                                Text(question["header"].string).font(.caption).foregroundStyle(VesperTheme.muted)
+                            }
+                            ChatMarkdownText(content: question["question"].string).font(.system(size: 17, weight: .semibold))
+                            ForEach(Array(question["options"].array.enumerated()), id: \.offset) { _, option in
+                                optionButton(question, label: option["label"].string, description: option["description"].string)
+                            }
+                            if question["isOther"].bool && !question["options"].array.isEmpty {
+                                Button {
+                                    other.insert(question.id); answers[question.id] = ""
+                                } label: {
+                                    Label("Other answer", systemImage: other.contains(question.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                                }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                            }
+                            if question["options"].array.isEmpty || other.contains(question.id) {
+                                let value = Binding(get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 })
+                                Group {
+                                    if question["isSecret"].bool { SecureField("Your answer…", text: value) }
+                                    else { TextField("Your answer…", text: value, axis: .vertical).lineLimit(1...4) }
+                                }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                            }
                         }
-                        ForEach(entries) { message in
-                            let execution = message["metadata"]["execution"]
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text(ChatPresentation.time(ChatTranscript.timestamp(message))).foregroundStyle(.white.opacity(0.5))
-                                    Spacer()
-                                    Text(execution["status"].string).foregroundStyle(.white.opacity(0.7))
-                                    if execution["exitCode"] != .null { Text("exit \(Int(execution["exitCode"].number))").foregroundStyle(execution["exitCode"].number == 0 ? .green : .red) }
-                                }.font(.system(size: 11, design: .monospaced))
-                                if !execution["cwd"].string.isEmpty { Text(execution["cwd"].string).foregroundStyle(.white.opacity(0.5)) }
-                                Text(execution["command"].string.isEmpty ? execution["title"].string : "$ " + execution["command"].string)
-                                    .foregroundStyle(.green)
-                                if !execution["output"].string.isEmpty { Text(execution["output"].string).foregroundStyle(.white.opacity(0.9)) }
-                                ForEach(Array(execution["files"].array.enumerated()), id: \.offset) { _, file in
-                                    Text(file["path"].string).foregroundStyle(.cyan)
-                                    if !file["diff"].string.isEmpty { Text(file["diff"].string).foregroundStyle(.white.opacity(0.85)) }
-                                }
-                                if execution["truncated"].bool || execution["filesTruncated"].bool {
-                                    Text("Saved output is partial.").foregroundStyle(.yellow)
+                    }
+                }.padding(20)
+            }.background { Background() }
+                .safeAreaInset(edge: .bottom) {
+                    Button { Task { _ = await chat.resolveQuestion(request.id, selections: answers) } } label: {
+                        HStack { if chat.answeringQuestion { ProgressView() }; Text("Submit answer").font(.headline) }
+                            .frame(maxWidth: .infinity).padding(.vertical, 16)
+                    }.buttonStyle(.plain).background(.regularMaterial, in: Capsule())
+                        .disabled(!valid || chat.answeringQuestion).padding(.horizontal, 20).padding(.bottom, 12)
+                }
+                .navigationTitle("Answer question").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { Task { _ = await chat.resolveQuestion(request.id) } }.disabled(chat.answeringQuestion)
+                } }
+        }
+    }
+    private func optionButton(_ question: JSONValue, label: String, description: String) -> some View {
+        let selected = !other.contains(question.id) && answers[question.id] == label
+        return Button {
+            other.remove(question.id); answers[question.id] = label
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle").padding(.top, 2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(label).font(.subheadline.weight(.semibold))
+                    if !description.isEmpty { Text(description).font(.caption).foregroundStyle(VesperTheme.muted) }
+                }
+                Spacer(minLength: 0)
+            }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).stroke(selected ? VesperTheme.muted : .clear, lineWidth: 1) }
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct QuestionToolRow: View {
+    let message: JSONValue
+    @State private var details = false
+    private var record: JSONValue { message["metadata"]["userInput"] }
+    var body: some View {
+        Button { details = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "wrench")
+                Text("Question").font(.subheadline)
+                Spacer()
+                Text(record["status"].string.capitalized).font(.caption)
+                Image(systemName: "chevron.right").font(.caption2)
+            }.foregroundStyle(VesperTheme.muted).frame(minHeight: 36).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Question tool, details")
+            .sheet(isPresented: $details) {
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            ForEach(record["questions"].array) { question in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ChatMarkdownText(content: question["question"].string).font(.headline)
+                                    let answer = record["answers"][question.id].string
+                                    if !answer.isEmpty { Text(answer).font(.subheadline).foregroundStyle(VesperTheme.muted) }
+                                    else { Text("No answer recorded").font(.caption).foregroundStyle(VesperTheme.muted) }
                                 }
                             }
-                            .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }.padding().frame(maxWidth: .infinity, alignment: .leading)
+                    }.background { Background() }
+                        .navigationTitle("Question").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { details = false } } }
+                }.presentationDetents([.medium, .large])
+            }
+    }
+}
+
+private struct ToolCallRow: View {
+    let tool: JSONValue
+    @State private var showingDetails = false
+    private var title: String { tool["title"].string.isEmpty ? "Tool call" : tool["title"].string }
+    var body: some View {
+        Button { showingDetails = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "wrench").font(.system(size: 13))
+                Text(title).font(.system(size: 13)).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(tool["status"].string.capitalized).font(.caption2)
+                Image(systemName: "chevron.right").font(.system(size: 10))
+            }
+            .foregroundStyle(VesperTheme.muted)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title + ", " + tool["status"].string + ", details")
+        .sheet(isPresented: $showingDetails) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Label(tool["status"].string.capitalized, systemImage: "wrench")
+                            .font(.subheadline).foregroundStyle(VesperTheme.muted)
+                        if !tool["output"].string.isEmpty {
+                            Text(tool["output"].string).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        } else {
+                            Text(["running", "inProgress"].contains(tool["status"].string) ? "Waiting for result…" : "No detailed result was saved.")
+                                .font(.subheadline).foregroundStyle(VesperTheme.muted)
                         }
-                        Color.clear.frame(height: 1).id("terminal-bottom")
-                    }.padding(16)
+                        if tool["truncated"].bool { Text("Saved result is partial.").font(.caption).foregroundStyle(VesperTheme.muted) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
                 }
-                .onAppear { if followOutput { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
-                .onChange(of: entries) { _, _ in if followOutput { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
-                .onChange(of: followOutput) { _, enabled in if enabled { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
-            }
-            .background(terminalColor)
-            .navigationTitle("Codex terminal").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { followOutput.toggle() } label: { Image(systemName: followOutput ? "arrow.down.to.line.circle.fill" : "arrow.down.to.line.circle") }
-                        .accessibilityLabel("Follow output").accessibilityValue(followOutput ? "On" : "Off")
-                }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-        }.preferredColorScheme(.dark)
+                .background { Background() }
+                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingDetails = false } } }
+            }.presentationDetents([.medium, .large])
+        }
     }
 }
 
@@ -1009,6 +1214,7 @@ private struct AssistantMessageHeading: View {
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            ForEach(activities.filter { $0["metadata"]["userInput"] != .null }) { item in QuestionToolRow(message: item) }
             Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
@@ -1021,19 +1227,22 @@ private struct AssistantMessageHeading: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
-                ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in MiniTerminal(execution: item["metadata"]["execution"]) }
+                ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in
+                    if !ChatTerminalRecords.entries([item]).isEmpty { MiniTerminal(execution: item["metadata"]["execution"]) }
+                    else { ToolCallRow(tool: item["metadata"]["execution"]) }
+                }
                 let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
                 let toolCards = ToolActivityRecords.cards(toolEvents)
                 if !toolCards.isEmpty {
                     Text("Tool calls").font(.caption).foregroundStyle(VesperTheme.muted)
-                    ForEach(toolCards) { card in MiniTerminal(execution: card) }
+                    ForEach(toolCards) { card in ToolCallRow(tool: card) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Thinking summary").font(.caption).foregroundStyle(VesperTheme.muted)
                     if !message["metadata"]["thoughtSummary"].string.isEmpty {
                         Text(message["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                     }
-                    ForEach(activities.filter { $0["metadata"]["execution"] == .null }) { item in
+                    ForEach(activities.filter { $0["metadata"]["execution"] == .null && $0["metadata"]["userInput"] == .null }) { item in
                         Group {
                             Text(item["metadata"]["thoughtSummary"].string.isEmpty ? item["content"].string : item["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                         }

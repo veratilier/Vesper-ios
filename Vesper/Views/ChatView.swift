@@ -278,6 +278,8 @@ struct ChatView: View {
     @State private var renameText = ""
     @State private var removingConversation: JSONValue?
     @State private var modelPicker = false
+    @State private var modelExpanded = false
+    @State private var strengthExpanded = false
     @State private var connectionDetails = false
     @State private var terminalVisible = false
     @State private var drawer = false
@@ -491,29 +493,46 @@ struct ChatView: View {
     private var modelSheet: some View {
             NavigationStack {
                 List {
-                    Button { chat.selectModel("") } label: {
-                        HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
-                    }
-                    ForEach(chat.models) { model in
-                        Button { chat.selectModel(model["model"].string) } label: {
-                            HStack {
-                                Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string)
-                                Spacer()
-                                if chat.model == model["model"].string { Image(systemName: "checkmark") }
+                    DisclosureGroup(isExpanded: $modelExpanded) {
+                        Button { chat.selectModel("") } label: {
+                            HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
+                        }
+                        ForEach(chat.models) { model in
+                            Button { chat.selectModel(model["model"].string) } label: {
+                                HStack {
+                                    Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string)
+                                    Spacer()
+                                    if chat.model == model["model"].string { Image(systemName: "checkmark") }
+                                }
                             }
                         }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Model").font(.headline)
+                            Text(chat.models.first { $0["model"].string == chat.model }?["displayName"].string ?? (chat.model.isEmpty ? "Default" : chat.model))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                    Section("Reasoning effort") {
+                    DisclosureGroup(isExpanded: $strengthExpanded) {
                         if chat.model.isEmpty {
                             Text("Choose a model to see its supported effort levels.").font(.caption).foregroundStyle(VesperTheme.muted)
                         } else {
-                            Picker("Strength", selection: $chat.effort) {
-                                Text("Default").tag("")
-                                ForEach(chat.supportedEfforts, id: \.self) { value in
-                                    Text(value == "xhigh" ? "Extra high" : value.capitalized).tag(value)
+                            ForEach([""] + chat.supportedEfforts, id: \.self) { value in
+                                Button { chat.effort = value } label: {
+                                    HStack {
+                                        Text(value.isEmpty ? "Default" : value == "xhigh" ? "Extra high" : value.capitalized)
+                                        Spacer()
+                                        if chat.effort == value { Image(systemName: "checkmark") }
+                                    }
                                 }
-                            }.pickerStyle(.inline)
+                            }
                             if chat.supportedEfforts.isEmpty { Text("This model does not offer adjustable reasoning effort.").font(.caption) }
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Strength").font(.headline)
+                            Text(chat.effort.isEmpty ? "Default" : chat.effort == "xhigh" ? "Extra high" : chat.effort.capitalized)
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     if chat.loadingModels { ProgressView("Loading models…") }

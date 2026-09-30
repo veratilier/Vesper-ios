@@ -478,7 +478,7 @@ final class ContractTests: XCTestCase {
             try emit(.object(["id": packet["id"], "error": .object(["message": .string("Request rejected")])]))
             return
         }
-        if packet["id"] != .null {
+        if packet["id"] != .null && !method.isEmpty {
             try emit(.object(["id": packet["id"], "result": method == "thread/resume" ? snapshot : .object([:])]))
         }
     }
@@ -896,9 +896,11 @@ extension ChatConnectionRecoveryTests {
         chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"),
                                  endpoint: "wss://invalid.example", threadID: "thread", questionWriter: { _ in })
         try await chat.connect()
+        try socket.emit(.object(["id": .string("expired-rpc"), "result": .object([:])]))
         try socket.emit(questionPacket())
         try socket.emit(questionPacket(.string("second")))
         await eventually { chat.userInputRequests.count == 2 }
+        XCTAssertFalse(socket.packets.contains { $0["id"] == .string("expired-rpc") })
         let first = try XCTUnwrap(chat.userInputRequests.first)
         let cancelled = await chat.resolveQuestion(first.id)
         XCTAssertTrue(cancelled)

@@ -1213,6 +1213,9 @@ enum ChatUserInput {
             if packet["error"] != .null { callback.resume(throwing: ChatRPCRejected(message: packet["error"]["message"].string, code: Int(exactly: packet["error"]["code"].number) ?? 0)) }
             else { callback.resume(returning: packet["result"]) }; return
         }
+        // JSON-RPC responses are never requests, even when their original caller expired.
+        // Replying to an unmatched response can create a response/error feedback loop.
+        if packet["method"].string.isEmpty { return }
         if resuming { bufferedPackets.append(packet); return }
         let method = packet["method"].string; let p = packet["params"]
         if packet["id"] != .null {

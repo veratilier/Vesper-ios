@@ -650,14 +650,7 @@ struct ChatView: View {
                 if !otherAttachments.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { HStack(spacing: 12) {
-                            Image(systemName: "doc.text").font(.title2)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(attachment["name"].string.isEmpty ? "Download file" : attachment["name"].string).font(.subheadline).lineLimit(2)
-                                Text("Tap to open · " + ByteCountFormatter.string(fromByteCount: Int64(max(0, attachment["size"].number)), countStyle: .file)).font(.caption2).foregroundStyle(VesperTheme.muted)
-                            }
-                            Image(systemName: "arrow.down.to.line").font(.subheadline)
-                        }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) } }
                     } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
                 if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: message["metadata"]["musicCard"]) }
@@ -665,6 +658,11 @@ struct ChatView: View {
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
                 if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
+                    if message["status"].string != "streaming" {
+                        ForEach(ChatMarkdownText.previewURLs(in: message["content"].string), id: \.self) { url in
+                            ChatLinkCard(url: url)
+                        }
+                    }
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
                 if message["status"].string != "streaming" && !chat.replyIsStillRunning(message) {

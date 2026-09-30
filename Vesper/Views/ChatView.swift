@@ -312,7 +312,8 @@ struct ChatView: View {
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
                         ForEach(ChatPresentation.displayRows(chat.messages)) { row in
                             if let message = row.messages.first {
-                                if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
+                                if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
+                                else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
                                 else { messageRow(message, activities: row.activities).id(message.id) }
                             }
                         }
@@ -545,6 +546,10 @@ struct ChatView: View {
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $terminalVisible) {
             ChatTerminalView().environmentObject(chat).presentationDetents([.medium, .large])
+        }
+        .sheet(item: Binding(get: { chat.approval == nil ? chat.userInputRequests.first : nil }, set: { _ in })) { request in
+            ChatQuestionSheet(request: request).environmentObject(chat).id(request.id)
+                .presentationDetents([.medium, .large]).interactiveDismissDisabled()
         }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
             NavigationStack {
@@ -993,6 +998,113 @@ private struct ChatTerminalView: View {
     }
 }
 
+private struct ChatQuestionSheet: View {
+    @EnvironmentObject private var chat: ChatSession
+    let request: ChatQuestionRequest
+    @State private var answers: [String: String] = [:]
+    @State private var other: Set<String> = []
+    private var questions: [JSONValue] { request.packet["params"]["questions"].array }
+    private var valid: Bool { (try? ChatUserInput.answer(request.packet, selections: answers)) != nil }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    ForEach(questions) { question in
+                        VStack(alignment: .leading, spacing: 12) {
+                            if !question["header"].string.isEmpty {
+                                Text(question["header"].string).font(.caption).foregroundStyle(VesperTheme.muted)
+                            }
+                            ChatMarkdownText(content: question["question"].string).font(.system(size: 17, weight: .semibold))
+                            ForEach(Array(question["options"].array.enumerated()), id: \.offset) { _, option in
+                                optionButton(question, label: option["label"].string, description: option["description"].string)
+                            }
+                            if question["isOther"].bool && !question["options"].array.isEmpty {
+                                Button {
+                                    other.insert(question.id); answers[question.id] = ""
+                                } label: {
+                                    Label("Other answer", systemImage: other.contains(question.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                                }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                            }
+                            if question["options"].array.isEmpty || other.contains(question.id) {
+                                let value = Binding(get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 })
+                                Group {
+                                    if question["isSecret"].bool { SecureField("Your answer…", text: value) }
+                                    else { TextField("Your answer…", text: value, axis: .vertical).lineLimit(1...4) }
+                                }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                            }
+                        }
+                    }
+                }.padding(20)
+            }.background { Background() }
+                .safeAreaInset(edge: .bottom) {
+                    Button { Task { _ = await chat.resolveQuestion(request.id, selections: answers) } } label: {
+                        HStack { if chat.answeringQuestion { ProgressView() }; Text("Submit answer").font(.headline) }
+                            .frame(maxWidth: .infinity).padding(.vertical, 16)
+                    }.buttonStyle(.plain).background(.regularMaterial, in: Capsule())
+                        .disabled(!valid || chat.answeringQuestion).padding(.horizontal, 20).padding(.bottom, 12)
+                }
+                .navigationTitle("Answer question").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { Task { _ = await chat.resolveQuestion(request.id) } }.disabled(chat.answeringQuestion)
+                } }
+        }
+    }
+    private func optionButton(_ question: JSONValue, label: String, description: String) -> some View {
+        let selected = !other.contains(question.id) && answers[question.id] == label
+        return Button {
+            other.remove(question.id); answers[question.id] = label
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle").padding(.top, 2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(label).font(.subheadline.weight(.semibold))
+                    if !description.isEmpty { Text(description).font(.caption).foregroundStyle(VesperTheme.muted) }
+                }
+                Spacer(minLength: 0)
+            }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).stroke(selected ? VesperTheme.muted : .clear, lineWidth: 1) }
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct QuestionToolRow: View {
+    let message: JSONValue
+    @State private var details = false
+    private var record: JSONValue { message["metadata"]["userInput"] }
+    var body: some View {
+        Button { details = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "wrench")
+                Text("Question").font(.subheadline)
+                Spacer()
+                Text(record["status"].string.capitalized).font(.caption)
+                Image(systemName: "chevron.right").font(.caption2)
+            }.foregroundStyle(VesperTheme.muted).frame(minHeight: 36).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Question tool, details")
+            .sheet(isPresented: $details) {
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            ForEach(record["questions"].array) { question in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ChatMarkdownText(content: question["question"].string).font(.headline)
+                                    let answer = record["answers"][question.id].string
+                                    if !answer.isEmpty { Text(answer).font(.subheadline).foregroundStyle(VesperTheme.muted) }
+                                    else { Text("No answer recorded").font(.caption).foregroundStyle(VesperTheme.muted) }
+                                }
+                            }
+                        }.padding().frame(maxWidth: .infinity, alignment: .leading)
+                    }.background { Background() }
+                        .navigationTitle("Question").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { details = false } } }
+                }.presentationDetents([.medium, .large])
+            }
+    }
+}
+
 private struct ToolCallRow: View {
     let tool: JSONValue
     @State private var showingDetails = false
@@ -1102,6 +1214,7 @@ private struct AssistantMessageHeading: View {
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            ForEach(activities.filter { $0["metadata"]["userInput"] != .null }) { item in QuestionToolRow(message: item) }
             Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
@@ -1129,7 +1242,7 @@ private struct AssistantMessageHeading: View {
                     if !message["metadata"]["thoughtSummary"].string.isEmpty {
                         Text(message["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                     }
-                    ForEach(activities.filter { $0["metadata"]["execution"] == .null }) { item in
+                    ForEach(activities.filter { $0["metadata"]["execution"] == .null && $0["metadata"]["userInput"] == .null }) { item in
                         Group {
                             Text(item["metadata"]["thoughtSummary"].string.isEmpty ? item["content"].string : item["metadata"]["thoughtSummary"].string).font(.system(size: 13)).textSelection(.enabled)
                         }

@@ -415,6 +415,9 @@ enum ChatConnectionStage: String {
         }
         conversations.removeAll { $0.id == item.id }
         if conversationID == item.id { newConversation() }
+        var favoritesCleaned = false
+        if let store = appStore { favoritesCleaned = await ChatFavorites.removeCopies(conversationID: item.id, in: store) }
+        let favoriteCleanupWarning = favoritesCleaned ? "" : "A saved Favorite may still contain a copy of this chat. Remove it from Favorites."
         if let store = appStore, store.document("profile")["mainConversationId"].string == item.id {
             _ = await store.mutate("profile") { document in
                 var next = document
@@ -428,9 +431,13 @@ enum ChatConnectionStage: String {
             if !permanentlyDeleted {
                 self.error = "The server removed this conversation from the list but did not confirm permanent deletion. Update the history service."
             }
+            if !favoriteCleanupWarning.isEmpty {
+                self.error = [self.error, favoriteCleanupWarning].compactMap { $0 }.joined(separator: "\n")
+            }
         } catch {
             self.error = (permanentlyDeleted ? "Conversation deleted." : "Conversation removed from the list; permanent deletion was not confirmed.")
                 + " The list could not refresh.\n" + error.localizedDescription
+                + (favoriteCleanupWarning.isEmpty ? "" : "\n" + favoriteCleanupWarning)
         }
     }
     @discardableResult
@@ -596,6 +603,14 @@ enum ChatConnectionStage: String {
             _ = try await api.request("/conversations/\(conversationID)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(threadID ?? "") : message["metadata"]["threadId"]]), history: true)
             tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
             messages.removeAll { $0.id == message.id }
+            if let store = appStore {
+                let favoritesCleaned = await ChatFavorites.removeCopies(conversationID: conversationID, messageID: message.id, in: store)
+                if !favoritesCleaned {
+                    self.error = "Message deleted from history, but its saved Favorite may still contain a copy. Remove it from Favorites."
+                }
+            } else {
+                self.error = "Message deleted from history, but its saved Favorite could not be checked."
+            }
         } catch { self.error = error.localizedDescription }
     }
     func newConversation(id: String = UUID().uuidString) {
@@ -901,9 +916,9 @@ enum ChatConnectionStage: String {
                     tools = []
                 } else {
                     let builtIns = voiceCallContext == nil
-                        ? [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool]
-                        : [Self.healthTool, Self.alarmTool, Self.historyTool, Self.hangupTool]
-                    let excluded = ["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history", "end_native_call"]
+                        ? [Self.callTool, Self.healthTool, Self.alarmTool, Self.voiceTool, Self.historyTool, Self.favoriteTool]
+                        : [Self.healthTool, Self.alarmTool, Self.historyTool, Self.favoriteTool, Self.hangupTool]
+                    let excluded = ["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history", "manage_native_favorites", "end_native_call"]
                     tools = try NativeToolCatalog.normalize(catalog["tools"].array.filter { !excluded.contains($0["name"].string) } + builtIns)
                 }
                 let result = try await rpc("thread/start", .object(["dynamicTools": .array(tools), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
@@ -1003,6 +1018,15 @@ enum ChatConnectionStage: String {
         "inputSchema": .object(["type": .string("object"), "properties": .object([
             "query": .object(["type": .string("string")]), "conversationId": .object(["type": .string("string")]), "before": .object(["type": .string("string")]), "offset": .object(["type": .string("integer"), "minimum": .number(0), "maximum": .number(100000)])
         ]), "additionalProperties": .bool(false)])
+    ])
+    private static let favoriteTool: JSONValue = .object([
+        "name": .string("manage_native_favorites"),
+        "description": .string("List or bookmark an original Vesper chat message in the shared Favorites collection. Use list to see saved messages. To save, first read the original with search_native_history and pass its exact messageId and conversationId; the app verifies the original before writing. You may bookmark a specific meaningful exchange you want to keep, or when Vera asks. Never invent a message or report success before the tool confirms it."),
+        "inputSchema": .object(["type": .string("object"), "properties": .object([
+            "action": .object(["type": .string("string"), "enum": .array([.string("list"), .string("save")])]),
+            "conversationId": .object(["type": .string("string")]),
+            "messageId": .object(["type": .string("string")])
+        ]), "required": .array([.string("action")]), "additionalProperties": .bool(false)])
     ])
     private static let healthTool: JSONValue = .object([
         "name": .string("read_native_health"), "description": .string("Read fresh, authorized HealthKit summaries from Vera's current iPhone. Defaults to steps, sleep, heart rate and wrist temperature. Pass metrics as IDs (e.g. weight, blood_pressure, menstruation, blood_oxygen), a group name (e.g. nutrition, heart, cycle_tracking, me), or ['all'] only when Vera asks for a broad overview. Pass ['catalog'] to list available IDs without reading private data. Missing data does not prove permission was denied. Requires the native app; never infer a diagnosis."),
@@ -1205,6 +1229,52 @@ enum ChatConnectionStage: String {
                     JSONValue.object(["id": item["id"], "conversationId": item["conversationId"], "role": item["role"], "content": item["content"], "createdAt": item["createdAt"], "attachments": item["metadata"]["attachments"]])
                 }
                 let result: JSONValue = .object(["messages": .array(originals), "hasMore": response["hasMore"], "before": response["before"], "nextOffset": .number(args["offset"].number + Double(originals.count))])
+                try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                try checkCallback()
+                return
+            }
+            if name == "manage_native_favorites" {
+                guard let appStore else { throw ServiceError(message: "Favorites are unavailable until the app connects.") }
+                let action = args["action"].string
+                if action == "list" {
+                    await appStore.refresh()
+                    let all = appStore.document("favorites").array
+                    let saved = all.prefix(30).map { item in
+                        JSONValue.object(["messageId": item["messageId"], "conversationId": item["conversationId"],
+                                          "role": item["role"], "preview": .string(String(item["content"].string.prefix(300))), "createdAt": item["createdAt"]])
+                    }
+                    let result = JSONValue.object(["favorites": .array(saved), "total": .number(Double(all.count))])
+                    try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
+                    try checkCallback()
+                    return
+                }
+                guard action == "save" else { throw ServiceError(message: "Choose list or save.") }
+                let id = args["conversationId"].string.isEmpty ? targetConversation : args["conversationId"].string
+                let messageID = args["messageId"].string
+                guard !messageID.isEmpty, id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
+                    throw ServiceError(message: "Supply exact conversationId and messageId from native chat history.")
+                }
+                var before = ""
+                var original: JSONValue?
+                for _ in 0..<100 {
+                    var query = URLComponents()
+                    query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "before", value: before)]
+                    let response = try await api.request("/conversations/\(id)?" + (query.percentEncodedQuery ?? ""), history: true)
+                    try checkCallback()
+                    try Self.validateHistoryRecord(response, expectedID: id)
+                    original = response["messages"].array.first { $0.id == messageID && !ChatPresentation.isActivity($0) }
+                    if original != nil || !response["hasMore"].bool || response["before"].string.isEmpty || response["before"].string == before { break }
+                    before = response["before"].string
+                }
+                guard let original, !original["content"].string.isEmpty else {
+                    throw ServiceError(message: "Could not verify that original message in the saved conversation.")
+                }
+                let title = conversations.first(where: { $0.id == id })?["title"].string ?? "Chat"
+                guard await ChatFavorites.save(original, conversationID: id, title: title, in: appStore) else {
+                    throw ServiceError(message: "The favorite was not confirmed by the server.")
+                }
+                try checkCallback()
+                let result = JSONValue.object(["saved": .bool(true), "messageId": .string(messageID), "conversationId": .string(id)])
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 return

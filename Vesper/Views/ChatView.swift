@@ -612,7 +612,7 @@ struct ChatView: View {
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user && message["metadata"]["showTurnStatus"] != .bool(false) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
+                if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
                 if !photos.isEmpty {
                     ChatPhotoStack(photos: photos)
                         .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
@@ -806,6 +806,7 @@ enum ChatPresentation {
     }
     static func isActivity(_ message: JSONValue) -> Bool {
         if isUser(message) { return false }
+        if message["metadata"]["phase"].string == "commentary" { return true }
         if ["system", "tool", "function"].contains(message["role"].string) { return true }
         let block = message["metadata"]["blockType"].string
         return !block.isEmpty && !["agentMessage", "assistantMessage", "outputMessage", "text", "message", "musicCard", "sticker"].contains(block)
@@ -931,7 +932,7 @@ private struct AssistantMessageHeading: View {
             Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
-                    let time = ChatPresentation.time(message["createdAt"].string, full: true)
+                    let time = ChatPresentation.time(ChatTranscript.timestamp(message), full: true)
                     if !time.isEmpty { Text(time) } else if message["status"].string != "streaming" { Text("Thinking") }
                     if message["status"].string == "streaming" { Text("Thinking…") }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))

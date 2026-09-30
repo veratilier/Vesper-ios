@@ -889,6 +889,14 @@ enum ChatConnectionStage: String {
             busy = true
             var recalled = ""
             if voiceCallContext == nil {
+                if threadID != nil || conversations.contains(where: { $0.id == conversationID }) {
+                    // Refresh durable wake replies even when this socket never disconnected.
+                    let history = try await api.request("/conversations/\(conversationID)?latest=1&limit=200", history: true)
+                    try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+                    try Self.validateHistoryRecord(history, expectedID: conversationID)
+                    tombstones = history["tombstones"].array
+                    messages = ChatTranscript.merge(messages, incoming: history["messages"].array, tombstones: tombstones)
+                }
                 do { let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(text)])); recalled = result["context"].string; memoryStatus = "" }
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
@@ -955,6 +963,10 @@ enum ChatConnectionStage: String {
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]
+            if voiceCallContext == nil {
+                let wakeHistory = ChatTranscript.wakeContext(messages, conversationID: conversationID, threadID: threadID)
+                if !wakeHistory.isEmpty { input.insert(.object(["type": .string("text"), "text": .string(wakeHistory)]), at: 0) }
+            }
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             if let stickerInput { input.append(.object(["type": .string("image"), "url": .string(stickerInput)])) }
             params["input"] = .array(input)
@@ -1134,6 +1146,18 @@ enum ChatConnectionStage: String {
             if let index { messages[index] = message } else { messages.append(message) }
             if method == "item/completed" { do { try await persist(message) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Terminal output received, but history could not be saved." } }
         }
+        else if method == "item/started", p["item"]["type"].string == "agentMessage" {
+            let item = p["item"]
+            guard !item.id.isEmpty else { return }
+            if !messages.contains(where: { $0.id == item.id }) {
+                messages.append(.object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "content": .string(""), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("streaming")]))
+            }
+            if let index = messages.firstIndex(where: { $0.id == item.id }) {
+                messages[index]["metadata"]["phase"] = item["phase"]
+                messages[index]["metadata"]["threadId"] = .string(threadID ?? "")
+                messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
+            }
+        }
         else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
             guard !itemID.isEmpty else { return }
@@ -1143,6 +1167,7 @@ enum ChatConnectionStage: String {
             let item = p["item"]; let itemID = item["id"].string
             if let index = messages.firstIndex(where: { $0.id == itemID }) {
                 if !item["text"].string.isEmpty { messages[index]["content"] = item["text"] }
+                if item["phase"] != .null { messages[index]["metadata"]["phase"] = item["phase"] }
                 messages[index]["status"] = .string("delivered")
                 messages[index]["metadata"]["threadId"] = .string(threadID ?? "")
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
@@ -1153,6 +1178,7 @@ enum ChatConnectionStage: String {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 var savedMessage = message
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
+                savedMessage["metadata"]["phase"] = item["phase"]
                 messages.append(savedMessage); do { try await persist(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             }
         } else if method == "turn/completed" {
@@ -1453,6 +1479,7 @@ enum ChatDetailRecovery {
                       let index = result.firstIndex(where: { $0["role"].string == "agent" && ($0.id == item.id || $0["metadata"]["itemId"].string == item.id) }) else { continue }
                 result[index]["metadata"]["turnId"] = .string(turn.id)
                 result[index]["metadata"]["threadId"] = thread["id"]
+                if item["phase"] != .null { result[index]["metadata"]["phase"] = item["phase"] }
                 if result[index]["metadata"]["thoughtSummary"].string.isEmpty && !summaries.isEmpty {
                     result[index]["metadata"]["thoughtSummary"] = .string(summaries.joined(separator: "\n"))
                 }
@@ -1616,6 +1643,7 @@ enum ChatRecovery {
                 }
                 message["metadata"]["threadId"] = thread["id"]
                 message["metadata"]["turnId"] = .string(turn.id)
+                if item["phase"] != .null { message["metadata"]["phase"] = item["phase"] }
                 if let index { result[index] = message } else { result.append(message) }
             }
         }

@@ -478,7 +478,7 @@ final class ContractTests: XCTestCase {
             try emit(.object(["id": packet["id"], "error": .object(["message": .string("Request rejected")])]))
             return
         }
-        if packet["id"] != .null {
+        if packet["id"] != .null && !method.isEmpty {
             try emit(.object(["id": packet["id"], "result": method == "thread/resume" ? snapshot : .object([:])]))
         }
     }
@@ -795,5 +795,119 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(merged[1].id, "local")
         XCTAssertEqual(ChatRecovery.merge(merged, snapshot: snapshot, conversationID: "c", tombstones: [.object(["itemId": .string("deleted")])]), merged)
         XCTAssertNil(ChatRecovery.receipt(for: "local", snapshot: snapshot))
+    }
+}
+
+private func questionPacket(_ requestID: JSONValue = .number(42)) -> JSONValue {
+    .object(["id": requestID, "method": .string("item/tool/requestUserInput"),
+        "params": .object(["threadId": .string("thread"), "turnId": .string("turn"), "itemId": .string("ask"),
+            "questions": .array([.object(["id": .string("format"), "header": .string("Format"),
+                "question": .string("Which format do you prefer?"), "isOther": .bool(true),
+                "options": .array([.object(["label": .string("Cards"), "description": .string("Compact choices")]),
+                                    .object(["label": .string("List"), "description": .string("A plain list")])])])])])])
+}
+
+extension ContractTests {
+    func testQuestionAnswerProtocolAndValidation() throws {
+        let packet = questionPacket()
+        XCTAssertThrowsError(try ChatUserInput.answer(packet, selections: [:]))
+        let answer = try ChatUserInput.answer(packet, selections: ["format": "Cards", "unrelated": "ignored"])
+        XCTAssertEqual(answer["answers"]["format"]["answers"].array, [.string("Cards")])
+        XCTAssertEqual(answer["answers"].object.count, 1)
+        XCTAssertEqual(try ChatUserInput.answer(packet, selections: ["format": "My choice"])["answers"]["format"]["answers"].array, [.string("My choice")])
+        var strict = packet
+        var question = strict["params"]["questions"].array[0]
+        question["isOther"] = .bool(false)
+        strict["params"]["questions"] = .array([question])
+        XCTAssertThrowsError(try ChatUserInput.answer(strict, selections: ["format": "Not an option"]))
+        strict["params"]["questions"] = .array([question, question])
+        XCTAssertThrowsError(try ChatUserInput.questions(strict))
+    }
+    func testSecretQuestionAnswerIsSentButNotSavedInToolHistory() throws {
+        var packet = questionPacket()
+        var question = packet["params"]["questions"].array[0]
+        question["isSecret"] = .bool(true)
+        packet["params"]["questions"] = .array([question])
+        XCTAssertEqual(try ChatUserInput.answer(packet, selections: ["format": "private value"])["answers"]["format"]["answers"].array, [.string("private value")])
+        XCTAssertEqual(ChatUserInput.savedAnswers(packet, selections: ["format": "private value"])["format"].string, "Private answer")
+    }
+    func testQuestionIsGroupedAsToolInsteadOfReplyText() {
+        let question: JSONValue = .object(["id": .string("q"), "role": .string("system"), "content": .string("Question"),
+            "metadata": .object(["blockType": .string("requestUserInput"), "turnId": .string("turn"),
+                "userInput": .object(["questions": questionPacket()["params"]["questions"]])])])
+        let reply: JSONValue = .object(["id": .string("a"), "role": .string("agent"), "content": .string("Here is the result"),
+            "metadata": .object(["turnId": .string("turn")])])
+        let rows = ChatPresentation.displayRows([question, reply])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].messages.first?.id, "a")
+        XCTAssertEqual(rows[0].activities.first?.id, "q")
+        XCTAssertTrue(ChatPresentation.isActivity(question))
+    }
+}
+
+extension ChatConnectionRecoveryTests {
+    func testQuestionRequestRespondsWithOriginalNumericIDAndDoesNotCreateUserProse() async throws {
+        let socket = RecoverySocket()
+        let chat = session([socket]); defer { chat.disconnect() }
+        var saved: [JSONValue] = []
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"),
+                                 endpoint: "wss://invalid.example", threadID: "thread", questionWriter: { saved.append($0) })
+        try await chat.connect()
+        try socket.emit(questionPacket())
+        await eventually { chat.userInputRequests.count == 1 }
+        try socket.emit(questionPacket())
+        await Task.yield()
+        let request = try XCTUnwrap(chat.userInputRequests.first)
+        let result = await chat.resolveQuestion(request.id, selections: ["format": "Cards"])
+        XCTAssertTrue(result)
+        XCTAssertTrue(chat.userInputRequests.isEmpty)
+        let response = socket.packets.last { $0["id"] == .number(42) && $0["result"]["answers"] != .null }
+        XCTAssertEqual(response?["result"]["answers"]["format"]["answers"].array, [.string("Cards")])
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?["metadata"]["userInput"]["status"].string, "answered")
+        XCTAssertFalse(chat.messages.contains { ChatPresentation.isUser($0) })
+    }
+    func testResolvedAndDisconnectedQuestionsCannotBeAnsweredLater() async throws {
+        let socket = RecoverySocket()
+        let chat = session([socket]); defer { chat.disconnect() }
+        try await chat.connect()
+        try socket.emit(questionPacket())
+        await eventually { !chat.userInputRequests.isEmpty }
+        let stale = try XCTUnwrap(chat.userInputRequests.first)
+        try socket.emit(.object(["method": .string("serverRequest/resolved"),
+                                "params": .object(["threadId": .string("thread"), "requestId": .number(42)])]))
+        await eventually { chat.userInputRequests.isEmpty }
+        let rejected = await chat.resolveQuestion(stale.id, selections: ["format": "Cards"])
+        XCTAssertFalse(rejected)
+        try socket.emit(questionPacket(.string("next")))
+        await eventually { !chat.userInputRequests.isEmpty }
+        let disconnected = try XCTUnwrap(chat.userInputRequests.first)
+        chat.disconnect()
+        let later = await chat.resolveQuestion(disconnected.id, selections: ["format": "Cards"])
+        XCTAssertFalse(later)
+        XCTAssertTrue(chat.userInputRequests.isEmpty)
+    }
+}
+
+extension ChatConnectionRecoveryTests {
+    func testQuestionCancellationAdvancesQueueAndTurnCompletionExpiresRemainingCard() async throws {
+        let socket = RecoverySocket()
+        let chat = session([socket]); defer { chat.disconnect() }
+        chat.configureConnection(api: APIClient(baseURL: "https://invalid.example", historyURL: "https://invalid.example", token: "test"),
+                                 endpoint: "wss://invalid.example", threadID: "thread", questionWriter: { _ in })
+        try await chat.connect()
+        try socket.emit(.object(["id": .string("expired-rpc"), "result": .object([:])]))
+        try socket.emit(questionPacket())
+        try socket.emit(questionPacket(.string("second")))
+        await eventually { chat.userInputRequests.count == 2 }
+        XCTAssertFalse(socket.packets.contains { $0["id"] == .string("expired-rpc") })
+        let first = try XCTUnwrap(chat.userInputRequests.first)
+        let cancelled = await chat.resolveQuestion(first.id)
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(chat.userInputRequests.first?.packet["id"], .string("second"))
+        let response = socket.packets.last { $0["id"] == .number(42) && $0["result"]["answers"] != .null }
+        XCTAssertEqual(response?["result"]["answers"], .object([:]))
+        try socket.emit(.object(["method": .string("turn/completed"), "params": .object(["turn": .object(["id": .string("turn")])])]))
+        await eventually { chat.userInputRequests.isEmpty }
     }
 }

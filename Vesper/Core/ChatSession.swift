@@ -415,6 +415,9 @@ enum ChatConnectionStage: String {
         }
         conversations.removeAll { $0.id == item.id }
         if conversationID == item.id { newConversation() }
+        var favoritesCleaned = false
+        if let store = appStore { favoritesCleaned = await ChatFavorites.removeCopies(conversationID: item.id, in: store) }
+        let favoriteCleanupWarning = favoritesCleaned ? "" : "A saved Favorite may still contain a copy of this chat. Remove it from Favorites."
         if let store = appStore, store.document("profile")["mainConversationId"].string == item.id {
             _ = await store.mutate("profile") { document in
                 var next = document
@@ -428,9 +431,13 @@ enum ChatConnectionStage: String {
             if !permanentlyDeleted {
                 self.error = "The server removed this conversation from the list but did not confirm permanent deletion. Update the history service."
             }
+            if !favoriteCleanupWarning.isEmpty {
+                self.error = [self.error, favoriteCleanupWarning].compactMap { $0 }.joined(separator: "\n")
+            }
         } catch {
             self.error = (permanentlyDeleted ? "Conversation deleted." : "Conversation removed from the list; permanent deletion was not confirmed.")
                 + " The list could not refresh.\n" + error.localizedDescription
+                + (favoriteCleanupWarning.isEmpty ? "" : "\n" + favoriteCleanupWarning)
         }
     }
     @discardableResult
@@ -596,6 +603,14 @@ enum ChatConnectionStage: String {
             _ = try await api.request("/conversations/\(conversationID)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(threadID ?? "") : message["metadata"]["threadId"]]), history: true)
             tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
             messages.removeAll { $0.id == message.id }
+            if let store = appStore {
+                let favoritesCleaned = await ChatFavorites.removeCopies(conversationID: conversationID, messageID: message.id, in: store)
+                if !favoritesCleaned {
+                    self.error = "Message deleted from history, but its saved Favorite may still contain a copy. Remove it from Favorites."
+                }
+            } else {
+                self.error = "Message deleted from history, but its saved Favorite could not be checked."
+            }
         } catch { self.error = error.localizedDescription }
     }
     func newConversation(id: String = UUID().uuidString) {

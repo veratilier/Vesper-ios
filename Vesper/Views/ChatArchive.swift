@@ -40,7 +40,7 @@ struct NativeChatHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                HStack(spacing: 12) {
+                HStack {
                     Button { enterChat() } label: {
                         conversationRowContent(mainConversation, title: agentName, emptyPreview: "Start chatting")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -48,20 +48,8 @@ struct NativeChatHome: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
-                    Button { beginEditingContactName() } label: {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(VesperTheme.muted)
-                            .frame(width: 34, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Edit contact name")
                 }
                 .contactGlassSurface()
-                .contextMenu {
-                    Button { beginEditingContactName() } label: { Label("Edit contact name", systemImage: "pencil") }
-                }
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)

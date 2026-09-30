@@ -24,4 +24,14 @@ import Foundation
             return .array(items)
         }
     }
+
+    @discardableResult
+    static func removeCopies(conversationID: String, messageID: String? = nil, in store: AppStore) async -> Bool {
+        await store.mutate("favorites", reportErrors: false) { current in
+            .array(current.array.filter { item in
+                guard item["conversationId"].string == conversationID else { return true }
+                return messageID.map { item["messageId"].string != $0 } ?? false
+            })
+        }
+    }
 }

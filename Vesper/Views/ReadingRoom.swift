@@ -332,7 +332,7 @@ struct ReaderView: View {
                 }
             }
             .sheet(item: $target) { selection in
-                ReadingNoteSheet(target: selection, notes: notes(for: selection), draft: $draft,
+                ReadingNoteSheet(target: selection, bookID: bookID, bookTitle: book["title"].string, notes: notes(for: selection), draft: $draft,
                                  saving: store.saving) { saveNote(for: selection) }
                     .presentationDetents([.medium, .large])
             }
@@ -377,6 +377,9 @@ struct ReaderView: View {
 
 private struct ReadingNoteSheet: View {
     let target: ReadingNoteTarget
+    let bookID: String
+    let bookTitle: String
+    @State private var bookmark = false
     let notes: [JSONValue]
     @Binding var draft: String
     let saving: Bool
@@ -390,6 +393,7 @@ private struct ReadingNoteSheet: View {
                         Text(target.quote).font(.system(.body, design: .serif)).italic()
                             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                        Button { bookmark = true } label: { Label("存到书签", systemImage: "bookmark") }
                     }
                     ForEach(["Rowan", "Vera"], id: \.self) { author in
                         Text(author).font(.headline)
@@ -421,6 +425,7 @@ private struct ReadingNoteSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
+        .sheet(isPresented: $bookmark) { BookmarkEditor(quote: target.quote, bookID: bookID, sourceTitle: bookTitle) }
     }
 }
 

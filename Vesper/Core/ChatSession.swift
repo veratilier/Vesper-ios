@@ -1038,11 +1038,6 @@ enum ChatUserInput {
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
-            if let threadID {
-                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled)), "excludeTurns": .bool(true)]))
-                guard sendIntent == intent else { throw CancellationError() }
-                messages = ChatTranscript.ordered(UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
-            } else {
                 let catalog: JSONValue
                 if voiceCallContext != nil && onNativeHangupRequested == nil {
                     // Camera observations run in a separate vision-only session.
@@ -1055,7 +1050,6 @@ enum ChatUserInput {
                 }
                 try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
-                let instructions = developerContext(recalled)
                 let tools: [JSONValue]
                 if voiceCallContext != nil && onNativeHangupRequested == nil {
                     tools = []
@@ -1066,6 +1060,12 @@ enum ChatUserInput {
                     let excluded = ["request_native_call", "read_native_health", "manage_native_alarm", "send_native_voice", "search_native_history", "manage_native_favorites", "end_native_call"]
                     tools = try NativeToolCatalog.normalize(catalog["tools"].array.filter { !excluded.contains($0["name"].string) } + builtIns)
                 }
+            if let threadID {
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "dynamicTools": .array(tools), "config": config, "developerInstructions": .string(developerContext(recalled)), "excludeTurns": .bool(true)]))
+                guard sendIntent == intent else { throw CancellationError() }
+                messages = ChatTranscript.ordered(UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
+            } else {
+                let instructions = developerContext(recalled)
                 let result = try await rpc("thread/start", .object(["dynamicTools": .array(tools), "config": config, "approvalPolicy": .string("on-request"), "developerInstructions": .string(instructions)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 let id = result["thread"]["id"].string
@@ -1082,7 +1082,7 @@ enum ChatUserInput {
             if let music {
                 let title = music["title"].string
                 let artist = music["artist"].string
-                let songID = music["neteaseId"].string
+                let songID = music["appleMusicId"].string.isEmpty ? music["neteaseId"].string : music["appleMusicId"].string
                 musicContext = "\nShared music: \(title) — \(artist) (song ID: \(songID))"
             }
             let stickerContext = sticker.map { "Shared sticker: " + $0["name"].string + " " + $0["description"].string + " (assetId: " + $0["assetId"].string + ")" }
@@ -1622,6 +1622,20 @@ enum ChatUserInput {
             }
             let r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(threadID ?? ""), "conversationId": .string(conversationID), "turnId": .string(turnID ?? ""), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
                 try checkCallback()
+            if name == "music_send_card" {
+                let track = ChatMusicShare.normalized(r["result"]["musicCard"])
+                guard !track.id.isEmpty, !track["title"].string.isEmpty else { throw ServiceError(message: "The tool returned no song card; delivery was not confirmed.") }
+                let id = "music:\(targetThread):\(callID)"
+                let existing = messages.first { $0.id == id }
+                let message: JSONValue = .object(["id": .string(id), "conversationId": .string(targetConversation), "role": .string("agent"),
+                    "content": track["message"], "createdAt": .string(existing?["createdAt"].string ?? isoNow()), "status": .string("delivered"),
+                    "metadata": .object(["musicCard": track, "musicOnly": .bool(track["message"].string.isEmpty), "showTurnStatus": .bool(false), "threadId": .string(targetThread), "turnId": .string(targetTurn)])])
+                _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
+                try checkCallback()
+                if targetConversation == conversationID {
+                    if let index = messages.firstIndex(where: { $0.id == id }) { messages[index] = message } else { messages.append(message) }
+                }
+            }
             if name == "sticker_send" {
                 let sticker = r["result"]["stickerMessage"]
                 guard !sticker["assetId"].string.isEmpty, !sticker["url"].string.isEmpty, !sticker["mimeType"].string.isEmpty else { throw ServiceError(message: "The tool returned no sticker; delivery was not confirmed.") }

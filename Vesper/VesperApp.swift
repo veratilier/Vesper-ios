@@ -17,7 +17,7 @@ import UserNotifications
 }
 enum Destination: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", notes = "Notes"
-    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Reading Room", movieRoom = "Movie Room", settings = "Settings"
+    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Reading Room", bookmarks = "Bookmarks", movieRoom = "Movie Room", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -32,6 +32,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .album: return "photo.on.rectangle"
         case .memory: return "brain.head.profile"
         case .readingRoom: return "book.pages"
+        case .bookmarks: return "bookmark"
         case .movieRoom: return "film"
         case .settings: return "slider.horizontal.3"
         }
@@ -90,7 +91,7 @@ struct RootView: View {
                 Background()
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 22) {
-                        ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .movieRoom]) { page in
+                        ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom]) { page in
                             NavigationLink(value: page) {
                                 VStack(spacing: 8) {
                                     Image(systemName: page.icon).font(.system(size: 25, weight: .medium))
@@ -319,6 +320,7 @@ struct RootView: View {
         case .album: AlbumView()
         case .memory: MemoryView()
         case .readingRoom: ReadingRoomView()
+        case .bookmarks: BookmarksView()
         case .movieRoom: MovieRoomView()
         case .settings: SettingsView()
         }

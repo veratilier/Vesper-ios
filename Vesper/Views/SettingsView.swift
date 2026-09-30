@@ -9,11 +9,8 @@ struct SettingsView: View {
     var body: some View {
         Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
             NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
-            NavigationLink { NotificationSettingsView() } label: { settingsRow("Notifications", subtitle: "Permission and system settings", icon: "bell") }
+            NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Health, calendar, reminders and alarms", icon: "hand.raised") }
             NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
-            NavigationLink { HealthView() } label: { settingsRow("Health", subtitle: "Sleep, heart rate and activity", icon: "heart.text.square") }
-            NavigationLink { SystemPlannerView() } label: { settingsRow("Calendar & Reminders", subtitle: "Connect your iPhone calendar and lists", icon: "calendar") }
-            NavigationLink { AlarmsView() } label: { settingsRow("Alarms", subtitle: "System alarms on this iPhone", icon: "alarm") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
             NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
             NavigationLink { DataSettingsView() } label: { settingsRow("Data", subtitle: "Export and privacy", icon: "archivebox") }
@@ -21,6 +18,17 @@ struct SettingsView: View {
     }
     private func settingsRow(_ title: String, subtitle: String, icon: String) -> some View {
         GlassCard { HStack(spacing: 14) { Image(systemName: icon).frame(width: 42, height: 42).background(VesperTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(title).font(.headline); Text(subtitle).font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right").font(.caption) } }
+    }
+}
+struct DevicePermissionsView: View {
+    var body: some View {
+        List {
+            NavigationLink { NotificationSettingsView() } label: { Label("Notifications", systemImage: "bell") }
+            NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
+            NavigationLink { SystemPlannerView() } label: { Label("Calendar & Reminders", systemImage: "calendar") }
+            NavigationLink { AlarmsView() } label: { Label("Alarms", systemImage: "alarm") }
+        }.navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
     }
 }
 struct ConnectionView: View {

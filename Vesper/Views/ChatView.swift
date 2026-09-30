@@ -942,6 +942,48 @@ private struct ChatTerminalView: View {
     }
 }
 
+private struct ToolCallRow: View {
+    let tool: JSONValue
+    @State private var showingDetails = false
+    private var title: String { tool["title"].string.isEmpty ? "Tool call" : tool["title"].string }
+    var body: some View {
+        Button { showingDetails = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "wrench").font(.system(size: 13))
+                Text(title).font(.system(size: 13)).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(tool["status"].string.capitalized).font(.caption2)
+                Image(systemName: "chevron.right").font(.system(size: 10))
+            }
+            .foregroundStyle(VesperTheme.muted)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title + ", " + tool["status"].string + ", details")
+        .sheet(isPresented: $showingDetails) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Label(tool["status"].string.capitalized, systemImage: "wrench")
+                            .font(.subheadline).foregroundStyle(VesperTheme.muted)
+                        if !tool["output"].string.isEmpty {
+                            Text(tool["output"].string).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        } else {
+                            Text(["running", "inProgress"].contains(tool["status"].string) ? "Waiting for result…" : "No detailed result was saved.")
+                                .font(.subheadline).foregroundStyle(VesperTheme.muted)
+                        }
+                        if tool["truncated"].bool { Text("Saved result is partial.").font(.caption).foregroundStyle(VesperTheme.muted) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
+                }
+                .background { Background() }
+                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingDetails = false } } }
+            }.presentationDetents([.medium, .large])
+        }
+    }
+}
+
 private struct MiniTerminal: View {
     let execution: JSONValue
     @State private var expanded = false
@@ -1021,12 +1063,15 @@ private struct AssistantMessageHeading: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
-                ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in MiniTerminal(execution: item["metadata"]["execution"]) }
+                ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in
+                    if !ChatTerminalRecords.entries([item]).isEmpty { MiniTerminal(execution: item["metadata"]["execution"]) }
+                    else { ToolCallRow(tool: item["metadata"]["execution"]) }
+                }
                 let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
                 let toolCards = ToolActivityRecords.cards(toolEvents)
                 if !toolCards.isEmpty {
                     Text("Tool calls").font(.caption).foregroundStyle(VesperTheme.muted)
-                    ForEach(toolCards) { card in MiniTerminal(execution: card) }
+                    ForEach(toolCards) { card in ToolCallRow(tool: card) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Thinking summary").font(.caption).foregroundStyle(VesperTheme.muted)

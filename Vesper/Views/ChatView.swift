@@ -564,7 +564,7 @@ struct ChatView: View {
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $terminalVisible) {
-            ChatTerminalView().environmentObject(chat).presentationDetents([.medium, .large])
+            ChatTerminalView(conversationID: chat.conversationID).environmentObject(chat).presentationDetents([.medium, .large])
         }
         .sheet(item: Binding(get: { chat.approval == nil ? chat.userInputRequests.first : nil }, set: { _ in })) { request in
             ChatQuestionSheet(request: request).environmentObject(chat).id(request.id)
@@ -904,6 +904,8 @@ enum ChatTerminalRecords {
 }
 
 private struct ChatTerminalView: View {
+    let conversationID: String
+    private var endpoint: String { "/conversations/\(conversationID)/terminal" }
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -920,14 +922,14 @@ private struct ChatTerminalView: View {
             VStack(spacing: 12) {
                 HStack(spacing: 6) {
                     Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
-                    Text(connected ? (running ? "Live · VPS Codex" : "No active terminal") : "Disconnected")
+                    Text(connected ? (running ? "Live · This chat" : "No active terminal") : "Disconnected")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Reconnect terminal")
                 }
                 ScrollView([.horizontal, .vertical]) {
-                    Text(screen.isEmpty ? "Start or reconnect to the VPS Codex terminal." : screen)
+                    Text(screen.isEmpty ? "Open the terminal for this chat to see its history and continue it." : screen)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.9)).textSelection(.enabled)
                         .fixedSize(horizontal: true, vertical: true)
@@ -937,7 +939,7 @@ private struct ChatTerminalView: View {
                     Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 }
                 if connected && !running {
-                    Button("Start VPS Codex") { perform("/terminal/start") }
+                    Button("Open this chat in terminal") { perform(endpoint + "/start") }
                         .buttonStyle(.bordered).disabled(busy)
                 }
                 HStack(spacing: 8) {
@@ -959,7 +961,7 @@ private struct ChatTerminalView: View {
                 Text("Persistent VPS session · closing this window keeps it running")
                     .font(.caption2).foregroundStyle(.secondary)
             }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
-                .navigationTitle("Codex terminal").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle("Chat terminal").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.preferredColorScheme(.dark)
             .task(id: "\(scenePhase)-\(retry)") {
@@ -972,8 +974,9 @@ private struct ChatTerminalView: View {
         connected = false
         while !Task.isCancelled {
             do {
-                let result = try await store.api.request("/terminal", history: true)
+                let result = try await store.api.request(endpoint, history: true)
                 try Task.checkCancellation()
+                guard result["conversationId"].string == conversationID else { throw ServiceError(message: "The server returned a terminal for another chat.") }
                 screen = result["screen"].string
                 running = result["running"].bool
                 connected = true
@@ -992,12 +995,12 @@ private struct ChatTerminalView: View {
     private func sendKey(_ label: String) {
         let keys = ["Esc": "Escape", "Tab": "Tab", "^C": "C-c", "←": "Left",
                     "↑": "Up", "↓": "Down", "→": "Right", "↵": "Enter"]
-        if let key = keys[label] { perform("/terminal/input", body: .object(["key": .string(key)])) }
+        if let key = keys[label] { perform(endpoint + "/input", body: .object(["key": .string(key)])) }
     }
 
     private func sendDraft() {
         guard !draft.isEmpty, connected, running, !busy else { return }
-        perform("/terminal/input", body: .object(["text": .string(draft)]), sentDraft: draft)
+        perform(endpoint + "/input", body: .object(["text": .string(draft)]), sentDraft: draft)
     }
 
     private func perform(_ path: String, body: JSONValue? = nil, sentDraft: String? = nil) {

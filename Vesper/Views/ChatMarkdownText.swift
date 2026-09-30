@@ -22,15 +22,7 @@ struct ChatMarkdownText: View {
         return cache
     }()
 
-    static func previewURLs(in content: String) -> [URL] {
-        var seen = Set<URL>()
-        return render(content).runs.compactMap { run in
-            guard let url = run.link, ChatWebURL.accepts(url), seen.insert(url).inserted else { return nil }
-            return url
-        }.prefix(3).map { $0 }
-    }
-
-    private static func render(_ content: String) -> AttributedString {
+    static func render(_ content: String) -> AttributedString {
         if let rendered = cache.object(forKey: content as NSString) { return rendered.text }
         var text = (try? AttributedString(markdown: content, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(content)

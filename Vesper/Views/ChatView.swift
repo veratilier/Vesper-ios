@@ -658,11 +658,6 @@ struct ChatView: View {
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
                 if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
-                    if message["status"].string != "streaming" {
-                        ForEach(ChatMarkdownText.previewURLs(in: message["content"].string), id: \.self) { url in
-                            ChatLinkCard(url: url)
-                        }
-                    }
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
                 if message["status"].string != "streaming" && !chat.replyIsStillRunning(message) {

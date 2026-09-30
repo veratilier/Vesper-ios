@@ -22,6 +22,76 @@ private final class StickerAssetProtocol: URLProtocol {
 }
 
 final class ContractTests: XCTestCase {
+    func testChatTerminalIncludesRealExecutionAndFileChangesButExcludesOrdinaryTools() {
+        func record(_ id: String, _ type: String) -> JSONValue {
+            .object(["id": .string(id), "role": .string("system"),
+                     "metadata": .object(["execution": .object(["type": .string(type), "output": .string("output")])])])
+        }
+        let input = [record("command", "commandExecution"), record("search", "webSearch"),
+                     record("patch", "fileChange"), record("shell", "shellCall")]
+        XCTAssertEqual(ChatTerminalRecords.entries(input).map(\.id), ["command", "patch", "shell"])
+        var streaming = input[0]
+        streaming["metadata"]["execution"]["output"] = .string("updated output")
+        XCTAssertEqual(ChatTerminalRecords.entries([streaming])[0]["metadata"]["execution"]["output"].string, "updated output")
+    }
+
+    func testOldMessagePhaseBackfillMatchesOriginalIdentityWithoutChangingBodyOrTime() {
+        let saved: JSONValue = .object(["id": .string("saved"), "role": .string("agent"), "content": .string("original body"), "createdAt": .string("2026-09-30T07:21:20Z"), "metadata": .object(["itemId": .string("item"), "threadId": .string("thread")])])
+        let entry: JSONValue = .object(["turnId": .string("turn"), "item": .object(["id": .string("item"), "type": .string("agentMessage"), "phase": .string("commentary"), "text": .string("different server body")])])
+        let restored = ChatPhaseRecovery.restore([saved], entries: [entry], threadID: "thread", fallbackThreadID: nil, tombstones: [])
+        XCTAssertEqual(restored[0]["content"], saved["content"])
+        XCTAssertEqual(restored[0]["createdAt"], saved["createdAt"])
+        XCTAssertEqual(restored[0]["metadata"]["phase"].string, "commentary")
+        XCTAssertEqual(restored[0]["metadata"]["turnId"].string, "turn")
+        XCTAssertTrue(ChatPresentation.isActivity(restored[0]))
+        XCTAssertEqual(ChatPhaseRecovery.restore(restored, entries: [entry], threadID: "thread", fallbackThreadID: nil, tombstones: []), restored)
+        XCTAssertEqual(ChatPhaseRecovery.restore([saved], entries: [entry], threadID: "other", fallbackThreadID: nil, tombstones: []), [saved])
+        XCTAssertEqual(ChatPhaseRecovery.restore([saved], entries: [entry], threadID: "thread", fallbackThreadID: nil, tombstones: [.object(["itemId": .string("item")])]), [saved])
+        XCTAssertTrue(ChatPhaseRecovery.restore([], entries: [entry], threadID: "thread", fallbackThreadID: nil, tombstones: []).isEmpty)
+        var unknown = entry; unknown["item"]["phase"] = .null
+        XCTAssertEqual(ChatPhaseRecovery.restore([saved], entries: [unknown], threadID: "thread", fallbackThreadID: nil, tombstones: []), [saved])
+    }
+
+    func testCommentaryIsCollapsedIntoMatchingReplyWithoutHidingFinalText() {
+        let commentary: JSONValue = .object(["id": .string("progress"), "role": .string("agent"), "content": .string("Checking books"), "metadata": .object(["phase": .string("commentary"), "turnId": .string("t")])])
+        let reply: JSONValue = .object(["id": .string("final"), "role": .string("agent"), "content": .string("Read this book"), "metadata": .object(["phase": .string("final_answer"), "turnId": .string("t")])])
+        let rows = ChatPresentation.displayRows([commentary, reply])
+        XCTAssertEqual(rows.map(\.id), ["final"])
+        XCTAssertEqual(rows.first?.activities.map(\.id), ["progress"])
+        var legacy = commentary
+        legacy["metadata"]["phase"] = .null
+        XCTAssertFalse(ChatPresentation.isActivity(legacy), "Never guess a phase from message wording")
+        XCTAssertTrue(ChatPresentation.displayRows([commentary]).first?.activity == true)
+    }
+
+    func testRecoveredServerPhaseSurvivesReload() {
+        let saved: JSONValue = .object(["id": .string("p"), "role": .string("agent"), "content": .string("Checking")])
+        let snapshot: JSONValue = .object(["thread": .object(["id": .string("thread"), "turns": .array([
+            .object(["id": .string("turn"), "status": .string("completed"), "items": .array([
+                .object(["id": .string("p"), "type": .string("agentMessage"), "text": .string("Checking"), "phase": .string("commentary")])
+            ])])
+        ])])])
+        let restored = ChatRecovery.merge([saved], snapshot: snapshot, conversationID: "room", tombstones: [])
+        XCTAssertEqual(restored.first?["metadata"]["phase"].string, "commentary")
+        XCTAssertTrue(ChatPresentation.isActivity(restored[0]))
+    }
+
+    func testWakeContextIncludesOnlyThisRoomsExternalRepliesAndRespectsDeletion() {
+        let wake: JSONValue = .object(["id": .string("wake:run:final"), "conversationId": .string("room"), "role": .string("agent"), "content": .string("We should read Frankenstein"), "createdAt": .string("2026-09-30T07:00:00Z"), "metadata": .object(["wakeRunId": .string("run"), "threadId": .string("wake-thread"), "showTurnStatus": .bool(false)])])
+        var other = wake; other["conversationId"] = .string("other"); other["content"] = .string("PRIVATE OTHER ROOM")
+        var tool = wake; tool["role"] = .string("tool"); tool["content"] = .string("TOOL OUTPUT")
+        let context = ChatTranscript.wakeContext([wake, other, tool], conversationID: "room", threadID: "chat-thread")
+        XCTAssertTrue(context.contains("Frankenstein"))
+        XCTAssertFalse(context.contains("PRIVATE OTHER ROOM"))
+        XCTAssertFalse(context.contains("TOOL OUTPUT"))
+        XCTAssertEqual(ChatTranscript.wakeContext([wake], conversationID: "room", threadID: "wake-thread"), "")
+        let deleted = ChatTranscript.merge([wake], incoming: [], tombstones: [.object(["messageId": .string(wake.id)])])
+        XCTAssertEqual(ChatTranscript.wakeContext(deleted, conversationID: "room", threadID: "chat-thread"), "")
+        XCTAssertEqual(ChatTranscript.timestamp(wake), "2026-09-30T07:00:00Z")
+        var late = wake; late["metadata"]["wake"] = .object(["completedAt": .string("2026-09-30T06:55:00Z")])
+        XCTAssertEqual(ChatTranscript.timestamp(late), "2026-09-30T06:55:00Z")
+    }
+
     func testStickerFetchesOnlyOurAssetAndSendsInlineImage() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StickerAssetProtocol.self]

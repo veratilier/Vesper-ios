@@ -147,6 +147,7 @@ enum ChatConnectionStage: String {
     private var generation = UUID()
     private var historyReader: ((String) async throws -> JSONValue)?
     private var historyLoadTask: Task<Void, Never>?
+    private var phaseRecoveryTask: Task<Void, Never>?
     private var bufferedPackets: [JSONValue] = []
     private var resuming = false
     private var intent = UUID()
@@ -632,6 +633,7 @@ enum ChatConnectionStage: String {
         pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
     }
     private func closeTransport() {
+        phaseRecoveryTask?.cancel(); phaseRecoveryTask = nil
         Self.log.info("Closing local chat transport generation=\(self.generation.uuidString, privacy: .public) foreground=\(self.foreground, privacy: .public) online=\(self.online, privacy: .public) requested=\(self.wantsConnection, privacy: .public)")
         generation = UUID(); readyAt = nil; approval = nil; resuming = false; bufferedPackets = []
         heartbeatTask?.cancel(); heartbeatTask = nil
@@ -773,6 +775,7 @@ enum ChatConnectionStage: String {
                 Self.log.info("chat-ready generation=\(expected.uuidString, privacy: .public) attempt=\(self.recoveryAttempts, privacy: .public)")
                 status = unconfirmedSend ? "Send unconfirmed. Check server status" : (busy ? "Rowan is replying…" : "Connected")
                 startHeartbeat(ws, generation: expected)
+                startPhaseRecovery()
             }
         } catch {
             // A whole-attempt timeout cancels this child. Its owner reports the
@@ -781,6 +784,63 @@ enum ChatConnectionStage: String {
             throw error
         }
     }
+    private func startPhaseRecovery() {
+        phaseRecoveryTask?.cancel()
+        let owner = intent
+        let expected = generation
+        phaseRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            if let loading = self.historyLoadTask { await loading.value }
+            guard !Task.isCancelled, owner == self.intent, expected == self.generation else { return }
+            let candidates = self.messages.filter {
+                $0["role"].string == "agent" && !ChatTranscript.isWake($0)
+                    && $0["metadata"]["phase"].string.isEmpty && $0["status"].string != "streaming"
+            }
+            let threads = Set(candidates.compactMap { message -> String? in
+                let id = message["metadata"]["threadId"].string
+                return id.isEmpty ? self.threadID : id
+            })
+            for thread in threads {
+                do {
+                    var cursor = ""
+                    var seen = Set<String>()
+                    var method = "thread/items/list"
+                    while !Task.isCancelled, owner == self.intent, expected == self.generation {
+                        var params: JSONValue = .object(["threadId": .string(thread), "limit": .number(20), "sortDirection": .string("desc")])
+                        if !cursor.isEmpty { params["cursor"] = .string(cursor) }
+                        if method == "thread/turns/list" { params["itemsView"] = .string("summary") }
+                        let page: JSONValue
+                        do { page = try await self.rpc(method, params) }
+                        catch let rejection as ChatRPCRejected where method == "thread/items/list" && rejection.code == -32601 {
+                            method = "thread/turns/list"; continue
+                        }
+                        try Task.checkCancellation()
+                        guard owner == self.intent, expected == self.generation else { return }
+                        let entries = method == "thread/items/list" ? page["data"].array : page["data"].array.flatMap { turn in
+                            turn["items"].array.map { item in JSONValue.object(["turnId": .string(turn.id), "item": item]) }
+                        }
+                        let recovered = ChatPhaseRecovery.restore(self.messages, entries: entries, threadID: thread, fallbackThreadID: self.threadID, tombstones: self.tombstones)
+                        let changed = zip(self.messages, recovered).compactMap { old, new in old == new ? nil : new }
+                        self.messages = recovered
+                        for message in changed {
+                            try Task.checkCancellation()
+                            guard owner == self.intent, expected == self.generation else { return }
+                            guard let current = self.messages.first(where: { $0.id == message.id }),
+                                  !ChatTranscript.isDeleted(current, tombstones: self.tombstones) else { continue }
+                            try await self.persist(current)
+                        }
+                        cursor = page["nextCursor"].string
+                        if cursor.isEmpty || !seen.insert(cursor).inserted { break }
+                        await Task.yield()
+                    }
+                } catch {
+                    guard !Task.isCancelled, owner == self.intent, expected == self.generation else { return }
+                    self.memoryStatus = "Some older message details could not be restored. Reopen this chat to retry."
+                }
+            }
+        }
+    }
+
     // Keep the exact envelope until a receipt resolves it. A transport error after
     // send() begins is ambiguous even if URLSession reports that the send failed.
     func submitTurn(_ params: JSONValue) async throws -> JSONValue {
@@ -889,6 +949,14 @@ enum ChatConnectionStage: String {
             busy = true
             var recalled = ""
             if voiceCallContext == nil {
+                if threadID != nil || conversations.contains(where: { $0.id == conversationID }) {
+                    // Refresh durable wake replies even when this socket never disconnected.
+                    let history = try await api.request("/conversations/\(conversationID)?latest=1&limit=200", history: true)
+                    try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+                    try Self.validateHistoryRecord(history, expectedID: conversationID)
+                    tombstones = history["tombstones"].array
+                    messages = ChatTranscript.merge(messages, incoming: history["messages"].array, tombstones: tombstones)
+                }
                 do { let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(text)])); recalled = result["context"].string; memoryStatus = "" }
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
@@ -955,6 +1023,10 @@ enum ChatConnectionStage: String {
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]
+            if voiceCallContext == nil {
+                let wakeHistory = ChatTranscript.wakeContext(messages, conversationID: conversationID, threadID: threadID)
+                if !wakeHistory.isEmpty { input.insert(.object(["type": .string("text"), "text": .string(wakeHistory)]), at: 0) }
+            }
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             if let stickerInput { input.append(.object(["type": .string("image"), "url": .string(stickerInput)])) }
             params["input"] = .array(input)
@@ -1134,6 +1206,18 @@ enum ChatConnectionStage: String {
             if let index { messages[index] = message } else { messages.append(message) }
             if method == "item/completed" { do { try await persist(message) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Terminal output received, but history could not be saved." } }
         }
+        else if method == "item/started", p["item"]["type"].string == "agentMessage" {
+            let item = p["item"]
+            guard !item.id.isEmpty else { return }
+            if !messages.contains(where: { $0.id == item.id }) {
+                messages.append(.object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "content": .string(""), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("streaming")]))
+            }
+            if let index = messages.firstIndex(where: { $0.id == item.id }) {
+                messages[index]["metadata"]["phase"] = item["phase"]
+                messages[index]["metadata"]["threadId"] = .string(threadID ?? "")
+                messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
+            }
+        }
         else if method == "item/agentMessage/delta" {
             let itemID = p["itemId"].string
             guard !itemID.isEmpty else { return }
@@ -1143,6 +1227,7 @@ enum ChatConnectionStage: String {
             let item = p["item"]; let itemID = item["id"].string
             if let index = messages.firstIndex(where: { $0.id == itemID }) {
                 if !item["text"].string.isEmpty { messages[index]["content"] = item["text"] }
+                if item["phase"] != .null { messages[index]["metadata"]["phase"] = item["phase"] }
                 messages[index]["status"] = .string("delivered")
                 messages[index]["metadata"]["threadId"] = .string(threadID ?? "")
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
@@ -1153,6 +1238,7 @@ enum ChatConnectionStage: String {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 var savedMessage = message
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
+                savedMessage["metadata"]["phase"] = item["phase"]
                 messages.append(savedMessage); do { try await persist(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             }
         } else if method == "turn/completed" {
@@ -1429,6 +1515,33 @@ enum ToolActivityRecords {
 
 /// Restore only public reasoning summaries and tool statuses supplied by the server.
 /// Match saved assistant messages by stable item ID; never recreate deleted messages.
+enum ChatPhaseRecovery {
+    /// Read only explicit public message phases. Match identity and thread, keep
+    /// original content/time, and never recreate a deleted or missing record.
+    static func restore(_ saved: [JSONValue], entries: [JSONValue], threadID: String,
+                        fallbackThreadID: String?, tombstones: [JSONValue]) -> [JSONValue] {
+        var result = saved
+        for entry in entries {
+            let item = entry["item"]
+            guard item["type"].string == "agentMessage",
+                  ["commentary", "final_answer"].contains(item["phase"].string), !item.id.isEmpty else { continue }
+            guard let index = result.firstIndex(where: { message in
+                let thread = message["metadata"]["threadId"].string
+                return message["role"].string == "agent" && !ChatTranscript.isWake(message)
+                    && (thread.isEmpty ? fallbackThreadID == threadID : thread == threadID)
+                    && (message.id == item.id || message["metadata"]["itemId"].string == item.id)
+                    && message["metadata"]["phase"].string.isEmpty
+                    && message["status"].string != "streaming"
+                    && !ChatTranscript.isDeleted(message, tombstones: tombstones)
+            }) else { continue }
+            result[index]["metadata"]["phase"] = item["phase"]
+            result[index]["metadata"]["threadId"] = .string(threadID)
+            if !entry["turnId"].string.isEmpty { result[index]["metadata"]["turnId"] = entry["turnId"] }
+        }
+        return result
+    }
+}
+
 enum ChatDetailRecovery {
     static func restore(_ saved: [JSONValue], snapshot: JSONValue) -> [JSONValue] {
         let thread = snapshot["thread"] == .null ? snapshot : snapshot["thread"]
@@ -1453,6 +1566,7 @@ enum ChatDetailRecovery {
                       let index = result.firstIndex(where: { $0["role"].string == "agent" && ($0.id == item.id || $0["metadata"]["itemId"].string == item.id) }) else { continue }
                 result[index]["metadata"]["turnId"] = .string(turn.id)
                 result[index]["metadata"]["threadId"] = thread["id"]
+                if item["phase"] != .null { result[index]["metadata"]["phase"] = item["phase"] }
                 if result[index]["metadata"]["thoughtSummary"].string.isEmpty && !summaries.isEmpty {
                     result[index]["metadata"]["thoughtSummary"] = .string(summaries.joined(separator: "\n"))
                 }
@@ -1616,6 +1730,7 @@ enum ChatRecovery {
                 }
                 message["metadata"]["threadId"] = thread["id"]
                 message["metadata"]["turnId"] = .string(turn.id)
+                if item["phase"] != .null { message["metadata"]["phase"] = item["phase"] }
                 if let index { result[index] = message } else { result.append(message) }
             }
         }

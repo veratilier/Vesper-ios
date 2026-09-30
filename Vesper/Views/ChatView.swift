@@ -880,65 +880,116 @@ enum ChatTerminalRecords {
 }
 
 private struct ChatTerminalView: View {
-    @EnvironmentObject private var chat: ChatSession
+    @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var followOutput = true
-    private var entries: [JSONValue] { ChatTerminalRecords.entries(chat.messages) }
-    private let terminalColor = Color(red: 0.07, green: 0.08, blue: 0.10)
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var screen = ""
+    @State private var draft = ""
+    @State private var error = ""
+    @State private var connected = false
+    @State private var running = false
+    @State private var busy = false
+    @State private var retry = 0
 
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
-                        if entries.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Waiting for a command").font(.headline)
-                                Text("Commands, output and file changes from Codex in this chat appear here as they run.")
-                                    .foregroundStyle(.white.opacity(0.6))
-                            }.padding(.top, 24)
-                        }
-                        ForEach(entries) { message in
-                            let execution = message["metadata"]["execution"]
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text(ChatPresentation.time(ChatTranscript.timestamp(message))).foregroundStyle(.white.opacity(0.5))
-                                    Spacer()
-                                    Text(execution["status"].string).foregroundStyle(.white.opacity(0.7))
-                                    if execution["exitCode"] != .null { Text("exit \(Int(execution["exitCode"].number))").foregroundStyle(execution["exitCode"].number == 0 ? .green : .red) }
-                                }.font(.system(size: 11, design: .monospaced))
-                                if !execution["cwd"].string.isEmpty { Text(execution["cwd"].string).foregroundStyle(.white.opacity(0.5)) }
-                                Text(execution["command"].string.isEmpty ? execution["title"].string : "$ " + execution["command"].string)
-                                    .foregroundStyle(.green)
-                                if !execution["output"].string.isEmpty { Text(execution["output"].string).foregroundStyle(.white.opacity(0.9)) }
-                                ForEach(Array(execution["files"].array.enumerated()), id: \.offset) { _, file in
-                                    Text(file["path"].string).foregroundStyle(.cyan)
-                                    if !file["diff"].string.isEmpty { Text(file["diff"].string).foregroundStyle(.white.opacity(0.85)) }
-                                }
-                                if execution["truncated"].bool || execution["filesTruncated"].bool {
-                                    Text("Saved output is partial.").foregroundStyle(.yellow)
-                                }
-                            }
-                            .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        Color.clear.frame(height: 1).id("terminal-bottom")
-                    }.padding(16)
+            VStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
+                    Text(connected ? (running ? "Live · VPS Codex" : "No active terminal") : "Disconnected")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Reconnect terminal")
                 }
-                .onAppear { if followOutput { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
-                .onChange(of: entries) { _, _ in if followOutput { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
-                .onChange(of: followOutput) { _, enabled in if enabled { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
-            }
-            .background(terminalColor)
-            .navigationTitle("Codex terminal").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { followOutput.toggle() } label: { Image(systemName: followOutput ? "arrow.down.to.line.circle.fill" : "arrow.down.to.line.circle") }
-                        .accessibilityLabel("Follow output").accessibilityValue(followOutput ? "On" : "Off")
+                ScrollView([.horizontal, .vertical]) {
+                    Text(screen.isEmpty ? "Start or reconnect to the VPS Codex terminal." : screen)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.9)).textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                if !error.isEmpty {
+                    Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
+                if connected && !running {
+                    Button("Start VPS Codex") { perform("/terminal/start") }
+                        .buttonStyle(.bordered).disabled(busy)
+                }
+                HStack(spacing: 8) {
+                    ForEach(["Esc", "Tab", "^C", "←", "↑", "↓", "→", "↵"], id: \.self) { label in
+                        Button(label) { sendKey(label) }
+                            .font(.system(size: 13, design: .monospaced))
+                            .frame(maxWidth: .infinity, minHeight: 36)
+                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }.disabled(!connected || !running || busy)
+                HStack {
+                    TextField("Type into VPS terminal…", text: $draft)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onSubmit { sendDraft() }
+                    Button { sendDraft() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                        .accessibilityLabel("Send to terminal")
+                        .disabled(draft.isEmpty || !connected || !running || busy)
+                }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                Text("Persistent VPS session · closing this window keeps it running")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
+                .navigationTitle("Codex terminal").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.preferredColorScheme(.dark)
+            .task(id: "\(scenePhase)-\(retry)") {
+                guard scenePhase == .active else { connected = false; return }
+                await followScreen()
+            }
+    }
+
+    private func followScreen() async {
+        connected = false
+        while !Task.isCancelled {
+            do {
+                let result = try await store.api.request("/terminal", history: true)
+                try Task.checkCancellation()
+                screen = result["screen"].string
+                running = result["running"].bool
+                connected = true
+                // A failed input is not automatically retried or erased by polling.
+                try await Task.sleep(for: .milliseconds(500))
+            } catch is CancellationError { return }
+            catch let failure {
+                guard !Task.isCancelled else { return }
+                connected = false
+                error = failure.localizedDescription
+                return
+            }
+        }
+    }
+
+    private func sendKey(_ label: String) {
+        let keys = ["Esc": "Escape", "Tab": "Tab", "^C": "C-c", "←": "Left",
+                    "↑": "Up", "↓": "Down", "→": "Right", "↵": "Enter"]
+        if let key = keys[label] { perform("/terminal/input", body: .object(["key": .string(key)])) }
+    }
+
+    private func sendDraft() {
+        guard !draft.isEmpty, connected, running, !busy else { return }
+        perform("/terminal/input", body: .object(["text": .string(draft)]), sentDraft: draft)
+    }
+
+    private func perform(_ path: String, body: JSONValue? = nil, sentDraft: String? = nil) {
+        guard !busy else { return }
+        busy = true
+        Task { @MainActor in
+            defer { busy = false }
+            do {
+                _ = try await store.api.request(path, method: "POST", body: body, history: true)
+                error = ""
+                if let sentDraft, draft == sentDraft { draft = "" }
+                retry += 1
+            } catch let failure {
+                error = "Not confirmed. Check the live screen before sending again. " + failure.localizedDescription
+            }
+        }
     }
 }
 

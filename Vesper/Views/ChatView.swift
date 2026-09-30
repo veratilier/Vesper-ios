@@ -279,6 +279,7 @@ struct ChatView: View {
     @State private var removingConversation: JSONValue?
     @State private var modelPicker = false
     @State private var connectionDetails = false
+    @State private var terminalVisible = false
     @State private var drawer = false
     @State private var photoPicker = false
     @State private var cameraPicker = false
@@ -542,6 +543,9 @@ struct ChatView: View {
             }.presentationDetents([.medium])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
+        .sheet(isPresented: $terminalVisible) {
+            ChatTerminalView().environmentObject(chat).presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: Binding(get: { chat.approval != nil }, set: { if !$0 { Task { await chat.resolveApproval(accept: false) } } })) {
             NavigationStack {
                 ScrollView { VStack(alignment: .leading, spacing: 20) {
@@ -571,6 +575,8 @@ struct ChatView: View {
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
+            Button { terminalVisible = true } label: { Image(systemName: "terminal") }
+                .accessibilityLabel("Codex terminal")
             AppearancePicker()
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
     }
@@ -859,6 +865,80 @@ enum ChatPresentation {
         let formatter = DateFormatter()
         formatter.dateFormat = full ? "M/d HH:mm:ss" : (Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm")
         return formatter.string(from: date)
+    }
+}
+
+enum ChatTerminalRecords {
+    static func entries(_ messages: [JSONValue]) -> [JSONValue] {
+        ChatTranscript.ordered(messages).filter { message in
+            let execution = message["metadata"]["execution"]
+            let kinds = ["commandExecution", "shellCall", "fileChange"]
+            return execution != .null && (kinds.contains(execution["type"].string)
+                || kinds.contains(message["metadata"]["blockType"].string))
+        }
+    }
+}
+
+private struct ChatTerminalView: View {
+    @EnvironmentObject private var chat: ChatSession
+    @Environment(\.dismiss) private var dismiss
+    @State private var followOutput = true
+    private var entries: [JSONValue] { ChatTerminalRecords.entries(chat.messages) }
+    private let terminalColor = Color(red: 0.07, green: 0.08, blue: 0.10)
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 24) {
+                        if entries.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Waiting for a command").font(.headline)
+                                Text("Commands, output and file changes from Codex in this chat appear here as they run.")
+                                    .foregroundStyle(.white.opacity(0.6))
+                            }.padding(.top, 24)
+                        }
+                        ForEach(entries) { message in
+                            let execution = message["metadata"]["execution"]
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text(ChatPresentation.time(ChatTranscript.timestamp(message))).foregroundStyle(.white.opacity(0.5))
+                                    Spacer()
+                                    Text(execution["status"].string).foregroundStyle(.white.opacity(0.7))
+                                    if execution["exitCode"] != .null { Text("exit \(Int(execution["exitCode"].number))").foregroundStyle(execution["exitCode"].number == 0 ? .green : .red) }
+                                }.font(.system(size: 11, design: .monospaced))
+                                if !execution["cwd"].string.isEmpty { Text(execution["cwd"].string).foregroundStyle(.white.opacity(0.5)) }
+                                Text(execution["command"].string.isEmpty ? execution["title"].string : "$ " + execution["command"].string)
+                                    .foregroundStyle(.green)
+                                if !execution["output"].string.isEmpty { Text(execution["output"].string).foregroundStyle(.white.opacity(0.9)) }
+                                ForEach(Array(execution["files"].array.enumerated()), id: \.offset) { _, file in
+                                    Text(file["path"].string).foregroundStyle(.cyan)
+                                    if !file["diff"].string.isEmpty { Text(file["diff"].string).foregroundStyle(.white.opacity(0.85)) }
+                                }
+                                if execution["truncated"].bool || execution["filesTruncated"].bool {
+                                    Text("Saved output is partial.").foregroundStyle(.yellow)
+                                }
+                            }
+                            .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Color.clear.frame(height: 1).id("terminal-bottom")
+                    }.padding(16)
+                }
+                .onAppear { if followOutput { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
+                .onChange(of: entries) { _, _ in if followOutput { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
+                .onChange(of: followOutput) { _, enabled in if enabled { proxy.scrollTo("terminal-bottom", anchor: .bottom) } }
+            }
+            .background(terminalColor)
+            .navigationTitle("Codex terminal").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { followOutput.toggle() } label: { Image(systemName: followOutput ? "arrow.down.to.line.circle.fill" : "arrow.down.to.line.circle") }
+                        .accessibilityLabel("Follow output").accessibilityValue(followOutput ? "On" : "Off")
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }.preferredColorScheme(.dark)
     }
 }
 

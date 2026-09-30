@@ -22,6 +22,19 @@ private final class StickerAssetProtocol: URLProtocol {
 }
 
 final class ContractTests: XCTestCase {
+    func testChatTerminalIncludesRealExecutionAndFileChangesButExcludesOrdinaryTools() {
+        func record(_ id: String, _ type: String) -> JSONValue {
+            .object(["id": .string(id), "role": .string("system"),
+                     "metadata": .object(["execution": .object(["type": .string(type), "output": .string("output")])])])
+        }
+        let input = [record("command", "commandExecution"), record("search", "webSearch"),
+                     record("patch", "fileChange"), record("shell", "shellCall")]
+        XCTAssertEqual(ChatTerminalRecords.entries(input).map(\.id), ["command", "patch", "shell"])
+        var streaming = input[0]
+        streaming["metadata"]["execution"]["output"] = .string("updated output")
+        XCTAssertEqual(ChatTerminalRecords.entries([streaming])[0]["metadata"]["execution"]["output"].string, "updated output")
+    }
+
     func testOldMessagePhaseBackfillMatchesOriginalIdentityWithoutChangingBodyOrTime() {
         let saved: JSONValue = .object(["id": .string("saved"), "role": .string("agent"), "content": .string("original body"), "createdAt": .string("2026-09-30T07:21:20Z"), "metadata": .object(["itemId": .string("item"), "threadId": .string("thread")])])
         let entry: JSONValue = .object(["turnId": .string("turn"), "item": .object(["id": .string("item"), "type": .string("agentMessage"), "phase": .string("commentary"), "text": .string("different server body")])])

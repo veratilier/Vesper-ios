@@ -204,6 +204,34 @@ private struct AttachmentQuickLook: UIViewControllerRepresentable {
     }
 }
 
+
+struct ChatConnectionSheet: View {
+    let message: String
+    let needsRetry: Bool
+    let retry: () -> Void
+    let close: () -> Void
+    @AppStorage("vesperPalette") private var palette = "blue"
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(message).foregroundStyle(VesperTheme.ink)
+                Button(needsRetry ? "Retry" : "Check status", action: retry)
+                    .buttonStyle(.borderedProminent)
+                    .tint(VesperTheme.ink)
+                    .foregroundStyle(palette == "black" ? Color.black : Color.white)
+                Spacer()
+            }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: close).foregroundStyle(VesperTheme.ink)
+                    }
+                }
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            .preferredColorScheme(palette == "black" ? .dark : .light)
+    }
+}
+
 // Text edits must not invalidate the chat timeline. Only the field and its
 // send button observe this object; attachments still notify ChatView.
 final class ChatTypedDraft: ObservableObject {
@@ -548,19 +576,14 @@ struct ChatView: View {
     var body: some View {
         attachmentContent
         .sheet(isPresented: $connectionDetails) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
-                         chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
-                         "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5")
-                    Button(chat.connectionNeedsRetry ? "Retry" : "Check status") {
-                        chat.retryConnection(); connectionDetails = false
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
-                }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { connectionDetails = false } } }
-            }.presentationDetents([.medium])
+            ChatConnectionSheet(
+                message: chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
+                    chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
+                    "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5",
+                needsRetry: chat.connectionNeedsRetry,
+                retry: { chat.retryConnection(); connectionDetails = false },
+                close: { connectionDetails = false })
+                .presentationDetents([.medium])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $terminalVisible) {

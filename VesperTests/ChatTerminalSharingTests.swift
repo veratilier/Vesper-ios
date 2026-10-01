@@ -49,6 +49,59 @@ import SwiftUI
         let attachment=XCTAttachment(image:image);attachment.name="Bookmark long text layout";attachment.lifetime = .keepAlways;add(attachment)
         XCTAssertGreaterThan(image.size.width,300)
     }
+    func testTerminalHistoryAndReconnectLabelsAcrossPalettes() async throws {
+        let original = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer {
+            if let original { UserDefaults.standard.set(original, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let messages: [JSONValue] = [
+            .object(["id": .string("test-user"), "role": .string("user"), "createdAt": .string("2026-10-01T00:00:00Z"), "content": .string("这是一条虚构的历史消息。Can you read this?")]),
+            .object(["id": .string("test-agent"), "role": .string("agent"), "createdAt": .string("2026-10-01T00:01:00Z"), "content": .string("History should stay readable on a dark background. **粗体也能读到。**")])
+        ]
+        for palette in ["white", "blue", "black"] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let history = ChatTerminalHistoryPane(records: messages, hasMore: true)
+                .padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
+                .preferredColorScheme(.dark).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            let image = try await renderFixture(AnyView(history), name: "Terminal history " + palette)
+            XCTAssertGreaterThan(brightPixels(image, area: CGRect(x: 16, y: 70, width: 350, height: 280)), 250)
+            let connection = ChatConnectionSheet(message: "Chat recovery failed. Tap Retry to start another attempt.", needsRetry: true, retry: {}, close: {})
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            _ = try await renderFixture(AnyView(connection), name: "Connection retry " + palette)
+        }
+    }
+
+    private func renderFixture(_ content: AnyView, name: String) async throws -> UIImage {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: content)
+        let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 700)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        host.view.frame = window.bounds
+        try await Task.sleep(for: .milliseconds(250)); host.view.layoutIfNeeded()
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: image); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        return image
+    }
+
+    private func brightPixels(_ image: UIImage, area: CGRect) -> Int {
+        guard let cg = image.cgImage else { return 0 }
+        var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+        guard let context = CGContext(data: &pixels, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 0 }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        var count = 0
+        for y in Int(area.minY)..<min(cg.height, Int(area.maxY)) {
+            for x in Int(area.minX)..<min(cg.width, Int(area.maxX)) {
+                let i = (y * cg.width + x) * 4
+                if pixels[i] > 180 && pixels[i + 1] > 180 && pixels[i + 2] > 180 { count += 1 }
+            }
+        }
+        return count
+    }
+
     func testMusicLinksAreRecognizedWithoutGenericPreviewCards() {
         let text = "https://example.com/a https://evil.music.apple.com/a https://music.apple.com/us/album/test/12?i=987 https://open.spotify.com/track/abc"
         let cards = ChatMusicShare.links(in:text)

@@ -12,6 +12,34 @@ enum ChatTerminalHistory {
     }
 }
 
+struct ChatTerminalHistoryPane: View {
+    let records: [JSONValue]
+    var hasMore = false
+    var loading = false
+    var loadOlder: () -> Void = {}
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 20) {
+                if hasMore {
+                    Button(loading ? "Loading…" : "Load older messages", action: loadOlder)
+                        .foregroundStyle(.white).disabled(loading)
+                }
+                ForEach(records) { message in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text((ChatPresentation.isUser(message) ? "Vera" : "Rowan") + " · " + ChatPresentation.time(message["createdAt"].string, full: true))
+                            .font(.caption).foregroundStyle(.white.opacity(0.65))
+                        ChatMarkdownText(content: message["content"].string)
+                            .font(.system(size: 14)).foregroundStyle(.white)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if records.isEmpty && !loading { Text("No saved messages in this chat.").font(.caption) }
+                if loading { ProgressView().tint(.white) }
+            }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).foregroundStyle(.white)
+    }
+}
+
 struct TerminalTextViewport: UIViewRepresentable {
     let text: String
     static func columns(for width: CGFloat) -> Int {
@@ -59,6 +87,8 @@ struct ChatTerminalView: View {
     @State private var hasMore = false
     @State private var loadingHistory = false
     @State private var columns = 48
+    @State private var resizeSupported = false
+    @State private var resizeRejected = false
 
     var body: some View {
         NavigationStack {
@@ -66,7 +96,7 @@ struct ChatTerminalView: View {
                 HStack(spacing: 6) {
                     Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
                     Text(connected ? (running ? "Live · This chat" : "No active terminal") : "Disconnected")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(.white.opacity(0.65))
                     Spacer()
                     Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Reconnect terminal")
@@ -81,20 +111,13 @@ struct ChatTerminalView: View {
                             }
                     }
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 20) {
-                            if hasMore { Button(loadingHistory ? "Loading…" : "Load older messages") { Task { await loadHistory(reset: false) } }.disabled(loadingHistory) }
-                            ForEach(records) { message in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text((ChatPresentation.isUser(message) ? "Vera" : "Rowan") + " · " + ChatPresentation.time(message["createdAt"].string, full: true))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    ChatMarkdownText(content: message["content"].string).font(.system(size: 14))
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            if records.isEmpty && !loadingHistory { Text("No saved messages in this chat.").font(.caption) }
-                            if loadingHistory { ProgressView() }
-                        }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ChatTerminalHistoryPane(records: records, hasMore: hasMore, loading: loadingHistory) {
+                        Task { await loadHistory(reset: false) }
+                    }
+                }
+                if mode == 0 && connected && running && !resizeSupported {
+                    Text("This VPS service does not support terminal resizing yet. Text wraps locally; the VPS service needs updating.")
+                        .font(.caption).foregroundStyle(.orange)
                 }
                 if !error.isEmpty {
                     Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
@@ -122,11 +145,11 @@ struct ChatTerminalView: View {
                 }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
                 }
                 Text(mode == 0 ? "Persistent VPS session · closing this window keeps it running" : "Saved messages for this chat · load older messages above")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(.white.opacity(0.65))
             }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
                 .navigationTitle("Chat terminal").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }.preferredColorScheme(.dark).tint(.white)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.foregroundStyle(.white) } }
+        }.preferredColorScheme(.dark).tint(.white).foregroundStyle(.white)
             .task(id: "\(scenePhase)-\(retry)-\(mode)") {
                 guard scenePhase == .active else { connected = false; return }
                 if mode == 0 { await followScreen() } else { await loadHistory(reset: true) }
@@ -134,16 +157,17 @@ struct ChatTerminalView: View {
     }
 
     private func followScreen() async {
-        connected = false
+        connected = false; resizeRejected = false
         while !Task.isCancelled {
             do {
                 let result = try await store.api.request(endpoint, history: true)
                 try Task.checkCancellation()
                 guard result["conversationId"].string == conversationID else { throw ServiceError(message: "The server returned a terminal for another chat.") }
                 screen = result["screen"].string
-                let wasRunning = running
+                let wasRunning = running, wasResizable = resizeSupported
                 running = result["running"].bool
-                if running && !wasRunning { await resize() }
+                resizeSupported = result["capabilities"]["resize"].bool && !resizeRejected
+                if running && (!wasRunning || !wasResizable) { await resize() }
                 connected = true
                 // A failed input is not automatically retried or erased by polling.
                 try await Task.sleep(for: .milliseconds(500))
@@ -158,8 +182,13 @@ struct ChatTerminalView: View {
     }
 
     private func resize() async {
+        guard resizeSupported else { return }
         do { _ = try await store.api.request(endpoint + "/resize", method: "POST", body: .object(["columns": .number(Double(columns))]), history: true) }
-        catch { self.error = error.localizedDescription }
+        catch is CancellationError { }
+        catch let failure as ServiceError where failure.statusCode == 405 {
+            resizeRejected = true; resizeSupported = false
+        }
+        catch { self.error = "Terminal resize failed: " + error.localizedDescription }
     }
     private func loadHistory(reset: Bool) async {
         guard !loadingHistory else { return }; loadingHistory = true; defer { loadingHistory = false }

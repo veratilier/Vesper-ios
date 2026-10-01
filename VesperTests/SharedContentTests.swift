@@ -63,3 +63,24 @@ private struct OpenURLProbe: View {
     let read: (OpenURLAction) -> Void
     var body: some View { Text("Chat stays open").onAppear { read(action) } }
 }
+
+
+extension SharedContentTests {
+    @MainActor func testApplePlaylistRetainsOriginalTrackIdentityAndOrder() {
+        let first: JSONValue = .object(["id": .string("library-first"), "source": .string("appleMusic"), "appleMusicId": .string("libraryID1")])
+        let second: JSONValue = .object(["id": .string("library-second"), "source": .string("appleMusic"), "appleMusicId": .string("catalogID2")])
+        let third: JSONValue = .object(["id": .string("library-third"), "source": .string("appleMusic"), "appleMusicId": .string("catalogID3")])
+        let legacy: JSONValue = .object(["id": .string("old-stream"), "source": .string("netease")])
+        XCTAssertEqual(MusicPlayer.playableTracks([first, legacy, second, second, third]), [first, second, third])
+    }
+    func testAppleCardUsesRealSongMetadata() {
+        let raw: JSONValue = .object(["kind": .string("song"), "trackId": .number(123), "trackName": .string("Song"), "artistName": .string("Singer"), "artworkUrl100": .string("https://example.com/cover.jpg"), "trackTimeMillis": .number(180000)])
+        let song = ChatMusicShare.appleMetadata(raw)!
+        XCTAssertEqual(song["appleMusicId"].string, "123")
+        XCTAssertEqual(song["title"].string, "Song")
+        XCTAssertEqual(song["artist"].string, "Singer")
+        XCTAssertEqual(song["duration"].number, 180)
+        XCTAssertEqual(ChatMusicShare.normalized(song)["source"].string, "appleMusic")
+        XCTAssertNil(ChatMusicShare.appleMetadata(.object(["kind": .string("collection")])))
+    }
+}

@@ -81,6 +81,7 @@ struct WakeView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                NavigationLink("Sleep time") { WakeSleepView() }.disabled(runtime["sleepVersion"].number < 1)
                 NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
                 NavigationLink("Recent activity") { activityPage }
@@ -232,6 +233,74 @@ struct WakeView: View {
         } catch { status = error.localizedDescription }
     }
 }
+private struct WakeSleepView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var enabled = true
+    @State private var dreamEnabled = true
+    @State private var start = Self.date("00:00")
+    @State private var end = Self.date("07:00")
+    @State private var busy = false
+    @State private var supported = false
+    @State private var status = ""
+    private static let zone = TimeZone(identifier: "Asia/Shanghai")!
+    private static func date(_ value: String) -> Date {
+        let parts = value.split(separator: ":").compactMap { Int($0) }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        return calendar.date(from: DateComponents(year: 2000, month: 1, day: 1, hour: parts.first ?? 0, minute: parts.last ?? 0))!
+    }
+    private static func time(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        return String(format: "%02d:%02d", calendar.component(.hour, from: date), calendar.component(.minute, from: date))
+    }
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Sleep time", isOn: $enabled)
+                DatePicker("From", selection: $start, displayedComponents: .hourAndMinute)
+                DatePicker("Until", selection: $end, displayedComponents: .hourAndMinute)
+                Toggle("Save a simulated dream after sleep", isOn: $dreamEnabled)
+            } footer: {
+                Text("Beijing time. Automatic activity and notifications stay silent during sleep. After sleep, one simulated dream is saved to Memory → 梦. Dreams are imagination, not factual memories.")
+            }.disabled(!supported || busy)
+            if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
+        }.environment(\.timeZone, Self.zone)
+            .navigationTitle("Sleep time").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+            .safeAreaInset(edge: .bottom) {
+                WakeSaveButton(title: busy ? "Saving…" : "Save sleep time", disabled: !supported || busy) { Task { await save() } }
+            }.task { await load() }
+    }
+    private func load() async {
+        busy = true; defer { busy = false }
+        do {
+            let value = try await store.api.request("/wake", history: true)
+            supported = value["sleepVersion"].number >= 1
+            let setting = value["config"]["sleep"]
+            enabled = setting["enabled"].bool; dreamEnabled = setting["dreamEnabled"].bool
+            start = Self.date(setting["start"].string); end = Self.date(setting["end"].string)
+            if !supported { status = "Update the VPS wake service to configure sleep time." }
+        } catch { status = error.localizedDescription }
+    }
+    private func save() async {
+        guard !busy, supported else { return }
+        guard Self.time(start) != Self.time(end) else { status = "Choose different start and end times."; return }
+        busy = true; defer { busy = false }
+        let setting: JSONValue = .object(["enabled": .bool(enabled), "dreamEnabled": .bool(dreamEnabled),
+            "start": .string(Self.time(start)), "end": .string(Self.time(end)), "timeZone": .string(Self.zone.identifier)])
+        do {
+            // Preserve the latest main switch/interval, including changes from another device.
+            let latest = try await store.api.request("/wake", history: true)
+            let body: JSONValue = .object(["action": .string("configure"), "enabled": latest["config"]["enabled"],
+                "intervalMinutes": latest["config"]["intervalMinutes"], "sleep": setting])
+            let saved = try await store.api.request("/wake", method: "POST", body: body, history: true)
+            let reread = try await store.api.request("/wake", history: true)
+            guard saved["config"]["sleep"] == setting, reread["config"]["sleep"] == setting else {
+                throw ServiceError(message: "The service did not retain the sleep settings.")
+            }
+            status = "Saved and verified. Applies to the existing VPS scheduler."
+        } catch { status = error.localizedDescription }
+    }
+}
+
 private struct WakePromptView: View {
     @EnvironmentObject private var store: AppStore
     @State private var prompt = ""

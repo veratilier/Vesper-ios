@@ -17,7 +17,7 @@ import UserNotifications
 }
 enum Destination: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", notes = "Notes"
-    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Reading Room", bookmarks = "Bookmarks", movieRoom = "Movie Room", settings = "Settings"
+    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {

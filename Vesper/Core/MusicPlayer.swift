@@ -20,6 +20,8 @@ import SwiftUI
     @Published private(set) var lyricsLoading = false
     @Published private(set) var lyricSource: String?
     private let native = ApplicationMusicPlayer.shared
+    private var loadedTrackID = ""
+    private var queueTracks: [String: JSONValue] = [:]
     private var songs: [String: Song] = [:]
     private var artworkLookups = Set<String>()
     private var library: [JSONValue] = []
@@ -70,6 +72,8 @@ import SwiftUI
     func setQueue(_ values: [JSONValue], append: Bool = false) {
         var seen = Set<String>()
         tracks = (append ? tracks + values : values).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+        let wasPlaying = playing
+        let resumePosition = position
         if !tracks.contains(where: { $0.id == track.id }) {
             pause()
             lyricTask?.cancel()
@@ -80,7 +84,12 @@ import SwiftUI
             lyricSource = nil
             position = 0
             duration = track["duration"].number
+            queueTracks = [:]
+            native.queue = ApplicationMusicPlayer.Queue(for: [Song]())
+            loadedTrackID = ""
             synchronize()
+        } else if track != .null {
+            select(track, autoplay: wasPlaying, resumePosition: resumePosition)
         }
     }
     func remove(_ id: String) { setQueue(tracks.filter { $0.id != id }) }
@@ -90,7 +99,7 @@ import SwiftUI
         applyPlaybackMode()
     }
     private func applyPlaybackMode() {
-        native.state.repeatMode = mode == "single" ? .one : mode == "repeat" ? .all : .none
+        native.state.repeatMode = mode == "single" ? .one : mode == "repeat" ? .all : MusicKit.MusicPlayer.RepeatMode.none
         native.state.shuffleMode = mode == "random" ? .songs : .off
     }
     private func loadLyrics(for value: JSONValue) {
@@ -119,11 +128,14 @@ import SwiftUI
         }
     }
 
-    func select(_ value: JSONValue) {
+    func select(_ value: JSONValue) { select(value, autoplay: true, resumePosition: 0) }
+    private func select(_ value: JSONValue, autoplay: Bool, resumePosition: Double) {
         playTask?.cancel()
         selection = UUID()
         let requested = selection
         native.pause()
+        loadedTrackID = ""
+        resolving = true
         track = value
         currentArtwork = artwork(for: value)
         loadLyrics(for: value)
@@ -137,6 +149,8 @@ import SwiftUI
         guard value["source"].string == "appleMusic",
               let id = value["appleMusicId"].string.nonEmpty else {
             resolving = false
+            queueTracks = [:]
+            native.queue = ApplicationMusicPlayer.Queue(for: [Song]())
             error = MusicError.unavailable.localizedDescription
             return
         }
@@ -147,19 +161,24 @@ import SwiftUI
                 let subscription = try await MusicSubscription.current
                 guard subscription.canPlayCatalogContent else { throw MusicError.subscription }
                 let selected = try await song(for: id)
+                var queueSongs: [Song] = []
+                let queueValues = Self.playableTracks(tracks)
+                for value in queueValues {
+                    try Task.checkCancellation()
+                    queueSongs.append(try await song(for: value["appleMusicId"].string))
+                }
                 try Task.checkCancellation()
                 guard selection == requested else { return }
-                currentArtwork = artwork(for: value)
-                if currentArtwork == nil {
-                    Task { await ensureArtwork(for: value) }
-                }
-                // Play the songs already resolved from this Vesper queue so
-                // native automatic transitions follow the same playlist.
-                let queueSongs = tracks.compactMap { songs[$0["appleMusicId"].string] }
+                updateArtwork(for: selected)
                 native.queue = ApplicationMusicPlayer.Queue(for: queueSongs, startingAt: selected)
+                queueTracks = Dictionary(uniqueKeysWithValues: zip(native.queue.entries, queueValues).map { entry, value in
+                    (String(describing: entry.id), value)
+                })
+                loadedTrackID = value.id
                 applyPlaybackMode()
-                try await native.play()
-                guard selection == requested else { native.pause(); return }
+                if resumePosition > 0 { native.playbackTime = resumePosition }
+                if autoplay { try await native.play() }
+                guard selection == requested else { return }
                 resolving = false
                 duration = selected.duration ?? value["duration"].number
                 synchronize()
@@ -170,6 +189,16 @@ import SwiftUI
                     synchronize()
                 }
             }
+        }
+    }
+    private func updateArtwork(for song: Song) {
+        currentArtwork = song.artwork
+        guard currentArtwork == nil else { return }
+        let requested = selection
+        Task {
+            let detail = try? await song.with([.albums])
+            guard selection == requested, track["appleMusicId"].string == song.id.rawValue else { return }
+            currentArtwork = detail?.albums?.first?.artwork
         }
     }
     private func song(for id: String) async throws -> Song {
@@ -185,7 +214,7 @@ import SwiftUI
         guard !resolving else { return }
         guard track != .null else { return }
         guard track["source"].string == "appleMusic" else { select(track); return }
-        if native.queue.entries.isEmpty { select(track); return }
+        if loadedTrackID != track.id || native.queue.entries.isEmpty { select(track); return }
         playTask = Task {
             do { try await native.play(); synchronize() }
             catch { self.error = error.localizedDescription; synchronize() }
@@ -200,7 +229,16 @@ import SwiftUI
     }
     func toggle() { (resolving || playing) ? pause() : play() }
     func next(_ delta: Int) {
-        guard !tracks.isEmpty else { return }
+        guard !tracks.isEmpty, !resolving else { return }
+        if let entry = native.queue.currentEntry, queueTracks[String(describing: entry.id)] != nil {
+            Task {
+                do {
+                    if delta > 0 { try await native.skipToNextEntry() } else { try await native.skipToPreviousEntry() }
+                    synchronize()
+                } catch { self.error = error.localizedDescription }
+            }
+            return
+        }
         if mode == "random", tracks.count > 1,
            let choice = tracks.filter({ $0.id != track.id }).randomElement() {
             select(choice)
@@ -213,15 +251,25 @@ import SwiftUI
         native.playbackTime = value
         synchronize()
     }
+    static func playableTracks(_ tracks: [JSONValue]) -> [JSONValue] {
+        var seen = Set<String>()
+        return tracks.filter { value in
+            let id = value["appleMusicId"].string
+            return value["source"].string == "appleMusic" && !id.isEmpty && seen.insert(id).inserted
+        }
+    }
+    static func playableIDs(_ tracks: [JSONValue]) -> [String] { playableTracks(tracks).map { $0["appleMusicId"].string } }
     func synchronize() {
         playing = native.state.playbackStatus == .playing
-        if playing, !resolving, let item = native.queue.currentEntry?.item,
+        if !resolving, !loadedTrackID.isEmpty, let item = native.queue.currentEntry?.item,
            case .song(let currentSong) = item,
-           track["appleMusicId"].string != currentSong.id.rawValue {
+           let entry = native.queue.currentEntry,
+           let value = queueTracks[String(describing: entry.id)], track.id != value.id {
+            // Queue entry identity survives MusicKit's library/catalog ID aliases.
+            // Ignore an old entry while a newly selected queue is taking effect.
             songs[currentSong.id.rawValue] = currentSong
-            let value = tracks.first { $0["appleMusicId"].string == currentSong.id.rawValue }
-                ?? MusicCatalog.metadata(currentSong)
             track = value
+            loadedTrackID = value.id
             currentArtwork = native.queue.currentEntry?.artwork ?? artwork(for: value)
             duration = currentSong.duration ?? value["duration"].number
             loadLyrics(for: value)
@@ -254,7 +302,10 @@ import SwiftUI
                 case "previous": guard !tracks.isEmpty else { return }; next(-1)
                 case "play_track":
                     let id = command["trackId"].string
-                    guard let song = (tracks + library).first(where: { $0.id == id || $0["appleMusicId"].string == id }) else { return }
+                    let shared = command["track"]
+                    guard let song = (tracks + library + [shared]).first(where: {
+                        ($0.id == id || $0["appleMusicId"].string == id) && $0["source"].string == "appleMusic" && !$0["appleMusicId"].string.isEmpty
+                    }) else { return }
                     select(song)
                 default: return
                 }
@@ -522,6 +573,9 @@ private extension String {
                  append: Bool = false, autoplay: Bool = true) async {
         guard !values.isEmpty else { return }
         player.setQueue(values, append: append)
+        // Start locally before library sync: a slow save must not later reset
+        // a queue the user has already advanced with Next.
+        if autoplay, let first = values.first { player.select(first) }
         let saved = await store.mutate("music") { current in
             // The app cleanup removes old NetEase tracks; keep only songs
             // explicitly selected from Apple Music in the shared library.
@@ -533,6 +587,5 @@ private extension String {
             return .array(merged)
         }
         message = saved ? "" : "Queue updated on this phone; library sync failed."
-        if autoplay, let first = values.first { player.select(first) }
     }
 }

@@ -671,6 +671,24 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(chat.composer.images, [Data([1, 2, 3])])
         XCTAssertNil(chat.error)
     }
+    func testForegroundRestoresReplySavedWhilePhoneWasSuspendedWithoutResending() async throws {
+        let first = RecoverySocket(), second = RecoverySocket()
+        var completed = false
+        let chat = session([first, second], historyReader: { room in
+            let reply: JSONValue = .object(["id": .string("offline-reply"), "conversationId": .string(room), "role": .string("agent"), "content": .string("Synthetic completed response"), "status": .string("delivered"), "metadata": .object(["threadId": .string("thread"), "turnId": .string("offline-turn"), "phase": .string("final_answer")])])
+            return .object(["conversation": .object(["id": .string(room)]), "messages": .array(completed ? [reply] : []), "tombstones": .array([])])
+        })
+        defer { chat.disconnect() }
+        let room = chat.conversationID
+        try await chat.connect()
+        XCTAssertTrue(chat.messages.isEmpty)
+        chat.sceneChanged(active: false); completed = true; chat.sceneChanged(active: true)
+        await eventually { chat.messages.contains { $0.id == "offline-reply" } && chat.connectionStage == .ready }
+        XCTAssertEqual(chat.conversationID, room)
+        XCTAssertEqual(chat.messages.first?["content"].string, "Synthetic completed response")
+        XCTAssertFalse((first.packets + second.packets).contains { ["thread/start", "turn/start"].contains($0["method"].string) })
+        XCTAssertEqual(second.packets.first { $0["method"].string == "thread/resume" }?["params"]["threadId"].string, "thread")
+    }
     func testExplicitDisconnectPreventsLifecycleReconnect() async throws {
         let first = RecoverySocket(), replacement = RecoverySocket(); let chat = session([first, replacement])
         try await chat.connect(); chat.disconnect()

@@ -3,14 +3,15 @@ import SwiftUI
 @testable import Vesper
 
 @MainActor final class ChatTerminalSharingTests: XCTestCase {
-    func testHistoryPagesKeepEarlierMessagesAndRemoveDuplicates() {
-        func message(_ id: String, _ at: String) -> JSONValue { .object(["id":.string(id),"role":.string("user"),"content":.string(id),"createdAt":.string(at)]) }
-        let first = message("old","2026-09-29T00:00:00Z"), last = message("new","2026-09-30T00:00:00Z")
-        XCTAssertEqual(ChatTerminalHistory.merge([last],[first,last]).map(\.id),["old","new"])
-        let path = ChatTerminalHistory.path("rowan",before:"a+b/=中文")
-        let url = URLComponents(string:"https://example.com" + path)
-        XCTAssertEqual(url?.queryItems?.first { $0.name == "before" }?.value,"a+b/=中文")
-        XCTAssertTrue(path.hasPrefix("/conversations/rowan?"))
+    func testRecordedTerminalHistoryIncludesCommandsAndOutputsWithoutDuplicatingItems() {
+        let old: JSONValue = .object(["id": .string("command"), "type": .string("CommandExecution"), "title": .string("echo synthetic"), "output": .string("synthetic result"), "createdAt": .string("2026-10-01T00:00:00Z")])
+        let new: JSONValue = .object(["id": .string("tool"), "type": .string("DynamicToolCall"), "title": .string("test_tool"), "status": .string("completed"), "createdAt": .string("2026-10-01T00:01:00Z")])
+        let merged = TerminalRecordedHistory.merge([new], [old, new])
+        XCTAssertEqual(merged.map(\.id), ["command", "tool"])
+        let text = TerminalRecordedHistory.text(merged, live: "LIVE_SCREEN")
+        XCTAssertTrue(text.contains("$ echo synthetic\nsynthetic result"))
+        XCTAssertTrue(text.contains("Called test_tool · completed"))
+        XCTAssertTrue(text.hasSuffix("LIVE_SCREEN"))
     }
     func testTerminalWrapsAndKeepsReaderPositionWithoutHorizontalOverflow() async throws {
         let renderer = TerminalTextViewport(text:String(repeating:"wide terminal 测试行 \n",count:150))
@@ -49,22 +50,18 @@ import SwiftUI
         let attachment=XCTAttachment(image:image);attachment.name="Bookmark long text layout";attachment.lifetime = .keepAlways;add(attachment)
         XCTAssertGreaterThan(image.size.width,300)
     }
-    func testTerminalHistoryAndReconnectLabelsAcrossPalettes() async throws {
+    func testLiveTerminalAndReconnectLabelsAcrossPalettes() async throws {
         let original = UserDefaults.standard.string(forKey: "vesperPalette")
         defer {
             if let original { UserDefaults.standard.set(original, forKey: "vesperPalette") }
             else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
         }
-        let messages: [JSONValue] = [
-            .object(["id": .string("test-user"), "role": .string("user"), "createdAt": .string("2026-10-01T00:00:00Z"), "content": .string("这是一条虚构的历史消息。Can you read this?")]),
-            .object(["id": .string("test-agent"), "role": .string("agent"), "createdAt": .string("2026-10-01T00:01:00Z"), "content": .string("History should stay readable on a dark background. **粗体也能读到。**")])
-        ]
         for palette in ["white", "blue", "black"] {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
-            let history = ChatTerminalHistoryPane(records: messages, hasMore: true)
+            let history = TerminalTextViewport(text: "Recorded Codex activity\n$ echo synthetic\nsynthetic result\n\n—— Live terminal ——\n> Ready")
                 .padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
                 .preferredColorScheme(.dark).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
-            let image = try await renderFixture(AnyView(history), name: "Terminal history " + palette)
+            let image = try await renderFixture(AnyView(history), name: "Live terminal " + palette)
             XCTAssertGreaterThan(brightPixels(image, area: CGRect(x: 16, y: 70, width: 350, height: 280)), 250)
             let connection = ChatConnectionSheet(message: "Chat recovery failed. Tap Retry to start another attempt.", needsRetry: true, retry: {}, close: {})
                 .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)

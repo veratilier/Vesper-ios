@@ -1,42 +1,22 @@
 import SwiftUI
 
-enum ChatTerminalHistory {
-    static func path(_ conversation: String, before: String) -> String {
-        var query = URLComponents(); query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "60")]
-        if !before.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: before)) }
-        return "/conversations/\(conversation)?" + (query.percentEncodedQuery ?? "")
-    }
+enum TerminalRecordedHistory {
     static func merge(_ existing: [JSONValue], _ incoming: [JSONValue]) -> [JSONValue] {
-        var seen = Set<String>()
-        return ChatTranscript.ordered(existing + incoming).filter { !ChatPresentation.isActivity($0) && seen.insert($0.id).inserted }
+        var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        for item in incoming { byID[item.id] = item }
+        return byID.values.sorted { ($0["createdAt"].string, $0.id) < ($1["createdAt"].string, $1.id) }
     }
-}
-
-struct ChatTerminalHistoryPane: View {
-    let records: [JSONValue]
-    var hasMore = false
-    var loading = false
-    var loadOlder: () -> Void = {}
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                if hasMore {
-                    Button(loading ? "Loading…" : "Load older messages", action: loadOlder)
-                        .foregroundStyle(.white).disabled(loading)
-                }
-                ForEach(records) { message in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text((ChatPresentation.isUser(message) ? "Vera" : "Rowan") + " · " + ChatPresentation.time(message["createdAt"].string, full: true))
-                            .font(.caption).foregroundStyle(.white.opacity(0.65))
-                        ChatMarkdownText(content: message["content"].string)
-                            .font(.system(size: 14)).foregroundStyle(.white)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if records.isEmpty && !loading { Text("No saved messages in this chat.").font(.caption) }
-                if loading { ProgressView().tint(.white) }
-            }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
-        }.frame(maxWidth: .infinity, maxHeight: .infinity).foregroundStyle(.white)
+    static func text(_ records: [JSONValue], live: String) -> String {
+        let history = records.map { item -> String in
+            switch item["type"].string {
+            case "UserMessage": return "> " + item["text"].string
+            case "AgentMessage": return "• " + item["text"].string + (item["textTruncated"].bool ? "\n[Long text truncated in terminal history]" : "")
+            case "CommandExecution": return "$ " + item["title"].string + "\n" + item["output"].string
+            case "FileChange": return "File changes · " + item["status"].string + "\n" + item["output"].string
+            default: return "Called " + item["title"].string + " · " + item["status"].string
+            }
+        }.joined(separator: "\n\n")
+        return (history.isEmpty ? "" : "Recorded Codex activity\n\n" + history + "\n\n—— Live terminal ——\n\n") + live
     }
 }
 
@@ -81,7 +61,6 @@ struct ChatTerminalView: View {
     @State private var running = false
     @State private var busy = false
     @State private var retry = 0
-    @State private var mode = 0
     @State private var records: [JSONValue] = []
     @State private var before = ""
     @State private var hasMore = false
@@ -101,32 +80,25 @@ struct ChatTerminalView: View {
                     Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Reconnect terminal")
                 }
-                Picker("Terminal view", selection: $mode) { Text("Live terminal").tag(0); Text("Chat history").tag(1) }.pickerStyle(.segmented)
-                if mode == 0 {
-                    GeometryReader { size in
-                        TerminalTextViewport(text: screen.isEmpty ? "Open the terminal for this chat to continue it. Older messages are in Chat history." : screen)
-                            .task(id: Int(size.size.width)) {
-                                columns = TerminalTextViewport.columns(for: size.size.width)
-                                if running { await resize() }
-                            }
-                    }
-                } else {
-                    ChatTerminalHistoryPane(records: records, hasMore: hasMore, loading: loadingHistory) {
-                        Task { await loadHistory(reset: false) }
-                    }
+                if hasMore {
+                    Button(loadingHistory ? "Loading…" : "Load earlier terminal activity") {
+                        Task { await loadOlder() }
+                    }.font(.caption).disabled(loadingHistory)
                 }
-                if mode == 0 && connected && running && !resizeSupported {
-                    Text("This VPS service does not support terminal resizing yet. Text wraps locally; the VPS service needs updating.")
-                        .font(.caption).foregroundStyle(.orange)
+                GeometryReader { size in
+                    TerminalTextViewport(text: TerminalRecordedHistory.text(records, live: screen.isEmpty ? "Open the terminal for this chat to continue it." : screen))
+                        .task(id: Int(size.size.width)) {
+                            columns = TerminalTextViewport.columns(for: size.size.width)
+                            if running { await resize() }
+                        }
                 }
                 if !error.isEmpty {
                     Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 }
-                if mode == 0 && connected && !running {
+                if connected && !running {
                     Button("Open this chat in terminal") { perform(endpoint + "/start") }
                         .buttonStyle(.bordered).disabled(busy)
                 }
-                if mode == 0 {
                 HStack(spacing: 8) {
                     ForEach(["Esc", "Tab", "^C", "←", "↑", "↓", "→", "↵"], id: \.self) { label in
                         Button(label) { sendKey(label) }
@@ -143,27 +115,29 @@ struct ChatTerminalView: View {
                         .accessibilityLabel("Send to terminal")
                         .disabled(draft.isEmpty || !connected || !running || busy)
                 }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
-                }
-                Text(mode == 0 ? "Persistent VPS session · closing this window keeps it running" : "Saved messages for this chat · load older messages above")
+                Text("Persistent VPS session · closing this window keeps it running")
                     .font(.caption2).foregroundStyle(.white.opacity(0.65))
             }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
                 .navigationTitle("Chat terminal").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.foregroundStyle(.white) } }
         }.preferredColorScheme(.dark).tint(.white).foregroundStyle(.white)
-            .task(id: "\(scenePhase)-\(retry)-\(mode)") {
+            .task(id: "\(scenePhase)-\(retry)") {
                 guard scenePhase == .active else { connected = false; return }
-                if mode == 0 { await followScreen() } else { await loadHistory(reset: true) }
+                await followScreen()
             }
     }
 
     private func followScreen() async {
-        connected = false; resizeRejected = false
+        connected = false; resizeRejected = false; records = []; before = ""; hasMore = false
         while !Task.isCancelled {
             do {
                 let result = try await store.api.request(endpoint, history: true)
                 try Task.checkCancellation()
                 guard result["conversationId"].string == conversationID else { throw ServiceError(message: "The server returned a terminal for another chat.") }
                 screen = result["screen"].string
+                records = TerminalRecordedHistory.merge(records, result["history"]["records"].array)
+                if before.isEmpty { before = result["history"]["before"].string; hasMore = result["history"]["hasMore"].bool }
+                if !result["historyError"].string.isEmpty { error = result["historyError"].string }
                 let wasRunning = running, wasResizable = resizeSupported
                 running = result["running"].bool
                 resizeSupported = result["capabilities"]["resize"].bool && !resizeRejected
@@ -190,13 +164,17 @@ struct ChatTerminalView: View {
         }
         catch { self.error = "Terminal resize failed: " + error.localizedDescription }
     }
-    private func loadHistory(reset: Bool) async {
-        guard !loadingHistory else { return }; loadingHistory = true; defer { loadingHistory = false }
+    private func loadOlder() async {
+        guard !loadingHistory, !before.isEmpty else { return }
+        loadingHistory = true; defer { loadingHistory = false }
         do {
-            let result = try await store.api.request(ChatTerminalHistory.path(conversationID, before: reset ? "" : before), history: true)
+            var query = URLComponents(); query.queryItems = [URLQueryItem(name: "before", value: before)]
+            let result = try await store.api.request(endpoint + "?" + (query.percentEncodedQuery ?? ""), history: true)
             try Task.checkCancellation()
-            records = ChatTerminalHistory.merge(reset ? [] : records, result["messages"].array)
-            before = result["before"].string; hasMore = result["hasMore"].bool; error = ""
+            guard result["conversationId"].string == conversationID else { throw ServiceError(message: "The server returned a terminal for another chat.") }
+            if !result["historyError"].string.isEmpty { throw ServiceError(message: result["historyError"].string) }
+            records = TerminalRecordedHistory.merge(records, result["history"]["records"].array)
+            before = result["history"]["before"].string; hasMore = result["history"]["hasMore"].bool
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
     }

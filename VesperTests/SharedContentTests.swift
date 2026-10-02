@@ -129,3 +129,82 @@ extension SharedContentTests {
         XCTAssertFalse(ChatMusicShare.isApple(.object(["source": .string("netease"), "title": .string("Song")])))
     }
 }
+
+extension SharedContentTests {
+    private func playback(_ id: String = "apple-1", playing: Bool = true, position: Double = 10) -> JSONValue {
+        .object(["track": .object(["id": .string(id), "title": .string("Test song"), "artist": .string("Test artist"), "album": .string("Album")]),
+                 "playing": .bool(playing), "resolving": .bool(false), "positionSeconds": .number(position),
+                 "durationSeconds": .number(180), "observedAt": .string("2026-10-02T05:00:00Z")])
+    }
+
+    func testOrdinaryMessagesDoNotRepeatPlaybackProgressOrEmptyState() {
+        let empty: JSONValue = .object(["track": .null, "playing": .bool(false)])
+        XCTAssertEqual(ChatMusicContext.update(ChatMusicContext.snapshot(empty), previous: nil), "")
+        let first = ChatMusicContext.snapshot(playback())
+        var later = playback(position: 80)
+        later["observedAt"] = .string("2026-10-02T05:02:00Z")
+        later["durationSeconds"] = .number(181)
+        later["track"]["album"] = .string("Resolved album")
+        XCTAssertEqual(ChatMusicContext.update(ChatMusicContext.snapshot(later), previous: first), "")
+        let update = ChatMusicContext.update(first, previous: nil)
+        XCTAssertTrue(update.contains("Test song"))
+        XCTAssertFalse(update.contains("positionSeconds"))
+        XCTAssertFalse(update.contains("observedAt"))
+        XCTAssertFalse(update.contains("album"))
+    }
+
+    func testTrackPauseResumeAndClearEachProduceOneUpdate() {
+        var previous = ChatMusicContext.snapshot(playback())
+        let empty: JSONValue = .object(["track": .null, "playing": .bool(false)])
+        for live in [playback("apple-2"), playback("apple-2", playing: false), playback("apple-2"), empty] {
+            let current = ChatMusicContext.snapshot(live)
+            XCTAssertFalse(ChatMusicContext.update(current, previous: previous).isEmpty)
+            XCTAssertEqual(ChatMusicContext.update(current, previous: current), "")
+            previous = current
+        }
+    }
+
+    func testResolvingDoesNotEmitTransientPauseOrConsumeStableUpdate() {
+        let previous = ChatMusicContext.snapshot(playback())
+        var loading = playback("apple-2", playing: false)
+        loading["resolving"] = .bool(true)
+        XCTAssertNil(ChatMusicContext.snapshot(loading))
+        XCTAssertEqual(ChatMusicContext.update(ChatMusicContext.snapshot(loading), previous: previous), "")
+        XCTAssertFalse(ChatMusicContext.update(ChatMusicContext.snapshot(playback("apple-2")), previous: previous).isEmpty)
+    }
+
+    func testDeliveredHistoryRestoresBaselineAndFailedOrOtherThreadsDoNotConsumeIt() throws {
+        let old = ChatMusicContext.snapshot(playback())!
+        let new = ChatMusicContext.snapshot(playback("apple-2"))!
+        let saved: JSONValue = .object(["id": .string("first"), "conversationId": .string("room"), "role": .string("user"),
+            "status": .string("delivered"), "metadata": .object(["threadId": .string("thread"), "musicPlaybackSnapshot": old])])
+        var failed = saved
+        failed["id"] = .string("second"); failed["metadata"]["musicPlaybackSnapshot"] = new
+        for status in ["error", "pending"] {
+            failed["status"] = .string(status)
+            XCTAssertEqual(ChatMusicContext.previous(in: [saved, failed], conversationID: "room", threadID: "thread"), old)
+        }
+        failed["status"] = .string("delivered")
+        failed["metadata"]["threadId"] = .string("another-thread")
+        XCTAssertEqual(ChatMusicContext.previous(in: [saved, failed], conversationID: "room", threadID: "thread"), old)
+        failed["metadata"]["threadId"] = .string("thread"); failed["conversationId"] = .string("other-room")
+        XCTAssertEqual(ChatMusicContext.previous(in: [saved, failed], conversationID: "room", threadID: "thread"), old)
+        XCTAssertNil(ChatMusicContext.previous(in: [saved], conversationID: "room", threadID: "new-thread"))
+        failed["conversationId"] = .string("room")
+        let restored = try JSONDecoder().decode([JSONValue].self, from: JSONEncoder().encode([saved, failed]))
+        let previous = ChatMusicContext.previous(in: restored, conversationID: "room", threadID: "thread")
+        XCTAssertEqual(previous, new)
+        XCTAssertEqual(ChatMusicContext.update(new, previous: previous), "")
+    }
+
+    func testRequestedLiveStatusUsesFreshPhoneProgressWithoutChangingQueueSummary() {
+        let server: JSONValue = .object(["queueLength": .number(5), "libraryLength": .number(148), "playback": .object(["positionSeconds": .number(1)])])
+        let result = ChatMusicContext.liveStatus(playback(position: 85), server: server)
+        XCTAssertEqual(result["playback"]["positionSeconds"].number, 85)
+        XCTAssertEqual(result["playback"]["durationSeconds"].number, 180)
+        XCTAssertEqual(result["playback"]["track"]["trackId"].string, "apple-1")
+        XCTAssertEqual(result["queueLength"].number, 5)
+        XCTAssertEqual(result["libraryLength"].number, 148)
+        XCTAssertEqual(result["audioIncluded"], .bool(false))
+    }
+}

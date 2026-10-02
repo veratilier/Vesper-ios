@@ -604,3 +604,46 @@ private extension String {
         message = saved ? "" : "Queue updated on this phone; library sync failed."
     }
 }
+
+
+/// Progress and observation timestamps must not turn every chat message into a playback update.
+enum ChatMusicContext {
+    static func snapshot(_ live: JSONValue) -> JSONValue? {
+        guard !live["resolving"].bool else { return nil }
+        let track = live["track"]
+        return .object(["id": track["id"], "title": track["title"],
+                        "artist": track["artist"], "playing": live["playing"]])
+    }
+
+    static func previous(in messages: [JSONValue], conversationID: String, threadID: String) -> JSONValue? {
+        ChatTranscript.ordered(messages).last {
+            $0["conversationId"].string == conversationID && $0["role"].string == "user"
+                && $0["status"].string == "delivered" && $0["metadata"]["threadId"].string == threadID
+                && $0["metadata"]["musicPlaybackSnapshot"] != .null
+        }?["metadata"]["musicPlaybackSnapshot"]
+    }
+
+    static func update(_ current: JSONValue?, previous: JSONValue?) -> String {
+        guard let current, current != previous else { return "" }
+        // Do not inject an empty player into a conversation that has never heard music.
+        if previous == nil, current["id"].string.isEmpty, current["title"].string.isEmpty,
+           !current["playing"].bool { return "" }
+        // JSON escaping keeps song metadata on a single line, distinct from instructions.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(current) else { return "" }
+        return "\nMusic playback update (metadata only): " + String(decoding: data, as: UTF8.self)
+    }
+
+    static func liveStatus(_ live: JSONValue, server: JSONValue) -> JSONValue {
+        var result = server
+        result["available"] = .bool(!live["track"]["id"].string.isEmpty)
+        var track = live["track"]
+        track["trackId"] = track["id"]
+        result["playback"] = .object(["track": track, "playing": live["playing"],
+            "resolving": live["resolving"], "positionSeconds": live["positionSeconds"],
+            "durationSeconds": live["durationSeconds"], "updatedAt": live["observedAt"]])
+        result["audioIncluded"] = .bool(false)
+        return result
+    }
+}

@@ -1024,7 +1024,7 @@ enum ChatUserInput {
             try await connect()
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             busy = true
-            var recalled = ""
+            var recallContext: JSONValue = .null
             var memoryDeliveryID = ""
             if voiceCallContext == nil {
                 if threadID != nil || conversations.contains(where: { $0.id == conversationID }) {
@@ -1040,18 +1040,18 @@ enum ChatUserInput {
                         JSONValue.object(["role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": .string(String(message["content"].string.prefix(2000)))])
                     }
                     let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID), "recent": .array(recent)]))
-                    recalled = result["context"].string; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""
+                    recallContext = result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""
                 }
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
             if voiceCallContext != nil && onNativeHangupRequested != nil {
                 if let result = try? await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID)])) {
-                    recalled = result["context"].string; memoryDeliveryID = result["deliveryId"].string
+                    recallContext = result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string
                 }
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             if let threadID {
-                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext(recalled)), "excludeTurns": .bool(true)]))
+                let snapshot = try await rpc("thread/resume", .object(["threadId": .string(threadID), "config": config, "developerInstructions": .string(developerContext()), "excludeTurns": .bool(true)]))
                 guard sendIntent == intent else { throw CancellationError() }
                 messages = ChatTranscript.ordered(UserHistoryRecovery.merge(messages, snapshot: snapshot, conversationID: conversationID, tombstones: tombstones))
             } else {
@@ -1067,7 +1067,7 @@ enum ChatUserInput {
                 }
                 try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                 guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
-                let instructions = developerContext(recalled)
+                let instructions = developerContext()
                 let tools: [JSONValue]
                 if voiceCallContext != nil && onNativeHangupRequested == nil {
                     tools = []
@@ -1119,6 +1119,7 @@ enum ChatUserInput {
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             if let stickerInput { input.append(.object(["type": .string("image"), "url": .string(stickerInput)])) }
             params["input"] = .array(input)
+            if case .object = recallContext { params["additionalContext"] = recallContext }
             if !model.isEmpty { params["model"] = .string(model) }
             if !effort.isEmpty {
                 guard supportedEfforts.contains(effort) else { throw ServiceError(message: "Select an available reasoning effort for this model.") }
@@ -1129,7 +1130,7 @@ enum ChatUserInput {
             guard sendIntent == intent else { throw CancellationError() }
             pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
             turnID = result["turn"]["id"].string
-            if !memoryDeliveryID.isEmpty, let acceptedTurnID = turnID, !acceptedTurnID.isEmpty {
+            if case .object = recallContext, !memoryDeliveryID.isEmpty, let acceptedTurnID = turnID, !acceptedTurnID.isEmpty {
                 let receipt: JSONValue = .object(["action": .string("acknowledge"), "deliveryId": .string(memoryDeliveryID), "conversationId": .string(conversationID), "messageId": .string(messageID), "turnId": .string(acceptedTurnID)])
                 Task { _ = try? await api.request("/api/memory/context", method: "POST", body: receipt) }
             }

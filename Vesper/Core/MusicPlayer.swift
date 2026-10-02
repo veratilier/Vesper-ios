@@ -558,17 +558,30 @@ private extension String {
                                   "tracks": .array(songs.map(Self.metadata))])
         } catch { message = error.localizedDescription }
     }
-    func search(_ term: String, player: MusicPlayer) async {
-        guard !busy, !term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    static func searchTracks(_ response: JSONValue) throws -> [JSONValue] {
+        guard response["ok"].bool, response["result"]["provider"].string == "appleMusic",
+              case .array(let matches) = response["result"]["matches"] else {
+            throw ServiceError(message: "The music service returned an invalid Apple Music search result.")
+        }
+        return try matches.map { value in
+            guard value["source"].string == "appleMusic", MusicPlayer.storeID(value) != nil,
+                  !value["title"].string.isEmpty, !value["artist"].string.isEmpty else {
+                throw ServiceError(message: "The music service returned incomplete song details.")
+            }
+            return ChatMusicShare.normalized(value)
+        }
+    }
+    func search(_ term: String, api: APIClient) async {
+        let query = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !busy, !query.isEmpty else { return }
         busy = true; message = ""
         defer { busy = false }
         do {
-            var request = MusicCatalogSearchRequest(term: term, types: [Song.self])
-            request.limit = 30
-            let songs = try await request.response().songs
-            player.register(Array(songs))
-            collection = .object(["title": .string("Search results"),
-                                  "tracks": .array(songs.map(Self.metadata))])
+            let response = try await api.request("/api/codex/tools", method: "POST", body: .object([
+                "name": .string("music_search"), "arguments": .object(["query": .string(query), "limit": .number(20)])]))
+            let tracks = try Self.searchTracks(response)
+            collection = .object(["title": .string("Search results"), "tracks": .array(tracks)])
+            if tracks.isEmpty { message = "No matching Apple Music songs found." }
         } catch { message = error.localizedDescription }
     }
     func prepare(_ values: [JSONValue], store: AppStore, player: MusicPlayer,

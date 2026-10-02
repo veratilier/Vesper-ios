@@ -81,7 +81,7 @@ struct WakeView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                NavigationLink("Sleep time") { WakeSleepView() }.disabled(runtime["sleepVersion"].number < 1)
+                NavigationLink("Sleep time") { WakeSleepView() }
                 NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
                 NavigationLink("Recent activity") { activityPage }
@@ -233,7 +233,7 @@ struct WakeView: View {
         } catch { status = error.localizedDescription }
     }
 }
-private struct WakeSleepView: View {
+struct WakeSleepView: View {
     @EnvironmentObject private var store: AppStore
     @State private var enabled = true
     @State private var dreamEnabled = true
@@ -254,6 +254,7 @@ private struct WakeSleepView: View {
     }
     var body: some View {
         Form {
+            if busy { ProgressView("Loading sleep settings…") }
             Section {
                 Toggle("Sleep time", isOn: $enabled)
                 DatePicker("From", selection: $start, displayedComponents: .hourAndMinute)
@@ -265,20 +266,30 @@ private struct WakeSleepView: View {
             if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
         }.environment(\.timeZone, Self.zone)
             .navigationTitle("Sleep time").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(busy).accessibilityLabel("Reload sleep settings")
+            } }
             .safeAreaInset(edge: .bottom) {
                 WakeSaveButton(title: busy ? "Saving…" : "Save sleep time", disabled: !supported || busy) { Task { await save() } }
-            }.task { await load() }
+            }.task { await load() }.refreshable { await load() }
     }
     private func load() async {
-        busy = true; defer { busy = false }
+        guard !busy else { return }
+        busy = true; status = ""; defer { busy = false }
         do {
             let value = try await store.api.request("/wake", history: true)
             supported = value["sleepVersion"].number >= 1
+            guard supported else {
+                status = "This history service does not support sleep settings yet. Update it, then tap Reload."
+                return
+            }
             let setting = value["config"]["sleep"]
             enabled = setting["enabled"].bool; dreamEnabled = setting["dreamEnabled"].bool
             start = Self.date(setting["start"].string); end = Self.date(setting["end"].string)
-            if !supported { status = "Update the VPS wake service to configure sleep time." }
-        } catch { status = error.localizedDescription }
+        } catch {
+            if !Task.isCancelled { status = error.localizedDescription + " Tap Reload to try again." }
+        }
     }
     private func save() async {
         guard !busy, supported else { return }

@@ -365,7 +365,7 @@ private struct MusicLibraryView: View {
             }
         }
     }
-    private func searchSongs() { guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; Task { await catalog.search(query, player: player) } }
+    private func searchSongs() { guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; Task { await catalog.search(query, api: store.api) } }
     private var collection: some View {
         Section {
             Button { catalog.collection = .null } label: { Label("Back", systemImage: "chevron.left") }

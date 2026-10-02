@@ -99,3 +99,20 @@ extension SharedContentTests {
         XCTAssertNil(MusicPlayer.storeID(track("", "https://example.com/song/333")))
     }
 }
+
+extension SharedContentTests {
+    func testMusicPageSearchPreservesPlayableTrackIDsAndRejectsOtherProviders() throws {
+        let hit: JSONValue = .object(["trackId": .string("apple-123"), "appleMusicId": .string("123"),
+            "source": .string("appleMusic"), "title": .string("Song"), "artist": .string("Artist"), "cover": .string("https://example.com/a.jpg")])
+        var response: JSONValue = .object(["ok": .bool(true), "result": .object(["provider": .string("appleMusic"), "matches": .array([hit])])])
+        let tracks = try MusicCatalog.searchTracks(response)
+        XCTAssertEqual(tracks[0].id, "apple-123")
+        XCTAssertEqual(tracks[0]["appleMusicId"], hit["appleMusicId"])
+        XCTAssertEqual(tracks[0]["cover"], hit["cover"])
+        response["result"]["matches"] = .array([])
+        XCTAssertEqual(try MusicCatalog.searchTracks(response), [])
+        response["result"]["provider"] = .string("netease")
+        XCTAssertThrowsError(try MusicCatalog.searchTracks(response))
+        XCTAssertThrowsError(try MusicCatalog.searchTracks(.null))
+    }
+}

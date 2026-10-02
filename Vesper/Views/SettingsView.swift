@@ -9,6 +9,7 @@ struct SettingsView: View {
     var body: some View {
         Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
             NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
+            NavigationLink { UsageView() } label: { settingsRow("Usage & balances", subtitle: "GPT, ElevenLabs and MiniMax", icon: "chart.bar") }
             NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Health, calendar, reminders and alarms", icon: "hand.raised") }
             NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }

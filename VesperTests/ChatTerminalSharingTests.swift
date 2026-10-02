@@ -102,10 +102,10 @@ import SwiftUI
     func testMusicLinksAreRecognizedWithoutGenericPreviewCards() {
         let text = "https://example.com/a https://evil.music.apple.com/a https://music.apple.com/us/album/test/12?i=987 https://open.spotify.com/track/abc"
         let cards = ChatMusicShare.links(in:text)
-        XCTAssertEqual(cards.count,2)
+        XCTAssertEqual(cards.count,1)
         XCTAssertEqual(cards[0]["appleMusicId"].string,"987")
         XCTAssertEqual(cards[0]["source"].string,"appleMusic")
-        XCTAssertEqual(cards[1]["provider"].string,"Spotify")
+        XCTAssertTrue(ChatMusicShare.links(in:"https://open.spotify.com/track/abc").isEmpty)
         XCTAssertEqual(ChatMusicShare.normalized(.object(["trackId":.string("apple-987")])).id,"apple-987")
         XCTAssertTrue(ChatMusicShare.links(in:"https://example.com").isEmpty)
     }

@@ -1,5 +1,4 @@
 import SwiftUI
-import MusicKit
 
 enum ChatMusicShare {
     static func links(in text: String) -> [JSONValue] {
@@ -92,46 +91,33 @@ private struct ChatMusicCardContent: View {
             } message: { Text(playbackError ?? "") }
     }
     private func resolve() async {
-        var id = track["appleMusicId"].string
-        if id.isEmpty, let url = shareURL, url.host == "music.apple.com" {
-            id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "i" }?.value ?? (url.path.contains("/song/") ? url.lastPathComponent : "")
-        }
-        // Public catalog metadata also fills cards before Music authorization.
-        if let url = shareURL, url.host == "music.apple.com" {
-            let lookupID = id.isEmpty ? url.lastPathComponent : id
-            let region = url.pathComponents.dropFirst().first ?? "cn"
+        // Public metadata needs neither a developer token nor Music permission.
+        // Playback authorization is requested only when the user taps Play.
+        let id = MusicPlayer.storeID(track)
+        let url = shareURL.flatMap { $0.host == "music.apple.com" ? $0 : nil }
+        let isAlbum = id == nil && (url?.path.contains("/album/") ?? false)
+        guard let lookupID = id ?? (isAlbum ? url?.lastPathComponent : nil),
+              !lookupID.isEmpty, lookupID.allSatisfy(\.isNumber) else { return }
+        let region = url?.pathComponents.dropFirst().first ?? "cn"
+        for country in (region == "tw" ? [region] : [region, "tw"]) {
+            if Task.isCancelled { return }
             var lookup = URLComponents(string: "https://itunes.apple.com/lookup")!
-            lookup.queryItems = [URLQueryItem(name: "id", value: lookupID), URLQueryItem(name: "country", value: region), URLQueryItem(name: "entity", value: "song")]
-            if let endpoint = lookup.url,
-               let (data, response) = try? await URLSession.shared.data(from: endpoint),
-               (response as? HTTPURLResponse)?.statusCode == 200,
-               let body = try? JSONDecoder().decode(JSONValue.self, from: data), !Task.isCancelled {
-                let tracks = body["results"].array.compactMap(ChatMusicShare.appleMetadata)
-                if !id.isEmpty, let match = tracks.first(where: { $0["appleMusicId"].string == id }) { resolved = match }
-                else if id.isEmpty, let album = body["results"].array.first, !tracks.isEmpty {
-                    albumTracks = tracks
-                    resolved = .object(["id": track["id"], "source": .string("appleAlbum"), "title": album["collectionName"], "artist": album["artistName"], "cover": album["artworkUrl100"]])
-                }
+            lookup.queryItems = [URLQueryItem(name: "id", value: lookupID), URLQueryItem(name: "country", value: country), URLQueryItem(name: "entity", value: "song")]
+            guard let endpoint = lookup.url,
+                  let (data, response) = try? await URLSession.shared.data(for: URLRequest(url: endpoint, timeoutInterval: 10)),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let body = try? JSONDecoder().decode(JSONValue.self, from: data), !Task.isCancelled else { continue }
+            let tracks = body["results"].array.compactMap(ChatMusicShare.appleMetadata)
+            if let id, let match = tracks.first(where: { $0["appleMusicId"].string == id }) {
+                resolved = match
+                return
+            }
+            if isAlbum, let album = body["results"].array.first(where: { $0["wrapperType"].string == "collection" }), !tracks.isEmpty {
+                albumTracks = tracks
+                resolved = .object(["id": track["id"], "source": .string("appleAlbum"), "title": album["collectionName"], "artist": album["artistName"], "cover": album["artworkUrl100"]])
+                return
             }
         }
-        guard !Task.isCancelled, MusicAuthorization.currentStatus == .authorized else { return }
-        do {
-            if !id.isEmpty {
-                let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(id))
-                if let value = try await request.response().items.first {
-                    player.register([value]); resolved = MusicCatalog.metadata(value)
-                    await player.ensureArtwork(for: resolved ?? track)
-                }
-            } else if let url = shareURL, url.host == "music.apple.com", url.path.contains("/album/") {
-                let request = MusicCatalogResourceRequest<Album>(matching: \.id, equalTo: MusicItemID(url.lastPathComponent))
-                if let album = try await request.response().items.first {
-                    let detail = try await album.with([.tracks])
-                    let songs: [Song] = detail.tracks?.compactMap { item -> Song? in if case .song(let song) = item { return song }; return nil } ?? []
-                    player.register(songs); albumTracks = songs.map(MusicCatalog.metadata)
-                    resolved = .object(["id": track["id"], "source": .string("appleAlbum"), "title": .string(album.title),
-                        "artist": .string(album.artistName), "cover": .string(album.artwork?.url(width: 300, height: 300)?.absoluteString ?? "")])
-                }
-            }
-        } catch { /* The original URL remains accessible if catalog access is unavailable. */ }
+        // Retain supplied metadata and the original link when lookup fails.
     }
 }

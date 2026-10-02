@@ -84,3 +84,18 @@ extension SharedContentTests {
         XCTAssertNil(ChatMusicShare.appleMetadata(.object(["kind": .string("collection")])))
     }
 }
+
+
+extension SharedContentTests {
+    func testPlaybackStoreIDDoesNotMistakeLibraryOrAlbumIDsForSongs() {
+        func track(_ id: String, _ url: String = "") -> JSONValue {
+            .object(["appleMusicId": .string(id), "appleMusicURL": .string(url)])
+        }
+        XCTAssertEqual(MusicPlayer.storeID(track("123")), "123")
+        XCTAssertEqual(MusicPlayer.storeID(track("i.library", "https://music.apple.com/cn/album/name/111?i=222")), "222")
+        XCTAssertEqual(MusicPlayer.storeID(track("", "https://music.apple.com/tw/song/name/333")), "333")
+        XCTAssertNil(MusicPlayer.storeID(track("i.library")))
+        XCTAssertNil(MusicPlayer.storeID(track("", "https://music.apple.com/cn/album/name/111")))
+        XCTAssertNil(MusicPlayer.storeID(track("", "https://example.com/song/333")))
+    }
+}

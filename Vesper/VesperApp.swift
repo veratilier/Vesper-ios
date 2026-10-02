@@ -106,8 +106,9 @@ private struct VesperAppGrid: View {
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
-        // Keep the recognizer on the grid so moving a tile cannot interrupt its drag.
-        .highPriorityGesture(LongPressGesture(minimumDuration: editing ? 0.12 : 0.45, maximumDistance: 10)
+        // Observe long presses without taking ordinary taps away from the tile buttons.
+        // Once a long press succeeds, editing suppresses button activation on release.
+        .simultaneousGesture(LongPressGesture(minimumDuration: editing ? 0.12 : 0.45, maximumDistance: 10)
             .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("vesperAppGrid")))
             .updating($pressing) { _, active, _ in active = true }
             .onChanged { value in

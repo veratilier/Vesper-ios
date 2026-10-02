@@ -259,17 +259,14 @@ private struct MusicLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var tab = "mine"
     @State private var query = ""
-    @State private var showLegacyCleanup = false
     var body: some View {
         NavigationStack {
             List {
-                if catalog.busy { ProgressView("Loading music…") }
                 if !catalog.message.isEmpty { Text(catalog.message).font(.caption).foregroundStyle(VesperTheme.muted) }
                 if catalog.collection != .null { collection }
                 else {
                     Picker("Music", selection: $tab) { Text("My Music").tag("mine"); Text("Discover").tag("discover") }.pickerStyle(.segmented)
                     if tab == "mine" {
-                        if store.legacyNetEaseCount > 0 || store.legacyMusicCleanupStatus != nil { legacyCleanup }
                         playlists
                     }
                     else { search }
@@ -282,8 +279,11 @@ private struct MusicLibraryView: View {
                             Task { if catalog.connected { await catalog.refresh(player: player) }
                                    else { await catalog.connect(player: player) } }
                         } label: {
-                            Image(systemName: catalog.connected ? "checkmark.circle.fill" : "music.note")
-                                .foregroundStyle(catalog.connected ? Color.green : VesperTheme.ink)
+                            if catalog.busy && tab == "mine" { ProgressView().accessibilityLabel("Loading music") }
+                            else {
+                                Image(systemName: catalog.connected ? "checkmark.circle.fill" : "music.note")
+                                    .foregroundStyle(catalog.connected ? Color.green : VesperTheme.ink)
+                            }
                         }
                         .disabled(catalog.busy)
                         .accessibilityLabel(catalog.connected ? "Apple Music connected. Refresh library" : "Connect Apple Music")
@@ -294,25 +294,7 @@ private struct MusicLibraryView: View {
                     catalog.connected = MusicAuthorization.currentStatus == .authorized
                     if catalog.connected { await catalog.refresh(player: player) }
                 }
-                .confirmationDialog("Remove old NetEase music data?", isPresented: $showLegacyCleanup) {
-                    Button("Remove old NetEase data", role: .destructive) {
-                        Task { await store.removeLegacyNetEaseMusic() }
-                    }
-                } message: {
-                    Text("Only NetEase songs and their playback data will be removed. Apple Music songs and chat history will stay.")
-                }
         }.presentationDragIndicator(.visible)
-    }
-    private var legacyCleanup: some View {
-        Section {
-            if store.legacyNetEaseCount > 0 {
-                Button("Remove old NetEase data · \(store.legacyNetEaseCount)") { showLegacyCleanup = true }
-                    .disabled(!store.connected || store.saving)
-            }
-            if let status = store.legacyMusicCleanupStatus {
-                Text(status).font(.caption).foregroundStyle(VesperTheme.muted)
-            }
-        }
     }
     private var playlists: some View {
         Section {
@@ -357,7 +339,10 @@ private struct MusicLibraryView: View {
             HStack(spacing: 8) {
                 TextField("Search songs, artists or albums", text: $query).submitLabel(.search).onSubmit(searchSongs)
                 Button(action: searchSongs) {
-                    Image(systemName: "magnifyingglass").frame(width: 44, height: 44)
+                    Group {
+                        if catalog.busy { ProgressView().accessibilityLabel("Searching music") }
+                        else { Image(systemName: "magnifyingglass") }
+                    }.frame(width: 44, height: 44)
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Search")
@@ -379,9 +364,12 @@ private struct MusicLibraryView: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Sync queue")
                 .disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
-            }
-            Button("Play all") { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player) } }
+                Button { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player) } } label: {
+                    Image(systemName: "play.fill").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.borderless).accessibilityLabel("Play all")
                 .disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
+            }
             if catalog.collection["tracks"].array.isEmpty { Text("No songs to show yet.").foregroundStyle(VesperTheme.muted) }
             ForEach(catalog.collection["tracks"].array) { track in
                 HStack {

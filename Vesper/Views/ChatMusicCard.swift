@@ -5,18 +5,19 @@ enum ChatMusicShare {
         var seen = Set<String>()
         return ChatMarkdownText.render(text).runs.compactMap { $0.link }.compactMap { url in
             guard ChatWebURL.accepts(url), let host = url.host?.lowercased(), seen.insert(url.absoluteString).inserted else { return nil }
-            let provider: String
-            switch host {
-            case "music.apple.com": provider = "Apple Music"
-            case "open.spotify.com": provider = "Spotify"
-            case "music.163.com", "y.music.163.com": provider = "网易云音乐"
-            default: return nil
-            }
+            guard host == "music.apple.com" else { return nil }
+            let provider = "Apple Music"
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
             let song = host == "music.apple.com" ? (query?.first { $0.name == "i" }?.value ?? (url.path.contains("/song/") ? url.lastPathComponent : "")) : ""
             return .object(["id": .string("share:" + url.absoluteString), "title": .string(provider), "artist": .string("Shared music"),
                             "source": .string(song.isEmpty ? "link" : "appleMusic"), "appleMusicId": .string(song), "appleMusicURL": .string(url.absoluteString), "provider": .string(provider)])
         }.prefix(2).map { $0 }
+    }
+    static func isApple(_ value: JSONValue) -> Bool {
+        if value["source"].string == "netease" || !value["neteaseId"].string.isEmpty
+            || value.id.hasPrefix("netease-") || value["trackId"].string.hasPrefix("netease-") { return false }
+        return !value["appleMusicId"].string.isEmpty
+            || URL(string: value["appleMusicURL"].string)?.host?.lowercased() == "music.apple.com"
     }
     static func normalized(_ value: JSONValue) -> JSONValue {
         var track = value
@@ -41,7 +42,18 @@ struct ChatMusicLinkCard: View {
 
 struct ChatMusicCard: View {
     let track: JSONValue
-    var body: some View { ChatMusicCardContent(track: track).modifier(ChatInAppLinks()) }
+    var body: some View {
+        Group {
+            if ChatMusicShare.isApple(track) { ChatMusicCardContent(track: track) }
+            else {
+                // Keep old shared songs readable without rendering a non-Apple card.
+                let title = [track["title"].string, track["artist"].string].filter { !$0.isEmpty }.joined(separator: " · ")
+                if let url = URL(string: track["shareURL"].string), ChatWebURL.accepts(url) {
+                    Link(title.isEmpty ? "Shared music link" : title, destination: url)
+                } else { Text(title.isEmpty ? "Shared music" : title) }
+            }
+        }.modifier(ChatInAppLinks())
+    }
 }
 private struct ChatMusicCardContent: View {
     let track: JSONValue

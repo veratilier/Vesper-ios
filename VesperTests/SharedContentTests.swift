@@ -116,3 +116,16 @@ extension SharedContentTests {
         XCTAssertThrowsError(try MusicCatalog.searchTracks(.null))
     }
 }
+
+
+extension SharedContentTests {
+    func testOnlyAppleLinksBecomeMusicCards() {
+        let text = "https://music.163.com/song?id=123 https://open.spotify.com/track/123 https://music.apple.com/cn/album/a/111?i=222"
+        let cards = ChatMusicShare.links(in: text)
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertEqual(cards[0]["appleMusicId"].string, "222")
+        XCTAssertTrue(ChatMusicShare.isApple(cards[0]))
+        XCTAssertFalse(ChatMusicShare.isApple(.object(["id": .string("netease-1"), "appleMusicId": .string("222")])))
+        XCTAssertFalse(ChatMusicShare.isApple(.object(["source": .string("netease"), "title": .string("Song")])))
+    }
+}

@@ -104,7 +104,7 @@ struct APIClient {
     func request(_ path: String, method: String = "GET", body: JSONValue? = nil, history: Bool = false) async throws -> JSONValue {
         guard !token.isEmpty else { throw ServiceError(message: "Connect your device in Settings first.") }
         let url = try Self.validatedURL(history ? historyURL : baseURL, path: path)
-        var r = URLRequest(url: url); r.httpMethod = method; r.timeoutInterval = 30
+        var r = URLRequest(url: url); r.httpMethod = method; r.timeoutInterval = path == "/api/memory/context" ? 4 : 30
         r.cachePolicy = .reloadIgnoringLocalCacheData
         r.setValue(history ? "Bearer \(token)" : token, forHTTPHeaderField: history ? "Authorization" : "x-vesper-device-token")
         if let body { r.httpBody = try JSONEncoder().encode(body); r.setValue("application/json", forHTTPHeaderField: "Content-Type") }

@@ -34,6 +34,7 @@ app installed until the native version has passed your device checks.
 | Memory | Native shared Memory library: existing-device authentication, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
 | Settings | Device pairing, local agent instructions, existing MCP connection list, document export |
+| Usage & balances | GPT weekly used/remaining/reset time, ElevenLabs subscription usage and overage, MiniMax official billing links |
 | Autonomous Wake | Existing VPS switch, interval, prompt editor and activity history, gated by server config version |
 
 ## Current boundaries
@@ -64,6 +65,32 @@ Apple simulator; its result is separate from live-service verification.
   simultaneous edits from two clients can still race. Avoid concurrent edits.
 - No credentials, private chat records or user data are committed. Artwork comes
   from the existing Vesper project; Ballet is distributed under the bundled OFL.
+
+## Account usage
+
+Open **Settings → Usage & balances**, or tap **Usage** on Home. Pull to refresh
+both providers, or retry either card independently. GPT quota uses a short-lived,
+read-only connection to the existing Vesper Codex server; it does not start or
+resume a conversation. The weekly window is selected by its reported duration,
+not by assuming that `primary` or `secondary` always means weekly.
+
+ElevenLabs uses `GET /v1/user/subscription` for account-wide included characters,
+remaining allowance, reset date and current overage cost when supplied. It reuses
+an existing voice key only for the official ElevenLabs API host. A separate key
+with subscription read permission can be saved through **ElevenLabs access** in
+the device Keychain; this does not change voice playback. Requests never follow
+redirects or show provider response bodies in errors. Missing quota fields are
+unavailable, not zero. Last successful readings remain visible after a failed
+refresh for the same account, with their timestamps; account changes clear them.
+
+MiniMax opens the official China or international billing console. Its speech
+balance is not automatically queried or manually recorded in the app. No backend
+deployment, credential export, billing mutation or synthetic voice request is
+needed to view usage.
+
+Protocol references: [Codex rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt),
+[ElevenLabs subscription](https://elevenlabs.io/docs/api-reference/user/subscription/get),
+[MiniMax account billing](https://platform.minimax.io/docs/faq/about-account).
 
 ## Home Screen widgets
 

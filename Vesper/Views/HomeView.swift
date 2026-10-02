@@ -157,7 +157,12 @@ struct HomeView: View {
         HomeCard {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Text("Usage").font(VesperTheme.title(21)).lineLimit(1)
+                    NavigationLink { UsageView() } label: {
+                        HStack(spacing: 4) {
+                            Text("Usage").font(VesperTheme.title(21)).lineLimit(1)
+                            Image(systemName: "chevron.right").font(.system(size: 9))
+                        }
+                    }.accessibilityLabel("Usage and balances")
                     Spacer(minLength: 0)
                     Button { Task { await loadUsage() } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 12)).frame(width: 28, height: 28) }.accessibilityLabel("Refresh usage").disabled(refreshingUsage || store.token.isEmpty)
                 }

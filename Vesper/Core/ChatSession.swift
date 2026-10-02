@@ -1024,7 +1024,7 @@ enum ChatUserInput {
             try await connect()
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             busy = true
-            var recallContext: JSONValue = .null
+            var recallContext: JSONValue = .object([:])
             var memoryDeliveryID = ""
             if voiceCallContext == nil {
                 if threadID != nil || conversations.contains(where: { $0.id == conversationID }) {
@@ -1036,17 +1036,17 @@ enum ChatUserInput {
                     messages = ChatTranscript.merge(messages, incoming: history["messages"].array, tombstones: tombstones)
                 }
                 do {
-                    let recent = messages.filter { ["user", "agent", "assistant"].contains($0["role"].string) }.suffix(6).map { message in
+                    let recent = messages.filter { ["user", "agent", "assistant"].contains($0["role"].string) && !ChatPresentation.isActivity($0) && !ChatTranscript.isWake($0) && !["failed", "cancelled", "streaming"].contains($0["status"].string) }.suffix(6).map { message in
                         JSONValue.object(["role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": .string(String(message["content"].string.prefix(2000)))])
                     }
                     let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID), "recent": .array(recent)]))
-                    recallContext = result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""
+                    recallContext = result["additionalContext"] == .null ? .object([:]) : result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""
                 }
                 catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
             }
             if voiceCallContext != nil && onNativeHangupRequested != nil {
                 if let result = try? await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID)])) {
-                    recallContext = result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string
+                    recallContext = result["additionalContext"] == .null ? .object([:]) : result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string
                 }
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }

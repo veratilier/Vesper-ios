@@ -60,6 +60,7 @@ struct MemoryView: View {
     @State private var status = ""
     @State private var adding = false
     @State private var filtering = false
+    @State private var reviewing = false
     @State private var recentExpanded = false
     @State private var deliveries: [JSONValue] = []
     @State private var recallStatus = ""
@@ -72,6 +73,7 @@ struct MemoryView: View {
             categories
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
+                    Button("相关记忆与待核对候选") { reviewing = true }.font(.caption).padding(.vertical, 6)
                     recent
                     if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted).padding(.vertical, 6) }
                     if busy { ProgressView().frame(maxWidth: .infinity).padding() }
@@ -91,6 +93,7 @@ struct MemoryView: View {
         .task { library.api = store.api; await load() }
         .onChange(of: kind) { _, _ in refresh() }
         .onChange(of: recentExpanded) { _, expanded in if expanded { Task { await loadRecent() } } }
+        .sheet(isPresented: $reviewing) { MemoryRecallView(conversationID: nil) }
         .sheet(isPresented: $adding) { LibraryEditor(library: library, record: nil) { refresh() } }
         .sheet(isPresented: $filtering) { filters }
         .sheet(item: $selected, onDismiss: { refresh() }) { row in
@@ -311,6 +314,7 @@ private struct LibraryEditor: View {
     @ObservedObject var library: SharedMemoryLibrary
     let record: JSONValue?
     let saved: () -> Void
+    var candidateID: String? = nil
     @State private var title = ""
     @State private var summary = ""
     @State private var bodyText = ""
@@ -346,7 +350,7 @@ private struct LibraryEditor: View {
     }
     private func save() async {
         guard !busy else { return }
-        guard !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, record == nil || !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "请填写原文、来源和必要的纠正原因。"; return }
+        guard !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (record == nil || candidateID != nil) || !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "请填写原文、来源和必要的纠正原因。"; return }
         guard title.count <= 100, summary.count <= 500 else { error = "标题最多 100 字，摘要最多 500 字。"; return }
         busy = true; defer { busy = false }
         do {
@@ -357,6 +361,11 @@ private struct LibraryEditor: View {
             if !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { details["summary"] = .string(summary) }
             if !details.isEmpty { payload["details"] = .object(details) }
             if record != nil { payload["correction_reason"] = .string(reason) }
+            if let candidateID, let api = library.api {
+                let result = try await api.request("/api/memory/candidates", method: "POST", body: .object(["action": .string("edit"), "id": .string(candidateID), "memory": .object(payload)]))
+                guard result["status"].string == "pending" else { throw SharedMemoryLibrary.LibraryError("候选已改变，请重新加载。") }
+                saved(); dismiss(); return
+            }
             let path = record.map { "/api/memories/" + $0.id + "/correct" } ?? "/api/memories"
             let response = try await library.request(path, body: .object(payload))
             guard !response.id.isEmpty else { throw SharedMemoryLibrary.LibraryError("保存结果缺少记录标识，尚未确认成功。") }
@@ -582,3 +591,94 @@ private struct MemoryRelationGraph: View {
 }
 
 
+
+
+/// Actual acknowledged context and source-checked proposals, never claims of model use.
+struct MemoryRecallView: View {
+    let conversationID: String?
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var library = SharedMemoryLibrary()
+    @State private var deliveries: [JSONValue] = []
+    @State private var candidates: [JSONValue] = []
+    @State private var editingCandidate: JSONValue?
+    @State private var error = ""
+    @State private var busy = false
+    @State private var debug = false
+    var body: some View {
+        NavigationStack {
+            List {
+                Section { Text("这里记录实际提供给模型的历史资料，不表示回复一定采用。待核对候选不会参与召回。").font(.caption) }
+                if !error.isEmpty { Section { Text(error).foregroundStyle(.red); Button("重试") { Task { await load() } } } }
+                if busy { ProgressView() }
+                Section("待核对经历") {
+                    if candidates.isEmpty { Text("暂无待核对候选").foregroundStyle(.secondary) }
+                    ForEach(candidates) { item in
+                        DisclosureGroup(item["details"]["title"].string.isEmpty ? "查看候选" : item["details"]["title"].string) {
+                            Text(item["body"].string).textSelection(.enabled)
+                            Text("发生日期：" + (item["occurred_at"].string.isEmpty ? "未知" : item["occurred_at"].string)).font(.caption)
+                            if !item["details"]["interpretation"].string.isEmpty { Text("主观解释：" + item["details"]["interpretation"].string).font(.caption) }
+                            sources(item["details"]["evidence"].array)
+                            Button("先修改候选") { editingCandidate = item }.buttonStyle(.bordered)
+                            HStack {
+                                Button("核对无误，入库") { Task { await review(item, action: "accept") } }.buttonStyle(.bordered)
+                                Button("不保存", role: .destructive) { Task { await review(item, action: "reject") } }.buttonStyle(.bordered)
+                            }.disabled(busy)
+                        }
+                    }
+                }
+                Section("已提供的相关记忆") {
+                    if deliveries.isEmpty { Text("暂无已确认送达的召回记录").foregroundStyle(.secondary) }
+                    ForEach(Array(deliveries.enumerated()), id: \.offset) { _, delivery in
+                        DisclosureGroup(delivery["deliveredAt"].string) {
+                            ForEach(delivery["memories"].array) { memory in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(memory["reason"].string == "standing_preference" ? "持续偏好 / 约定" : "相关经历").font(.caption).foregroundStyle(.secondary)
+                                    Text(memory["body"].string)
+                                    NavigationLink("查看原文、来源与纠正") { LibraryRecordView(library: library, id: memory.id) }
+                                    sources(memory["details"]["evidence"].array)
+                                    Button("不相关") { Task { await feedback(delivery, memory: memory) } }.buttonStyle(.bordered).disabled(busy)
+                                }.padding(.vertical, 6)
+                            }
+                            if debug { Text(delivery["diagnostics"].pretty).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                        }
+                    }
+                }
+                Section { Toggle("调试详情（检索输入、评分与预算）", isOn: $debug).onChange(of: debug) { _, _ in Task { await load() } } }
+            }.navigationTitle("相关记忆").navigationBarTitleDisplayMode(.inline)
+                .toolbar { Button("完成") { dismiss() } }
+                .sheet(item: $editingCandidate) { item in LibraryEditor(library: library, record: item, saved: { Task { await load() } }, candidateID: item.id) }
+                .task { library.api = store.api; await load() }
+                .refreshable { await load() }
+        }
+    }
+    @ViewBuilder private func sources(_ refs: [JSONValue]) -> some View {
+        ForEach(Array(refs.enumerated()), id: \.offset) { _, ref in
+            if !ref["quote"].string.isEmpty { Text("原话：" + ref["quote"].string).font(.caption).textSelection(.enabled) }
+            Button("回到来源消息") {
+                NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: ["conversationId": ref["conversation_id"].string, "messageId": ref["message_id"].string]); dismiss()
+            }.font(.caption)
+        }
+    }
+    private func load() async {
+        busy = true; defer { busy = false }
+        do {
+            var query = URLComponents(); query.queryItems = [URLQueryItem(name: "debug", value: debug ? "1" : "0")]
+            if let conversationID { query.queryItems?.append(URLQueryItem(name: "conversationId", value: conversationID)) }
+            let result = try await store.api.request("/api/memory/context?" + (query.percentEncodedQuery ?? ""))
+            deliveries = result["items"].array
+            let pending = try await store.api.request("/api/memory/candidates"); candidates = pending["items"].array
+            error = result["unavailable"].bool ? "召回记录暂时不可用。" : ""
+        } catch { self.error = error.localizedDescription }
+    }
+    private func review(_ item: JSONValue, action: String) async {
+        busy = true
+        do { _ = try await store.api.request("/api/memory/candidates", method: "POST", body: .object(["id": item["id"], "action": .string(action)])); await load() }
+        catch { self.error = error.localizedDescription; busy = false }
+    }
+    private func feedback(_ delivery: JSONValue, memory: JSONValue) async {
+        busy = true
+        do { _ = try await store.api.request("/api/memory/context", method: "POST", body: .object(["action": .string("feedback"), "deliveryId": delivery["deliveryId"], "memoryId": memory["id"], "kind": .string("irrelevant")])); await load() }
+        catch { self.error = error.localizedDescription; busy = false }
+    }
+}

@@ -310,6 +310,7 @@ struct ChatView: View {
     @State private var strengthExpanded = false
     @State private var connectionDetails = false
     @State private var terminalVisible = false
+    @State private var memoryRecallVisible = false
     @State private var drawer = false
     @State private var photoPicker = false
     @State private var cameraPicker = false
@@ -586,6 +587,7 @@ struct ChatView: View {
                 .presentationDetents([.medium])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
+        .sheet(isPresented: $memoryRecallVisible) { MemoryRecallView(conversationID: chat.conversationID) }
         .sheet(isPresented: $terminalVisible) {
             ChatTerminalView(conversationID: chat.conversationID).environmentObject(chat).presentationDetents([.medium, .large])
         }
@@ -622,6 +624,7 @@ struct ChatView: View {
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
+            Button { memoryRecallVisible = true } label: { Image(systemName: "brain") }.accessibilityLabel("相关记忆")
             Button { terminalVisible = true } label: { Image(systemName: "terminal") }
                 .accessibilityLabel("Codex terminal")
             AppearancePicker()
@@ -814,8 +817,21 @@ struct ChatView: View {
     private func remember(_ message: JSONValue) async {
         do {
             let source = try await store.api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(chat.conversationID), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "attachments": message["metadata"]["attachments"]]))
-            _ = try await store.api.request("/api/memory", method: "POST", body: .object(["action": .string("create_core"), "body": message["content"], "evidenceIds": .array([source["evidenceId"]])]))
-            chat.memoryStatus = "Saved to Memory with its original source."
+            _ = source
+            let evidence: JSONValue = .object([
+                "conversation_id": .string(chat.conversationID),
+                "message_id": .string(message.id),
+                "quote": .string(String(message["content"].string.prefix(4000)))
+            ])
+            let candidate: JSONValue = .object([
+                "body": message["content"], "kind": .string("episode"),
+                "source": .string("Vesper chat: " + chat.conversationID), "occurred_at": .null,
+                "details": .object(["evidence": .array([evidence])])
+            ])
+            _ = try await store.api.request("/api/memory/candidates", method: "POST", body: .object([
+                "action": .string("propose"), "memory": candidate
+            ]))
+            chat.memoryStatus = "已生成待核对候选；请在相关记忆中确认后入库。"
         } catch { chat.error = error.localizedDescription }
     }
     private func isFavorite(_ message: JSONValue) -> Bool { ChatFavorites.existing(message.id, conversationID: chat.conversationID, in: store) != nil }

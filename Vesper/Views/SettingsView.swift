@@ -9,11 +9,8 @@ struct SettingsView: View {
     var body: some View {
         Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
             NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
-            NavigationLink { NotificationSettingsView() } label: { settingsRow("Notifications", subtitle: "Permission and system settings", icon: "bell") }
+            NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Health, calendar, reminders and alarms", icon: "hand.raised") }
             NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
-            NavigationLink { HealthView() } label: { settingsRow("Health", subtitle: "Sleep, heart rate and activity", icon: "heart.text.square") }
-            NavigationLink { SystemPlannerView() } label: { settingsRow("Calendar & Reminders", subtitle: "Connect your iPhone calendar and lists", icon: "calendar") }
-            NavigationLink { AlarmsView() } label: { settingsRow("Alarms", subtitle: "System alarms on this iPhone", icon: "alarm") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
             NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
             NavigationLink { DataSettingsView() } label: { settingsRow("Data", subtitle: "Export and privacy", icon: "archivebox") }
@@ -21,6 +18,17 @@ struct SettingsView: View {
     }
     private func settingsRow(_ title: String, subtitle: String, icon: String) -> some View {
         GlassCard { HStack(spacing: 14) { Image(systemName: icon).frame(width: 42, height: 42).background(VesperTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(title).font(.headline); Text(subtitle).font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right").font(.caption) } }
+    }
+}
+struct DevicePermissionsView: View {
+    var body: some View {
+        List {
+            NavigationLink { NotificationSettingsView() } label: { Label("Notifications", systemImage: "bell") }
+            NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
+            NavigationLink { SystemPlannerView() } label: { Label("Calendar & Reminders", systemImage: "calendar") }
+            NavigationLink { AlarmsView() } label: { Label("Alarms", systemImage: "alarm") }
+        }.navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
     }
 }
 struct ConnectionView: View {
@@ -73,6 +81,7 @@ struct WakeView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                NavigationLink("Sleep time") { WakeSleepView() }
                 NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
                 NavigationLink("Recent activity") { activityPage }
@@ -224,6 +233,85 @@ struct WakeView: View {
         } catch { status = error.localizedDescription }
     }
 }
+struct WakeSleepView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var enabled = true
+    @State private var dreamEnabled = true
+    @State private var start = Self.date("00:00")
+    @State private var end = Self.date("07:00")
+    @State private var busy = false
+    @State private var supported = false
+    @State private var status = ""
+    private static let zone = TimeZone(identifier: "Asia/Shanghai")!
+    private static func date(_ value: String) -> Date {
+        let parts = value.split(separator: ":").compactMap { Int($0) }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        return calendar.date(from: DateComponents(year: 2000, month: 1, day: 1, hour: parts.first ?? 0, minute: parts.last ?? 0))!
+    }
+    private static func time(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        return String(format: "%02d:%02d", calendar.component(.hour, from: date), calendar.component(.minute, from: date))
+    }
+    var body: some View {
+        Form {
+            if busy { ProgressView("Loading sleep settings…") }
+            Section {
+                Toggle("Sleep time", isOn: $enabled)
+                DatePicker("From", selection: $start, displayedComponents: .hourAndMinute)
+                DatePicker("Until", selection: $end, displayedComponents: .hourAndMinute)
+                Toggle("Save a simulated dream after sleep", isOn: $dreamEnabled)
+            } footer: {
+                Text("Beijing time. Automatic activity and notifications stay silent during sleep. After sleep, one simulated dream is saved to Memory → 梦. Dreams are imagination, not factual memories.")
+            }.disabled(!supported || busy)
+            if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
+        }.environment(\.timeZone, Self.zone)
+            .navigationTitle("Sleep time").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(busy).accessibilityLabel("Reload sleep settings")
+            } }
+            .safeAreaInset(edge: .bottom) {
+                WakeSaveButton(title: busy ? "Saving…" : "Save sleep time", disabled: !supported || busy) { Task { await save() } }
+            }.task { await load() }.refreshable { await load() }
+    }
+    private func load() async {
+        guard !busy else { return }
+        busy = true; status = ""; defer { busy = false }
+        do {
+            let value = try await store.api.request("/wake", history: true)
+            supported = value["sleepVersion"].number >= 1
+            guard supported else {
+                status = "This history service does not support sleep settings yet. Update it, then tap Reload."
+                return
+            }
+            let setting = value["config"]["sleep"]
+            enabled = setting["enabled"].bool; dreamEnabled = setting["dreamEnabled"].bool
+            start = Self.date(setting["start"].string); end = Self.date(setting["end"].string)
+        } catch {
+            if !Task.isCancelled { status = error.localizedDescription + " Tap Reload to try again." }
+        }
+    }
+    private func save() async {
+        guard !busy, supported else { return }
+        guard Self.time(start) != Self.time(end) else { status = "Choose different start and end times."; return }
+        busy = true; defer { busy = false }
+        let setting: JSONValue = .object(["enabled": .bool(enabled), "dreamEnabled": .bool(dreamEnabled),
+            "start": .string(Self.time(start)), "end": .string(Self.time(end)), "timeZone": .string(Self.zone.identifier)])
+        do {
+            // Preserve the latest main switch/interval, including changes from another device.
+            let latest = try await store.api.request("/wake", history: true)
+            let body: JSONValue = .object(["action": .string("configure"), "enabled": latest["config"]["enabled"],
+                "intervalMinutes": latest["config"]["intervalMinutes"], "sleep": setting])
+            let saved = try await store.api.request("/wake", method: "POST", body: body, history: true)
+            let reread = try await store.api.request("/wake", history: true)
+            guard saved["config"]["sleep"] == setting, reread["config"]["sleep"] == setting else {
+                throw ServiceError(message: "The service did not retain the sleep settings.")
+            }
+            status = "Saved and verified. Applies to the existing VPS scheduler."
+        } catch { status = error.localizedDescription }
+    }
+}
+
 private struct WakePromptView: View {
     @EnvironmentObject private var store: AppStore
     @State private var prompt = ""

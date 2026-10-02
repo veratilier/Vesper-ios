@@ -204,6 +204,34 @@ private struct AttachmentQuickLook: UIViewControllerRepresentable {
     }
 }
 
+
+struct ChatConnectionSheet: View {
+    let message: String
+    let needsRetry: Bool
+    let retry: () -> Void
+    let close: () -> Void
+    @AppStorage("vesperPalette") private var palette = "blue"
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(message).foregroundStyle(VesperTheme.ink)
+                Button(needsRetry ? "Retry" : "Check status", action: retry)
+                    .buttonStyle(.borderedProminent)
+                    .tint(VesperTheme.ink)
+                    .foregroundStyle(palette == "black" ? Color.black : Color.white)
+                Spacer()
+            }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: close).foregroundStyle(VesperTheme.ink)
+                    }
+                }
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            .preferredColorScheme(palette == "black" ? .dark : .light)
+    }
+}
+
 // Text edits must not invalidate the chat timeline. Only the field and its
 // send button observe this object; attachments still notify ChatView.
 final class ChatTypedDraft: ObservableObject {
@@ -548,19 +576,14 @@ struct ChatView: View {
     var body: some View {
         attachmentContent
         .sheet(isPresented: $connectionDetails) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
-                         chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
-                         "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5")
-                    Button(chat.connectionNeedsRetry ? "Retry" : "Check status") {
-                        chat.retryConnection(); connectionDetails = false
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
-                }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { connectionDetails = false } } }
-            }.presentationDetents([.medium])
+            ChatConnectionSheet(
+                message: chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
+                    chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
+                    "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5",
+                needsRetry: chat.connectionNeedsRetry,
+                retry: { chat.retryConnection(); connectionDetails = false },
+                close: { connectionDetails = false })
+                .presentationDetents([.medium])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $terminalVisible) {
@@ -650,17 +673,13 @@ struct ChatView: View {
                 if !otherAttachments.isEmpty {
                     ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
                         if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { HStack(spacing: 12) {
-                            Image(systemName: "doc.text").font(.title2)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(attachment["name"].string.isEmpty ? "Download file" : attachment["name"].string).font(.subheadline).lineLimit(2)
-                                Text("Tap to open · " + ByteCountFormatter.string(fromByteCount: Int64(max(0, attachment["size"].number)), countStyle: .file)).font(.caption2).foregroundStyle(VesperTheme.muted)
-                            }
-                            Image(systemName: "arrow.down.to.line").font(.subheadline)
-                        }.frame(minWidth: 190, maxWidth: 280, minHeight: 48, alignment: .leading).padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) } }
                     } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
-                if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: message["metadata"]["musicCard"]) }
+                if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(message["metadata"]["musicCard"])) }
+                else if message["status"].string != "streaming" {
+                    ForEach(ChatMusicShare.links(in: message["content"].string)) { track in ChatMusicLinkCard(track: track) }
+                }
                 if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
                 if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
@@ -746,7 +765,7 @@ struct ChatView: View {
         NavigationStack { List {
             ForEach(store.document("music").array.filter { $0["source"].string == "appleMusic" }) { track in
                 Button {
-                    pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "appleMusicId", "source", "duration"].map { ($0, track[$0]) }))
+                    pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "appleMusicId", "appleMusicURL", "source", "duration"].map { ($0, track[$0]) }))
                     musicPicker = false; drawer = false
                 } label: { Label(track["title"].string, systemImage: "music.note") }
             }
@@ -899,123 +918,6 @@ enum ChatTerminalRecords {
             let kinds = ["commandExecution", "shellCall", "fileChange"]
             return execution != .null && (kinds.contains(execution["type"].string)
                 || kinds.contains(message["metadata"]["blockType"].string))
-        }
-    }
-}
-
-private struct ChatTerminalView: View {
-    let conversationID: String
-    private var endpoint: String { "/conversations/\(conversationID)/terminal" }
-    @EnvironmentObject private var store: AppStore
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var screen = ""
-    @State private var draft = ""
-    @State private var error = ""
-    @State private var connected = false
-    @State private var running = false
-    @State private var busy = false
-    @State private var retry = 0
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
-                    Text(connected ? (running ? "Live · This chat" : "No active terminal") : "Disconnected")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
-                        .accessibilityLabel("Reconnect terminal")
-                }
-                ScrollView([.horizontal, .vertical]) {
-                    Text(screen.isEmpty ? "Open the terminal for this chat to see its history and continue it." : screen)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.9)).textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                if !error.isEmpty {
-                    Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-                }
-                if connected && !running {
-                    Button("Open this chat in terminal") { perform(endpoint + "/start") }
-                        .buttonStyle(.bordered).disabled(busy)
-                }
-                HStack(spacing: 8) {
-                    ForEach(["Esc", "Tab", "^C", "←", "↑", "↓", "→", "↵"], id: \.self) { label in
-                        Button(label) { sendKey(label) }
-                            .font(.system(size: 13, design: .monospaced))
-                            .frame(maxWidth: .infinity, minHeight: 36)
-                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }.disabled(!connected || !running || busy)
-                HStack {
-                    TextField("Type into VPS terminal…", text: $draft)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .onSubmit { sendDraft() }
-                    Button { sendDraft() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                        .accessibilityLabel("Send to terminal")
-                        .disabled(draft.isEmpty || !connected || !running || busy)
-                }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
-                Text("Persistent VPS session · closing this window keeps it running")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
-                .navigationTitle("Chat terminal").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }.preferredColorScheme(.dark)
-            .task(id: "\(scenePhase)-\(retry)") {
-                guard scenePhase == .active else { connected = false; return }
-                await followScreen()
-            }
-    }
-
-    private func followScreen() async {
-        connected = false
-        while !Task.isCancelled {
-            do {
-                let result = try await store.api.request(endpoint, history: true)
-                try Task.checkCancellation()
-                guard result["conversationId"].string == conversationID else { throw ServiceError(message: "The server returned a terminal for another chat.") }
-                screen = result["screen"].string
-                running = result["running"].bool
-                connected = true
-                // A failed input is not automatically retried or erased by polling.
-                try await Task.sleep(for: .milliseconds(500))
-            } catch is CancellationError { return }
-            catch let failure {
-                guard !Task.isCancelled else { return }
-                connected = false
-                error = failure.localizedDescription
-                return
-            }
-        }
-    }
-
-    private func sendKey(_ label: String) {
-        let keys = ["Esc": "Escape", "Tab": "Tab", "^C": "C-c", "←": "Left",
-                    "↑": "Up", "↓": "Down", "→": "Right", "↵": "Enter"]
-        if let key = keys[label] { perform(endpoint + "/input", body: .object(["key": .string(key)])) }
-    }
-
-    private func sendDraft() {
-        guard !draft.isEmpty, connected, running, !busy else { return }
-        perform(endpoint + "/input", body: .object(["text": .string(draft)]), sentDraft: draft)
-    }
-
-    private func perform(_ path: String, body: JSONValue? = nil, sentDraft: String? = nil) {
-        guard !busy else { return }
-        busy = true
-        Task { @MainActor in
-            defer { busy = false }
-            do {
-                _ = try await store.api.request(path, method: "POST", body: body, history: true)
-                error = ""
-                if let sentDraft, draft == sentDraft { draft = "" }
-                retry += 1
-            } catch let failure {
-                error = "Not confirmed. Check the live screen before sending again. " + failure.localizedDescription
-            }
         }
     }
 }

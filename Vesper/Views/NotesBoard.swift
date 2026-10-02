@@ -42,18 +42,18 @@ struct NotesBoard: View {
                     Color.clear
                     ForEach(Array(notes.enumerated()), id: \.element.id) { index, note in
                         let layout = placement(note, index: index)
-                        BoardNote(note: note, layout: layout, zoom: zoom, lifting: { draggingID = $0 ? note.id : nil }, edit: { editing = note }, move: { delta in
+                        BoardNote(note: note, layout: layout, zoom: zoom, actions: AnyView(Menu {
+                            Button("Edit") { editing = note }
+                            ForEach(["sticky", "letter", "grid", "polaroid", "tag"], id: \.self) { style in Button(style.capitalized) { var next = layout; next.cardStyle = style; save(note, placement: next) } }
+                            Button("Rotate") { var next = layout; next.rotation = layout.rotation >= 8 ? -8 : layout.rotation + 4; save(note, placement: next) }
+                            Button("Delete", role: .destructive) { pendingDelete = note }
+                        } label: { Image(systemName: "ellipsis").frame(width: 30, height: 30).contentShape(Rectangle()) }.accessibilityLabel("Note actions")), lifting: { draggingID = $0 ? note.id : nil }, edit: { editing = note }, move: { delta in
                             var next = layout; next.x = max(125, layout.x + Double(delta.width)); next.y = max(135, layout.y + Double(delta.height))
                             next.zIndex = (placements.values.map(\.zIndex).max() ?? Double(notes.count)) + 1
                             save(note, placement: next)
                         })
                         .position(x: layout.x, y: layout.y).zIndex(draggingID == note.id ? 1_000_000 : layout.zIndex)
-                        .contextMenu {
-                            Button("Edit") { editing = note }
-                            ForEach(["sticky", "letter", "grid", "polaroid", "tag"], id: \.self) { style in Button(style.capitalized) { var next = layout; next.cardStyle = style; save(note, placement: next) } }
-                            Button("Rotate") { var next = layout; next.rotation = layout.rotation >= 8 ? -8 : layout.rotation + 4; save(note, placement: next) }
-                            Button("Delete", role: .destructive) { pendingDelete = note }
-                        }
+
                     }
                 }.frame(width: canvasSize.width, height: canvasSize.height)
                     .scaleEffect(zoom, anchor: .topLeading)
@@ -88,6 +88,7 @@ private struct BoardNote: View {
     let note: JSONValue
     let layout: NotePlacement
     let zoom: Double
+    let actions: AnyView
     let lifting: (Bool) -> Void
     let edit: () -> Void
     let move: (CGSize) -> Void
@@ -96,7 +97,7 @@ private struct BoardNote: View {
     private var paper: Color { layout.cardStyle == "sticky" ? Color(red: 1, green: 0.96, blue: 0.73) : Color(red: 0.95, green: 0.98, blue: 1) }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { Image(systemName: layout.cardStyle == "tag" ? "pin.fill" : "paperclip"); Spacer(); Text(note["kind"].string == "agent" ? "Rowan" : "Vera").font(.caption) }
+            HStack { Image(systemName: layout.cardStyle == "tag" ? "pin.fill" : "paperclip"); Spacer(); Text(note["kind"].string == "agent" ? "Rowan" : "Vera").font(.caption) .padding(.trailing, 24) }
             if layout.cardStyle == "polaroid", !note["image"].string.isEmpty { Artwork(url: note["image"].string).frame(height: 105).clipped() }
             Text(note["text"].string.isEmpty ? "A new note" : note["text"].string).font(.system(size: 16, design: layout.cardStyle == "grid" ? .monospaced : .serif)).lineSpacing(5).lineLimit(layout.cardStyle == "tag" ? 4 : 8)
             Spacer(minLength: 0)
@@ -109,16 +110,17 @@ private struct BoardNote: View {
             } }
         }.allowsHitTesting(false) } }
         .shadow(color: .black.opacity(lifted ? 0.25 : 0.12), radius: lifted ? 18 : 4, x: 2, y: lifted ? 12 : 5)
-        .rotationEffect(.degrees(layout.rotation))
-        .scaleEffect(layout.scale * (lifted ? 1.035 : 1))
-        .offset(x: dragging.width / zoom, y: dragging.height / zoom)
-        .onChange(of: lifted) { _, active in lifting(active) }
         .onTapGesture(perform: edit)
         .gesture(LongPressGesture(minimumDuration: 0.3).sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
             .updating($lifted) { value, state, _ in if case .second(true, _) = value { state = true } }
             .updating($dragging) { value, state, _ in if case .second(true, let drag?) = value { state = drag.translation } }
             .onEnded { value in if case .second(true, let drag?) = value { move(CGSize(width: drag.translation.width / zoom, height: drag.translation.height / zoom)) } })
-        .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton)
+        .overlay(alignment: .topTrailing) { actions.padding(12) }
+        .rotationEffect(.degrees(layout.rotation))
+        .scaleEffect(layout.scale * (lifted ? 1.035 : 1))
+        .offset(x: dragging.width / zoom, y: dragging.height / zoom)
+        .onChange(of: lifted) { _, active in lifting(active) }
+        .accessibilityElement(children: .contain).accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text("Edit")) { edit() }
     }
 }

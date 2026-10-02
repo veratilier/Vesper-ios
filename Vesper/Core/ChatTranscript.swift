@@ -24,14 +24,14 @@ enum ChatTranscript {
     }
 
     /// Independent wake threads are not part of the resumed interactive thread.
-    /// Supply a small, explicitly quoted history excerpt, never execution output.
+    /// Supply only the latest explicitly quoted reply, never execution output.
     static func wakeContext(_ messages: [JSONValue], conversationID: String, threadID: String?) -> String {
         let replies = ordered(messages).filter { message in
             isWake(message) && message["conversationId"].string == conversationID
                 && !ChatPresentation.isUser(message) && !ChatPresentation.isActivity(message)
                 && message["status"].string != "streaming" && !message["content"].string.isEmpty
                 && (threadID.map { message["metadata"]["threadId"].string != $0 } ?? true)
-        }.suffix(8)
+        }.suffix(1)
         guard !replies.isEmpty else { return "" }
         let records = replies.map { message in
             JSONValue.object(["messageId": .string(message.id), "createdAt": .string(timestamp(message)),

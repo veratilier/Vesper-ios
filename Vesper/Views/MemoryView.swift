@@ -327,7 +327,7 @@ private struct LibraryEditor: View {
     @State private var busy = false
     @State private var error = ""
     var body: some View {
-        EditorSheet(title: record == nil ? "新增记忆" : "纠正记忆", busy: busy, save: { Task { await save() } }) {
+        EditorSheet(title: candidateID != nil ? "修改候选" : record == nil ? "新增记忆" : "纠正记忆", busy: busy, save: { Task { await save() } }) {
             FormField(label: "短标题（可选）", text: $title)
             FormField(label: "摘要（可选）", text: $summary)
             FormField(label: "原文", text: $bodyText, multiline: true)
@@ -336,7 +336,7 @@ private struct LibraryEditor: View {
             FormField(label: "来源链接（可留空）", text: $sourceURL)
             Toggle("已知发生时间", isOn: $hasDate)
             if hasDate { DatePicker("发生时间", selection: $occurredDate) }
-            if record != nil { FormField(label: "纠正原因（保留旧版本）", text: $reason) }
+            if record != nil && candidateID == nil { FormField(label: "纠正原因（保留旧版本）", text: $reason) }
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
         }.onAppear {
             if let record {
@@ -360,7 +360,7 @@ private struct LibraryEditor: View {
             if !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { details["title"] = .string(title) }
             if !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { details["summary"] = .string(summary) }
             if !details.isEmpty { payload["details"] = .object(details) }
-            if record != nil { payload["correction_reason"] = .string(reason) }
+            if record != nil && candidateID == nil { payload["correction_reason"] = .string(reason) }
             if let candidateID, let api = library.api {
                 let result = try await api.request("/api/memory/candidates", method: "POST", body: .object(["action": .string("edit"), "id": .string(candidateID), "memory": .object(payload)]))
                 guard result["status"].string == "pending" else { throw SharedMemoryLibrary.LibraryError("候选已改变，请重新加载。") }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Uses the Memory service directly; never copies records into Vesper's legacy database.
+/// Shared Memory remains the source of truth; this view never copies it to the legacy store.
 @MainActor
 final class SharedMemoryLibrary: ObservableObject {
     var api: APIClient?
@@ -8,8 +8,7 @@ final class SharedMemoryLibrary: ObservableObject {
         guard let api else { throw LibraryError("请先在设置中连接 Vesper。") }
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "path", value: path)]
-        return try await api.request("/api/shared-memory?" + (components.percentEncodedQuery ?? ""),
-                                     method: body == nil ? "GET" : "POST", body: body)
+        return try await api.request("/api/shared-memory?" + (components.percentEncodedQuery ?? ""), method: body == nil ? "GET" : "POST", body: body)
     }
     struct LibraryError: LocalizedError {
         let message: String
@@ -19,17 +18,40 @@ final class SharedMemoryLibrary: ObservableObject {
 }
 
 private let libraryKinds = ["episode", "preference", "agreement", "reflection", "dream"]
+private let memoryCategories = ["episode", "preference_agreement", "reflection", "dream"]
 private func libraryKind(_ value: String) -> String {
-    ["episode": "经历", "preference": "偏好", "agreement": "约定", "reflection": "感受 · 非事实", "dream": "梦 · 非事实"][value] ?? value
+    ["episode": "我们的经历", "preference": "偏好", "agreement": "约定", "preference_agreement": "偏好与约定", "reflection": "感受", "dream": "梦与想象"][value] ?? value
+}
+private func memoryTitle(_ row: JSONValue) -> String {
+    let title = row["details"]["title"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !title.isEmpty { return title }
+    let first = row["body"].string.split(whereSeparator: \.isNewline).first.map(String.init) ?? "记忆"
+    return String(first.prefix(24)) + (first.count > 24 ? "…" : "")
+}
+private func memorySummary(_ row: JSONValue) -> String {
+    let summary = row["details"]["summary"].string
+    return summary.isEmpty ? row["body"].string : summary
+}
+private func memoryDate(_ value: String) -> String {
+    guard !value.isEmpty else { return "日期未记录" }
+    let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "日期未记录" }
+    return date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits))
+}
+private struct MemorySurface: ViewModifier {
+    func body(content: Content) -> some View {
+        content.padding(13).frame(maxWidth: .infinity, alignment: .leading)
+            .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(VesperTheme.palette == .black ? 0.12 : 0.8), lineWidth: 1))
+    }
 }
 
 struct MemoryView: View {
     @StateObject private var library = SharedMemoryLibrary()
     @EnvironmentObject private var store: AppStore
     @State private var query = ""
-    @State private var kind = ""
+    @State private var kind = "episode"
     @State private var oldVersions = false
-    @State private var nonfacts = false
     @State private var rows: [JSONValue] = []
     @State private var offset = 0
     @State private var total = 0
@@ -37,79 +59,161 @@ struct MemoryView: View {
     @State private var busy = false
     @State private var status = ""
     @State private var adding = false
+    @State private var filtering = false
+    @State private var recentExpanded = false
+    @State private var deliveries: [JSONValue] = []
+    @State private var recallStatus = ""
+    @State private var selected: JSONValue?
+
     var body: some View {
-        Page(title: "Memory", subtitle: "有迹可循的记忆库") {
-            HStack {
-                NavigationLink("旧 Vesper 记忆") { LegacyMemoryView() }
-            }.font(.caption)
-            Group {
-                HStack {
-                    TextField("搜索原文或来源", text: $query).submitLabel(.search).onSubmit { refresh() }
-                    Button { refresh() } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("搜索记忆")
-                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("新增记忆")
+        VStack(spacing: 10) {
+            header
+            search
+            categories
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 7) {
+                    recent
+                    if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted).padding(.vertical, 6) }
+                    if busy { ProgressView().frame(maxWidth: .infinity).padding() }
+                    if rows.isEmpty && !busy && status.isEmpty {
+                        Text(query.isEmpty ? "这里还没有记忆，等值得留下的内容。" : "没有找到相关记忆，换几个关键词试试。")
+                            .font(.subheadline).foregroundStyle(VesperTheme.muted).padding(.vertical, 30)
+                    }
+                    ForEach(rows) { row in
+                        Button { selected = row } label: { LibraryPreviewCard(row: row) }.buttonStyle(.plain)
+                    }
+                    pagination
+                }.padding(.horizontal, 18).padding(.top, 3).padding(.bottom, 90)
+            }.scrollDismissesKeyboard(.interactively)
+                .refreshable { await load(); await loadRecent() }
+        }
+        .foregroundStyle(VesperTheme.ink)
+        .task { library.api = store.api; await load() }
+        .onChange(of: kind) { _, _ in refresh() }
+        .onChange(of: recentExpanded) { _, expanded in if expanded { Task { await loadRecent() } } }
+        .sheet(isPresented: $adding) { LibraryEditor(library: library, record: nil) { refresh() } }
+        .sheet(isPresented: $filtering) { filters }
+        .sheet(item: $selected, onDismiss: { refresh() }) { row in
+            NavigationStack { LibraryRecordView(library: library, id: row.id).toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { selected = nil } } } }
+                .presentationDragIndicator(.visible)
+        }
+    }
+    private var header: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Memory").font(VesperTheme.title(29))
+                Text("把一起走过的，留在这里。").font(.caption).foregroundStyle(VesperTheme.muted)
+            }
+            Spacer()
+            Button { adding = true } label: { Image(systemName: "plus").frame(width: 44, height: 44).background(VesperTheme.surface, in: Circle()) }.accessibilityLabel("新增记忆")
+        }.padding(.horizontal, 20).padding(.top, 8)
+    }
+    private var search: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(VesperTheme.muted)
+            TextField("找一句话，一件旧事…", text: $query).font(.subheadline).submitLabel(.search).onSubmit { refresh() }
+            if !query.isEmpty {
+                Button { query = ""; refresh() } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("清空搜索")
+            }
+            Button { filtering = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 32, height: 32) }.accessibilityLabel("筛选记忆")
+        }.padding(.horizontal, 12).padding(.vertical, 5).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 15)).padding(.horizontal, 18)
+    }
+    private var categories: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                ForEach(memoryCategories, id: \.self) { value in
+                    Button { kind = value } label: {
+                        Text(libraryKind(value)).font(.subheadline).padding(.horizontal, 11).padding(.vertical, 9)
+                            .foregroundStyle(kind == value ? (VesperTheme.palette == .black ? Color.black : Color.white) : VesperTheme.muted)
+                            .background(kind == value ? VesperTheme.muted : .clear, in: RoundedRectangle(cornerRadius: 12))
+                    }.buttonStyle(.plain).accessibilityAddTraits(kind == value ? .isSelected : [])
                 }
-                DisclosureGroup("筛选") {
-                    Picker("类型", selection: $kind) { Text("全部").tag(""); ForEach(libraryKinds, id: \.self) { Text(libraryKind($0)).tag($0) } }
-                    Toggle("包含已替代版本", isOn: $oldVersions)
-                    Toggle("搜索包含梦与感受", isOn: $nonfacts)
-                    Button("应用筛选") { refresh() }
-                }
-                ForEach(rows) { row in
-                    NavigationLink { LibraryRecordView(library: library, id: row.id) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(row["body"].string).lineLimit(3).foregroundStyle(.primary)
-                            Text(row["source"].string).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            HStack {
-                                Text(libraryKind(row["kind"].string))
-                                Text("v\(Int(row["version"].number))" + (row["active"].number == 1 ? "" : " · 已替代"))
-                                Spacer()
-                                Text(row["occurred_at"].string.isEmpty ? "发生时间未知" : ChatPresentation.time(row["occurred_at"].string))
-                            }.font(.caption2).foregroundStyle(.secondary)
-                            if !row["reason"].string.isEmpty {
-                                Text(row["reason"].string == "semantic_similarity" ? "语义相似" : "命中：" + row["matched_terms"].array.map(\.string).joined(separator: " · ")).font(.caption2)
+            }.padding(.horizontal, 18)
+        }
+    }
+    private var recent: some View {
+        DisclosureGroup(isExpanded: $recentExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("这里只表示记忆已提供给模型，不代表回复一定采用了它。").font(.caption).foregroundStyle(VesperTheme.muted)
+                if !recallStatus.isEmpty { Text(recallStatus).font(.caption) }
+                ForEach(Array(deliveries.prefix(5).enumerated()), id: \.offset) { _, delivery in
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(memoryDate(delivery["deliveredAt"].string)).font(.caption2).foregroundStyle(VesperTheme.muted)
+                        ForEach(delivery["memories"].array) { memory in
+                            NavigationLink { LibraryRecordView(library: library, id: memory.id) } label: {
+                                Text(memory["body"].string).font(.caption).fontWeight(.regular).lineLimit(3).multilineTextAlignment(.leading)
                             }
-                            Divider()
-                        }.padding(.vertical, 6)
-                    }.buttonStyle(.plain)
-                }
-                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && total > 40 {
-                    HStack {
-                        Button("上一页") { offset = max(0, offset - 40); Task { await load() } }.disabled(offset == 0 || busy)
-                        Spacer(); Text("\(offset + 1)–\(min(offset + rows.count, total)) / \(total)").font(.caption); Spacer()
-                        Button("下一页") { offset += 40; Task { await load() } }.disabled(offset + 40 >= total || busy)
+                        }
+                        Button("查看关联聊天") { NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: ["conversationId": delivery["conversationId"].string, "messageId": delivery["messageId"].string]) }.font(.caption)
                     }
                 }
-            }
-            if busy { ProgressView() }
-            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
+            }.padding(.top, 10)
+        } label: { Label("最近浮现", systemImage: "sparkles").font(.caption) }
+            .tint(VesperTheme.muted).modifier(MemorySurface()).padding(.bottom, 6)
+    }
+    @ViewBuilder private var pagination: some View {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && total > 40 {
+            HStack {
+                Button("上一页") { offset = max(0, offset - 40); Task { await load() } }.disabled(offset == 0 || busy)
+                Spacer(); Text("\(offset + 1)–\(min(offset + rows.count, total)) / \(total)").font(.caption); Spacer()
+                Button("下一页") { offset += 40; Task { await load() } }.disabled(offset + 40 >= total || busy)
+            }.font(.caption).padding(.vertical, 12)
         }
-        .onAppear { library.api = store.api; refresh() }
-        .sheet(isPresented: $adding) { LibraryEditor(library: library, record: nil) { refresh() } }
-        .refreshable { library.api = store.api; await load() }
+    }
+    private var filters: some View {
+        NavigationStack {
+            Form {
+                Section("记录范围") { Toggle("包含已替代、已撤回及待核对记录", isOn: $oldVersions) }
+                Section { NavigationLink("旧 Vesper 记忆") { LegacyMemoryView() } }
+            }.navigationTitle("筛选记忆").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { filtering = false; refresh() } } }
+        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
     private func refresh() { offset = 0; Task { await load() } }
+    private func loadRecent() async {
+        do {
+            let result = try await store.api.request("/api/memory/context")
+            deliveries = result["items"].array.filter { $0["status"].string == "delivered" && !$0["memories"].array.isEmpty }
+            recallStatus = result["unavailable"].bool ? "最近浮现暂时不可用。" : deliveries.isEmpty ? "还没有已提供给模型的记忆记录。" : ""
+        } catch { recallStatus = "最近浮现暂时不可用：" + error.localizedDescription }
+    }
     private func load() async {
         generation += 1; let ticket = generation
-        busy = true
+        busy = true; status = ""
         defer { if ticket == generation { busy = false } }
         do {
             let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let response: JSONValue
             if text.isEmpty {
                 var params = URLComponents()
-                params.queryItems = [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "40"), URLQueryItem(name: "include_superseded", value: String(oldVersions))]
-                if !kind.isEmpty { params.queryItems?.append(URLQueryItem(name: "kind", value: kind)) }
+                params.queryItems = [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "40"), URLQueryItem(name: "include_superseded", value: String(oldVersions)), URLQueryItem(name: "kind", value: kind)]
                 response = try await library.request("/api/memories?" + (params.percentEncodedQuery ?? ""))
             } else {
-                var body: [String: JSONValue] = ["query": .string(text), "limit": .number(20), "include_superseded": .bool(oldVersions), "include_nonfacts": .bool(nonfacts)]
-                if !kind.isEmpty { body["kind"] = .string(kind) }
-                response = try await library.request("/api/search", body: .object(body))
+                response = try await library.request("/api/search", body: .object(["query": .string(text), "limit": .number(20), "include_superseded": .bool(oldVersions), "include_nonfacts": .bool(kind == "reflection" || kind == "dream"), "kind": .string(kind)]))
             }
             guard ticket == generation else { return }
             rows = response[text.isEmpty ? "items" : "hits"].array
             total = text.isEmpty ? Int(response["total"].number) : rows.count
-            status = text.isEmpty ? "共 \(total) 条记忆" : ([response["message"].string] + response["warnings"].array.map(\.string)).joined(separator: " · ")
-        } catch { if ticket == generation { status = error.localizedDescription } }
+            status = response["warnings"].array.map(\.string).joined(separator: " · ")
+        } catch { if ticket == generation { rows = []; status = error.localizedDescription } }
+    }
+}
+
+private struct LibraryPreviewCard: View {
+    let row: JSONValue
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(memoryDate(row["occurred_at"].string))
+                Spacer()
+                if row["kind"].string == "dream" { Text("虚构") }
+                if row["kind"].string == "reflection" { Text("主观感受") }
+                if row["active"].number == 0 { Text("历史记录") }
+                Image(systemName: "arrow.up.right").font(.caption2)
+            }.font(.caption2).foregroundStyle(VesperTheme.muted)
+            Text(memoryTitle(row)).font(.subheadline.weight(.medium)).lineLimit(2).foregroundStyle(VesperTheme.ink)
+            Text(memorySummary(row)).font(.caption).fontWeight(.regular).lineSpacing(2).lineLimit(3).foregroundStyle(VesperTheme.muted)
+        }.modifier(MemorySurface())
     }
 }
 
@@ -119,33 +223,85 @@ private struct LibraryRecordView: View {
     @State private var record: JSONValue = .null
     @State private var status = ""
     @State private var editing = false
+    @State private var withdrawing = false
+    @State private var reason = ""
+    @State private var busy = false
     var body: some View {
-        Page(title: "记忆原文") {
-            if record != .null {
-                Text(libraryKind(record["kind"].string)).font(.caption)
-                Text(record["body"].string).textSelection(.enabled)
-                Text("来源：" + record["source"].string).font(.callout)
-                Text("发生：" + (record["occurred_at"].string.isEmpty ? "未知" : record["occurred_at"].string)).font(.caption)
-                Text("记录：" + record["recorded_at"].string).font(.caption)
+        ZStack {
+            Background()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if record != .null {
+                        Text(libraryKind(record["kind"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
+                        Text(memoryTitle(record)).font(.title3.weight(.medium))
+                        Text(memoryDate(record["occurred_at"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
+                        if ["dream", "reflection"].contains(record["kind"].string) {
+                            Text(record["kind"].string == "dream" ? "梦与想象 · 虚构，非真实经历" : "主观感受 · 不等同于事实").font(.caption).foregroundStyle(VesperTheme.muted)
+                        }
+                        Text(record["body"].string).font(.subheadline).fontWeight(.regular).lineSpacing(4).textSelection(.enabled).modifier(MemorySurface())
+                        if record["withdrawal"] != .null { Text("已撤回：" + record["withdrawal"]["reason"].string).font(.caption) }
+                        if record["review"] != .null { Text("待核对：" + record["review"]["reason"].string).font(.caption) }
+                        sources
+                        versions
+                        if record["active"].number == 1 {
+                            HStack {
+                                Button { editing = true } label: { Label("纠正", systemImage: "pencil") }
+                                Button(role: .destructive) { reason = ""; withdrawing = true } label: { Label("撤回", systemImage: "archivebox") }
+                            }.buttonStyle(.bordered).disabled(busy)
+                        }
+                    } else if status.isEmpty { ProgressView() }
+                    if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
+                }.padding(20).padding(.bottom, 80)
+            }
+        }.foregroundStyle(VesperTheme.ink).navigationTitle("记忆详情").navigationBarTitleDisplayMode(.inline).task { await load() }
+        .sheet(isPresented: $editing) { LibraryEditor(library: library, record: record) { Task { await load() } } }
+        .alert("撤回这条记忆？", isPresented: $withdrawing) {
+            TextField("撤回原因", text: $reason)
+            Button("取消", role: .cancel) {}
+            Button("撤回", role: .destructive) { Task { await withdraw() } }
+        } message: { Text("将停止参与新的召回，原文与来源仍保留。") }
+    }
+    private var sources: some View {
+        DisclosureGroup("来源与原始聊天") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(record["source"].string).textSelection(.enabled)
+                ForEach(Array(record["details"]["evidence"].array.enumerated()), id: \.offset) { _, evidence in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(evidence["quote"].string).font(.subheadline).fontWeight(.regular).textSelection(.enabled)
+                        if !evidence["conversation_id"].string.isEmpty {
+                            Button("查看原始聊天") { NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: ["conversationId": evidence["conversation_id"].string, "messageId": evidence["message_id"].string]) }
+                        }
+                    }
+                }
                 if let url = URL(string: record["source_url"].string), ["https", "http"].contains(url.scheme ?? "") { Link("打开来源", destination: url) }
-                Text("有来源的记录不等于经过核验的事实。梦和感受属于主观记录。").font(.caption).foregroundStyle(.secondary)
-                if record["active"].number == 1 { Button("纠正这条记忆") { editing = true }.buttonStyle(.bordered) }
-                Text("版本轨迹").font(.headline)
+                Text("记录时间：" + memoryDate(record["recorded_at"].string))
+                Text("来源标识：" + record["source_id"].string).textSelection(.enabled)
+                Text("记录 ID：" + id).textSelection(.enabled)
+            }.font(.caption).padding(.top, 10)
+        }.font(.subheadline).tint(VesperTheme.muted)
+    }
+    private var versions: some View {
+        DisclosureGroup("版本与修订") {
+            VStack(alignment: .leading, spacing: 12) {
                 ForEach(record["versions"].array) { version in
                     NavigationLink { LibraryRecordView(library: library, id: version.id) } label: {
-                        VStack(alignment: .leading) {
-                            Text("v\(Int(version["version"].number)) · " + (version["active"].number == 1 ? "当前版本" : "已替代"))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("v\(Int(version["version"].number)) · " + (version["active"].number == 1 ? "当前版本" : "历史版本"))
                             Text(version["correction_reason"].string).font(.caption)
                         }
                     }.disabled(version.id == id)
                 }
-            }
-            if !status.isEmpty { Text(status).font(.caption) }
-        }.task { await load() }
-        .sheet(isPresented: $editing) { LibraryEditor(library: library, record: record) { Task { await load() } } }
+            }.padding(.top, 10)
+        }.font(.subheadline).tint(VesperTheme.muted)
     }
     private func load() async {
         do { record = try await library.request("/api/memories/" + id); status = "" }
+        catch { status = error.localizedDescription }
+    }
+    private func withdraw() async {
+        guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { status = "请填写撤回原因。"; return }
+        busy = true; defer { busy = false }
+        do { _ = try await library.request("/api/memories/" + id + "/withdraw", body: .object(["reason": .string(reason)])); await load() }
         catch { status = error.localizedDescription }
     }
 }
@@ -155,6 +311,8 @@ private struct LibraryEditor: View {
     @ObservedObject var library: SharedMemoryLibrary
     let record: JSONValue?
     let saved: () -> Void
+    @State private var title = ""
+    @State private var summary = ""
     @State private var bodyText = ""
     @State private var source = ""
     @State private var sourceURL = ""
@@ -166,6 +324,8 @@ private struct LibraryEditor: View {
     @State private var error = ""
     var body: some View {
         EditorSheet(title: record == nil ? "新增记忆" : "纠正记忆", busy: busy, save: { Task { await save() } }) {
+            FormField(label: "短标题（可选）", text: $title)
+            FormField(label: "摘要（可选）", text: $summary)
             FormField(label: "原文", text: $bodyText, multiline: true)
             FormField(label: "来源说明", text: $source)
             Picker("类型", selection: $kind) { ForEach(libraryKinds, id: \.self) { Text(libraryKind($0)).tag($0) } }
@@ -176,10 +336,10 @@ private struct LibraryEditor: View {
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
         }.onAppear {
             if let record {
+                title = record["details"]["title"].string; summary = record["details"]["summary"].string
                 bodyText = record["body"].string; source = record["source"].string
                 sourceURL = record["source_url"].string; kind = record["kind"].string
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                 if let date = formatter.date(from: record["occurred_at"].string) ?? ISO8601DateFormatter().date(from: record["occurred_at"].string) { occurredDate = date; hasDate = true }
             }
         }.interactiveDismissDisabled(busy)
@@ -187,9 +347,15 @@ private struct LibraryEditor: View {
     private func save() async {
         guard !busy else { return }
         guard !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, record == nil || !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "请填写原文、来源和必要的纠正原因。"; return }
+        guard title.count <= 100, summary.count <= 500 else { error = "标题最多 100 字，摘要最多 500 字。"; return }
         busy = true; defer { busy = false }
         do {
             var payload: [String: JSONValue] = ["body": .string(bodyText), "source": .string(source), "kind": .string(kind), "source_url": sourceURL.isEmpty ? .null : .string(sourceURL), "occurred_at": hasDate ? .string(ISO8601DateFormatter().string(from: occurredDate)) : .null]
+            var details = record?["details"].object ?? [:]
+            details.removeValue(forKey: "title"); details.removeValue(forKey: "summary")
+            if !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { details["title"] = .string(title) }
+            if !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { details["summary"] = .string(summary) }
+            if !details.isEmpty { payload["details"] = .object(details) }
             if record != nil { payload["correction_reason"] = .string(reason) }
             let path = record.map { "/api/memories/" + $0.id + "/correct" } ?? "/api/memories"
             let response = try await library.request(path, body: .object(payload))
@@ -198,7 +364,6 @@ private struct LibraryEditor: View {
         } catch { self.error = error.localizedDescription }
     }
 }
-
 
 struct LegacyMemoryView: View {
     @EnvironmentObject private var store: AppStore

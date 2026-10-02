@@ -38,6 +38,128 @@ enum Destination: String, CaseIterable, Identifiable {
         }
     }
 }
+/// Discard obsolete/duplicate destinations and append newly added features.
+enum VesperGridOrder {
+    static let defaults: [Destination] = [.desire, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom]
+    static func restore(_ saved: String) -> [Destination] {
+        let names = (try? JSONDecoder().decode([String].self, from: Data(saved.utf8))) ?? []
+        var seen = Set<String>()
+        return (names.compactMap(Destination.init(rawValue:)) + defaults).filter {
+            defaults.contains($0) && seen.insert($0.id).inserted
+        }
+    }
+    static func encode(_ pages: [Destination]) -> String {
+        String(decoding: (try? JSONEncoder().encode(pages.map(\.rawValue))) ?? Data(), as: UTF8.self)
+    }
+    static func move(_ page: Destination, to target: Destination, in pages: [Destination]) -> [Destination] {
+        guard page != target, let from = pages.firstIndex(of: page), let to = pages.firstIndex(of: target) else { return pages }
+        var result = pages
+        result.insert(result.remove(at: from), at: to)
+        return result
+    }
+}
+
+private struct VesperGridFrames: PreferenceKey {
+    static var defaultValue: [Destination: CGRect] = [:]
+    static func reduce(value: inout [Destination: CGRect], nextValue: () -> [Destination: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct VesperAppGrid: View {
+    @Binding var editing: Bool
+    let open: (Destination) -> Void
+    @AppStorage("vesperAppGridOrder") private var savedOrder = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pages = VesperGridOrder.defaults
+    @State private var frames: [Destination: CGRect] = [:]
+    @State private var dragged: Destination?
+    @State private var dragOrigin = CGRect.zero
+    @State private var translation = CGSize.zero
+    @GestureState private var pressing = false
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 22) {
+            ForEach(pages) { page in
+                Button { if !editing { open(page) } } label: { tile(page) }
+                    .buttonStyle(.plain)
+                    .opacity(dragged == page ? 0.2 : 1)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: VesperGridFrames.self,
+                                value: [page: geometry.frame(in: .named("vesperAppGrid"))])
+                        }
+                    }
+                    .accessibilityIdentifier("vesper-app-" + page.rawValue)
+                    .accessibilityHint(editing ? "Drag to rearrange" : "Long press to rearrange")
+                    .accessibilityAction(named: "Move earlier") { moveAccessibly(page, by: -1) }
+                    .accessibilityAction(named: "Move later") { moveAccessibly(page, by: 1) }
+            }
+        }
+        .coordinateSpace(name: "vesperAppGrid")
+        .onPreferenceChange(VesperGridFrames.self) { frames = $0 }
+        .overlay(alignment: .topLeading) {
+            if let dragged {
+                tile(dragged).frame(width: dragOrigin.width, height: dragOrigin.height)
+                    .scaleEffect(1.1).shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                    .position(x: dragOrigin.midX + translation.width, y: dragOrigin.midY + translation.height)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+        // Keep the recognizer on the grid so moving a tile cannot interrupt its drag.
+        .highPriorityGesture(LongPressGesture(minimumDuration: editing ? 0.12 : 0.45, maximumDistance: 10)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("vesperAppGrid")))
+            .updating($pressing) { _, active, _ in active = true }
+            .onChanged { value in
+                switch value {
+                case .second(true, let drag):
+                    if !editing { editing = true; UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                    guard let drag else { return }
+                    if dragged == nil, let page = pages.first(where: { frames[$0]?.contains(drag.startLocation) == true }), let frame = frames[page] {
+                        dragged = page; dragOrigin = frame
+                    }
+                    translation = drag.translation
+                    if let dragged, let target = pages.first(where: { frames[$0]?.contains(drag.location) == true }), target != dragged {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                            pages = VesperGridOrder.move(dragged, to: target, in: pages)
+                        }
+                    }
+                default: break
+                }
+            }
+            .onEnded { _ in finishDrag() })
+        .onChange(of: pressing) { _, active in if !active { finishDrag() } }
+        .onChange(of: editing) { _, value in if !value { finishDrag() } }
+        .onAppear { pages = VesperGridOrder.restore(savedOrder) }
+        .onDisappear { finishDrag(); editing = false }
+    }
+
+    private func tile(_ page: Destination) -> some View {
+        let icon = Image(systemName: page.icon).font(.system(size: 25, weight: .medium))
+            .frame(width: 56, height: 56)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        return VStack(spacing: 8) {
+            if editing && !reduceMotion {
+                icon.phaseAnimator([false, true]) { image, phase in
+                    image.rotationEffect(.degrees(phase ? 1.5 : -1.5))
+                } animation: { _ in .easeInOut(duration: 0.16) }
+            } else { icon }
+            Text(page.rawValue).font(.caption).lineLimit(2).minimumScaleFactor(0.85)
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, alignment: .top).contentShape(Rectangle())
+    }
+
+    private func finishDrag() {
+        if dragged != nil { savedOrder = VesperGridOrder.encode(pages) }
+        dragged = nil; translation = .zero
+    }
+    private func moveAccessibly(_ page: Destination, by offset: Int) {
+        guard let index = pages.firstIndex(of: page), pages.indices.contains(index + offset) else { return }
+        pages = VesperGridOrder.move(page, to: pages[index + offset], in: pages)
+        savedOrder = VesperGridOrder.encode(pages)
+    }
+}
+
 private struct FloatingCallSizeKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
@@ -52,6 +174,7 @@ struct RootView: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     @State private var nativeTab = 0
     @State private var libraryPath: [Destination] = []
+    @State private var libraryEditing = false
     @State private var vesperPage: Destination = .desire
     @StateObject private var callPresentation = NativeCallPresentation.shared
     @State private var floatingCallCenter: CGPoint?
@@ -90,24 +213,17 @@ struct RootView: View {
             ZStack {
                 Background()
                 ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 22) {
-                        ForEach([Destination.desire, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom]) { page in
-                            NavigationLink(value: page) {
-                                VStack(spacing: 8) {
-                                    Image(systemName: page.icon).font(.system(size: 25, weight: .medium))
-                                        .frame(width: 56, height: 56)
-                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                                    Text(page.rawValue).font(.caption).multilineTextAlignment(.center)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }.frame(maxWidth: .infinity, alignment: .top)
-
-                            }.buttonStyle(.plain)
-                        }
-                    }.padding(18)
+                    VesperAppGrid(editing: $libraryEditing) { page in libraryPath.append(page) }
+                        .padding(18)
                 }
             }.transparentNavigationTop().navigationTitle("Vesper")
                 .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if libraryEditing { Button("Done") { libraryEditing = false }.fontWeight(.semibold) }
+                        else { AppearancePicker() }
+                    }
+                }
         }
     }
     private var sidebarPanel: some View {

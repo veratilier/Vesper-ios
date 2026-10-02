@@ -208,3 +208,30 @@ extension SharedContentTests {
         XCTAssertEqual(result["audioIncluded"], .bool(false))
     }
 }
+
+extension SharedContentTests {
+    func testAppGridOrderRoundTripsAndKeepsAllDestinations() {
+        let moved = VesperGridOrder.move(.movieRoom, to: .desire, in: VesperGridOrder.defaults)
+        XCTAssertEqual(moved.first, .movieRoom)
+        XCTAssertEqual(VesperGridOrder.restore(VesperGridOrder.encode(moved)), moved)
+        XCTAssertEqual(Set(moved), Set(VesperGridOrder.defaults))
+        XCTAssertEqual(moved.count, 10)
+        let back = VesperGridOrder.move(.movieRoom, to: .bookmarks, in: moved)
+        XCTAssertEqual(back, VesperGridOrder.defaults)
+    }
+    func testAppGridMigratesMissingNewItemsAndRejectsDuplicateOrNonGridEntries() {
+        let saved = "[\"Music\",\"Notes\",\"Music\",\"Unknown\",\"Chat\"]"
+        let restored = VesperGridOrder.restore(saved)
+        XCTAssertEqual(Array(restored.prefix(2)), [.music, .notes])
+        XCTAssertEqual(restored.count, VesperGridOrder.defaults.count)
+        XCTAssertEqual(Set(restored), Set(VesperGridOrder.defaults))
+        XCTAssertEqual(VesperGridOrder.restore("broken"), VesperGridOrder.defaults)
+        XCTAssertEqual(VesperGridOrder.restore(""), VesperGridOrder.defaults)
+    }
+    func testAppGridInvalidOrSameDestinationDoesNotChangeOrder() {
+        let pages = VesperGridOrder.defaults
+        XCTAssertEqual(VesperGridOrder.move(.notes, to: .notes, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.home, to: .notes, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.notes, to: .home, in: pages), pages)
+    }
+}

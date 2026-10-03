@@ -64,6 +64,7 @@ struct DesireView: View {
 }
 struct AlbumView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var chat: ChatSession
     @State private var photos: [JSONValue] = []
     @State private var selected: JSONValue?
     @State private var category = "All"
@@ -85,6 +86,11 @@ struct AlbumView: View {
                 ZStack { Background(); ScrollView { VStack(spacing: 18) {
                     AsyncImage(url: URL(string: item["url"].string)) { image in image.resizable().scaledToFit() } placeholder: { ProgressView() }
                     Text(item["caption"].string).textSelection(.enabled).padding()
+                    if !item["sourceMessageId"].string.isEmpty {
+                        NavigationLink("Original conversation") {
+                            ChatView(restoreLatest: false).task { _ = await chat.openSearchResult(.object(["id": item["sourceMessageId"], "conversationId": item["sourceConversationId"]])) }
+                        }.disabled(chat.busy || chat.callActive)
+                    }
                     if let url = URL(string: item["url"].string) { ShareLink("Share photo", item: url) }
                 }.padding() } }.navigationTitle(item["category"].string).navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selected = nil } } }
@@ -92,7 +98,19 @@ struct AlbumView: View {
         }
     }
     private func load() async {
-        do { let r = try await store.api.request("/api/photos"); photos = r["photos"].array; status = photos.isEmpty ? "No photos in your album yet." : "" }
+        do {
+            var all: [JSONValue] = []
+            var offset = 0
+            repeat {
+                let r = try await store.api.request("/api/photos?limit=60&offset=\(offset)")
+                all += r["photos"].array
+                if r["nextOffset"] == .null { break }
+                let next = Int(r["nextOffset"].number)
+                guard next > offset else { throw ServiceError(message: "Invalid album cursor") }
+                offset = next
+            } while !Task.isCancelled
+            if !Task.isCancelled { photos = all; status = photos.isEmpty ? "No photos in your album yet." : "" }
+        }
         catch { status = error.localizedDescription }
     }
 }

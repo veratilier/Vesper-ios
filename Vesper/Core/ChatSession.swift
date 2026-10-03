@@ -1678,7 +1678,7 @@ enum ChatUserInput {
                     if let index = messages.firstIndex(where: { $0.id == id }) { messages[index] = message } else { messages.append(message) }
                 }
             }
-            if ["send_chat_file", "album_send_photos"].contains(name) {
+            if ["send_chat_file", "album_send_photos", "chat_capture_messages"].contains(name) {
                 let result = r["result"]
                 guard !result["attachments"].array.isEmpty else { throw ServiceError(message: "The tool returned no attachments; file delivery was not confirmed.") }
                 let fileID = "files:\(targetThread):\(callID)"

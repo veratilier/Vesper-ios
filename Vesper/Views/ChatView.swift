@@ -671,6 +671,11 @@ struct ChatView: View {
                 if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
                 if !photos.isEmpty {
                     ChatPhotoStack(photos: photos)
+                    ForEach(photos.filter { !$0["sourceMessageId"].string.isEmpty }) { photo in
+                        Button("Original conversation") {
+                            Task { _ = await chat.openSearchResult(.object(["id": photo["sourceMessageId"], "conversationId": photo["sourceConversationId"]])) }
+                        }.font(.caption).disabled(chat.busy || chat.callActive)
+                    }
                         .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
                 }
                 if !otherAttachments.isEmpty {

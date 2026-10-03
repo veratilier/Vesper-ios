@@ -22,6 +22,14 @@ private final class StickerAssetProtocol: URLProtocol {
 }
 
 final class ContractTests: XCTestCase {
+    func testScreenshotDeliveryPreservesOriginalSource() {
+        let result: JSONValue = .object(["attachments": .array([.object(["key": .string("screenshot.jpg"), "type": .string("image/jpeg"), "sourceConversationId": .string("original-chat"), "sourceMessageId": .string("original-message")])])])
+        let delivered = ChatFileDelivery.message(result, conversationID: "current-chat", threadID: "t", turnID: "turn", callID: "capture", createdAt: "now")
+        XCTAssertEqual(delivered["conversationId"].string, "current-chat")
+        XCTAssertEqual(delivered["metadata"]["attachments"].array.first?["sourceConversationId"].string, "original-chat")
+        XCTAssertEqual(delivered["metadata"]["attachments"].array.first?["sourceMessageId"].string, "original-message")
+    }
+
     func testChatTerminalIncludesRealExecutionAndFileChangesButExcludesOrdinaryTools() {
         func record(_ id: String, _ type: String) -> JSONValue {
             .object(["id": .string(id), "role": .string("system"),

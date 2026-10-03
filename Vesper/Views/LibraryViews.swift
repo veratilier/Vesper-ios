@@ -88,7 +88,7 @@ struct AlbumView: View {
                     Text(item["caption"].string).textSelection(.enabled).padding()
                     if !item["sourceMessageId"].string.isEmpty {
                         NavigationLink("Original conversation") {
-                            ChatView().task { _ = await chat.openSearchResult(.object(["id": item["sourceMessageId"], "conversationId": item["sourceConversationId"]])) }
+                            ChatView(restoreLatest: false).task { _ = await chat.openSearchResult(.object(["id": item["sourceMessageId"], "conversationId": item["sourceConversationId"]])) }
                         }.disabled(chat.busy || chat.callActive)
                     }
                     if let url = URL(string: item["url"].string) { ShareLink("Share photo", item: url) }

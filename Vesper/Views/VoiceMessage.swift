@@ -21,7 +21,7 @@ import Speech
         defer { processing = false }
         guard allowed else { error = "Allow microphone access in Settings."; return }
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
             try AVAudioSession.sharedInstance().setActive(true)
             let target = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
             url = target

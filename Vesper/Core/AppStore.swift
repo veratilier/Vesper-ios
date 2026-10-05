@@ -2,7 +2,12 @@ import SwiftUI
 import CryptoKit
 
 @MainActor final class AppStore: ObservableObject {
-    init() {
+    private let loadState: (APIClient) async throws -> JSONValue
+    private let retryDelay: () async throws -> Void
+    init(loadState: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/api/state") },
+         retryDelay: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
+        self.loadState = loadState
+        self.retryDelay = retryDelay
         cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
         // Remove the former NetEase login even when the server is offline.
         UserDefaults.standard.removeObject(forKey: "netease-uid")
@@ -56,7 +61,15 @@ import CryptoKit
     }
     private var documentRevision = 0
     private var cleaningLegacyMusic = false
-    func refresh() async {
+    func refresh(retryTransientFailures: Bool = false) async {
+        // A new foreground task can start before the cancelled request has unwound.
+        if retryTransientFailures {
+            let wasLoading = loading
+            while loading || saving {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+            if wasLoading && connected { return }
+        }
         guard !loading, !saving else { return }
         guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             connected = false
@@ -68,17 +81,45 @@ import CryptoKit
         connectionError = nil
         let revision = documentRevision
         loading = true; defer { loading = false }
-        do {
-            let result = try await api.request("/api/state")
-            guard requestedToken == token, requestedBaseURL == baseURL else { connected = false; return }
-            guard case .object(let docs) = result["documents"] else { throw ServiceError(message: "Invalid document response.") }
-            // A read started before a save must never replace the saved document.
-            guard revision == documentRevision, !saving else { return }
-            documents = docs.mapValues { $0["value"] }; connected = true
-            rememberProfile(documents["profile"] ?? .null)
-            WidgetSync.notes(document("notes"))
-        } catch { connectionError = error.localizedDescription; connected = false }
+        let client = api
+        let attempts = retryTransientFailures ? 3 : 1
+        for attempt in 0..<attempts {
+            do {
+                try Task.checkCancellation()
+                let result = try await loadState(client)
+                try Task.checkCancellation()
+                guard requestedToken == token, requestedBaseURL == baseURL else { return }
+                guard case .object(let docs) = result["documents"] else { throw ServiceError(message: "Invalid document response.") }
+                // Authentication succeeded even if a concurrent save makes this snapshot stale.
+                connected = true
+                // A read started before a save must never replace the saved document.
+                guard revision == documentRevision, !saving else { return }
+                documents = docs.mapValues { $0["value"] }
+                rememberProfile(documents["profile"] ?? .null)
+                WidgetSync.notes(document("notes"))
+                return
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError),
+                      (error as? URLError)?.code != .cancelled,
+                      requestedToken == token, requestedBaseURL == baseURL else { return }
+                if attempt + 1 < attempts && Self.isTemporaryConnectionFailure(error) {
+                    do { try await retryDelay() } catch { return }
+                    guard requestedToken == token, requestedBaseURL == baseURL else { return }
+                    continue
+                }
+                connectionError = error.localizedDescription; connected = false
+                return
+            }
+        }
     }
+    private static func isTemporaryConnectionFailure(_ error: Error) -> Bool {
+        if let error = error as? URLError {
+            return [.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+                    .dnsLookupFailed, .notConnectedToInternet].contains(error.code)
+        }
+        return [408, 429, 500, 502, 503, 504].contains((error as? ServiceError)?.statusCode ?? 0)
+    }
+
     private func isNetEase(_ value: JSONValue) -> Bool {
         value["id"].string.hasPrefix("netease-")
         || value["trackId"].string.hasPrefix("netease-")

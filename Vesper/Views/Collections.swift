@@ -513,3 +513,98 @@ private struct DateEditor: View {
         dismiss()
     }
 }
+
+struct JottingsView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var phase
+    @State private var entries: [JSONValue] = []
+    @State private var cursor = ""
+    @State private var loading = false
+    @State private var error = ""
+    @State private var adding = false
+    var body: some View {
+        Page(title: "Sketch", subtitle: "路过的念头，也可以停在这里。") {
+            Button { adding = true } label: { Label("写一点", systemImage: "plus") }
+            if entries.isEmpty && !loading && error.isEmpty { EmptyCard(title: "还没有 Sketch", message: "零散想法、短文、想象，不必是一篇日记，也不必写给谁。") }
+            ForEach(entries) { entry in
+                NavigationLink { JottingTextView(entry: entry) } label: {
+                    GlassCard { VStack(alignment: .leading, spacing: 12) {
+                        if !entry["title"].string.isEmpty { Text(entry["title"].string).font(.headline) }
+                        Text(entry["text"].string).font(.system(size: 17, design: .serif)).lineSpacing(5).lineLimit(6)
+                        HStack { Text(entry["author"].string); Spacer(); Text(AlbumPresentation.date(entry["createdAt"].string)?.formatted(date: .abbreviated, time: .shortened) ?? "") }.font(.caption).foregroundStyle(VesperTheme.muted)
+                    }.frame(maxWidth: .infinity, alignment: .leading) }
+                }.buttonStyle(.plain)
+            }
+            if loading { ProgressView() }
+            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red); Button("重试") { Task { await load(reset: true) } } }
+            if !cursor.isEmpty { Button("更早的 Sketch") { Task { await load(reset: false) } }.disabled(loading) }
+        }.task { await load(reset: true) }.refreshable { await load(reset: true) }
+        .onChange(of: phase) { _, value in if value == .active { Task { await load(reset: true) } } }
+        .sheet(isPresented: $adding, onDismiss: { Task { await load(reset: true) } }) { JottingEditor() }
+    }
+    private func load(reset: Bool) async {
+        guard !loading else { return }; loading = true; defer { loading = false }
+        do {
+            var query = URLComponents(); query.queryItems = [URLQueryItem(name: "limit", value: "30")]
+            if !reset && !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
+            let value = try await store.api.request("/api/jottings?" + (query.percentEncodedQuery ?? ""))
+            var seen = Set<String>(); entries = ((reset ? [] : entries) + value["jottings"].array).filter { seen.insert($0.id).inserted }
+            cursor = value["before"].string; error = ""
+        } catch { self.error = error.localizedDescription }
+    }
+}
+struct JottingTextView: View {
+    let entry: JSONValue
+    var body: some View {
+        Page(title: entry["title"].string.isEmpty ? "Sketch" : entry["title"].string) {
+            Text(entry["text"].string).font(.system(size: 19, design: .serif)).lineSpacing(8).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            Text(entry["author"].string + " · " + (AlbumPresentation.date(entry["createdAt"].string)?.formatted(date: .abbreviated, time: .shortened) ?? "")).font(.caption).foregroundStyle(VesperTheme.muted)
+            ShareLink(item: entry["text"].string)
+        }
+    }
+}
+struct JottingReceiptView: View {
+    let id: String
+    @EnvironmentObject private var store: AppStore
+    @State private var entry: JSONValue = .null
+    @State private var error = ""
+    var body: some View {
+        Group {
+            if entry != .null { JottingTextView(entry: entry) }
+            else if !error.isEmpty { Text(error).foregroundStyle(.secondary).padding() }
+            else { ProgressView() }
+        }.task {
+            do { entry = try await store.api.request("/api/jottings?id=" + id)["jotting"] }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+}
+private struct JottingEditor: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var text = ""
+    @State private var busy = false
+    @State private var error = ""
+    @State private var id = UUID().uuidString
+    var body: some View {
+        EditorSheet(title: "Sketch", busy: busy, save: save) {
+            FormField(label: "标题（可留空）", text: $title)
+            FormField(label: "写一点", text: $text, multiline: true)
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+        }
+    }
+    private func save() {
+        guard !busy else { return }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "先写一点文字吧。"; return }
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                let value = try await store.api.request("/api/jottings", method: "POST", body: .object(["id": .string(id), "title": .string(title), "text": .string(text)]))
+                guard value["jotting"].id == id else { throw ServiceError(message: "保存尚未确认，请重试。") }
+                dismiss()
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+}

@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import SwiftUI
 import UIKit
 @testable import Vesper
@@ -21,7 +22,217 @@ private final class StickerAssetProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class ChatHistoryPaginationProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var reads = 0
+    static var requestCount: Int { lock.lock(); defer { lock.unlock() }; return reads }
+    static func reset() { lock.lock(); reads = 0; lock.unlock() }
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "history-pagination.example"
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock(); Self.reads += 1; Self.lock.unlock()
+        let earlier = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "before" } == true
+        let message: JSONValue = .object([
+            "id": .string(earlier ? "older" : "latest"), "role": .string("user"),
+            "content": .string("Synthetic pagination fixture"),
+            "createdAt": .string(earlier ? "2026-09-01T00:00:00Z" : "2026-10-03T00:00:00Z")
+        ])
+        let page: JSONValue = .object([
+            "conversation": .object(["id": .string("pagination-room")]),
+            "messages": .array([message]), "hasMore": .bool(!earlier),
+            "before": .string(earlier ? "" : "older-cursor")
+        ])
+        let data = try! JSONEncoder().encode(page)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 final class ContractTests: XCTestCase {
+    private let sleepFixtureNow = Date(timeIntervalSince1970: 1_800_000_000)
+    private func sleepSample(_ start: Double, _ end: Double, _ stage: SleepDetails.Stage,
+                             source: String = "watch") -> SleepDetails.Sample {
+        SleepDetails.Sample(start: sleepFixtureNow.addingTimeInterval(start * 60),
+                            end: sleepFixtureNow.addingTimeInterval(end * 60), stage: stage,
+                            sourceID: source, sourceName: source)
+    }
+
+    func testSleepDetailsDeduplicateSamplesAndIgnoreOverlappingInBedAndUnspecified() {
+        let records = [sleepSample(-600, -100, .inBed), sleepSample(-580, -120, .unspecified),
+                       sleepSample(-580, -400, .core), sleepSample(-580, -400, .core),
+                       sleepSample(-400, -350, .deep), sleepSample(-350, -340, .awake),
+                       sleepSample(-340, -240, .rem), sleepSample(-240, -120, .core)]
+        // Specific stages win over the overlapping legacy unspecified record.
+        let details = SleepDetails.summarize(records, now: sleepFixtureNow)
+        XCTAssertEqual(details["totalSleepMinutes"].number, 450)
+        XCTAssertEqual(details["stageMinutes"]["core"].number, 300)
+        XCTAssertEqual(details["stageMinutes"]["deep"].number, 50)
+        XCTAssertEqual(details["stageMinutes"]["rem"].number, 100)
+        XCTAssertEqual(details["stageMinutes"]["unspecified"].number, 0)
+        XCTAssertEqual(details["stageMinutes"]["awake"].number, 10)
+        XCTAssertEqual(details["awakeIntervals"].array.count, 1)
+    }
+
+    func testSleepDetailsKeepNightWakingsAndDoNotGuessUnrecordedGaps() {
+        let records = [sleepSample(-500, -300, .core), sleepSample(-300, -290, .awake),
+                       sleepSample(-290, -285, .awake), sleepSample(-285, -200, .rem),
+                       sleepSample(-180, -100, .deep), sleepSample(-100, -90, .awake)]
+        let details = SleepDetails.summarize(records, now: sleepFixtureNow, timeZone: TimeZone(identifier: "Asia/Shanghai")!)
+        XCTAssertEqual(details["totalSleepMinutes"].number, 365)
+        XCTAssertEqual(details["stageMinutes"]["awake"].number, 15)
+        XCTAssertEqual(details["recordedAwakeIntervalCount"].number, 1)
+        XCTAssertEqual(details["awakeIntervals"].array.count, 1)
+        XCTAssertEqual(details["timeZone"].string, "Asia/Shanghai")
+        XCTAssertEqual(details["lastRecordedSleepEnd"].string, ISO8601DateFormatter().string(from: sleepFixtureNow.addingTimeInterval(-100 * 60)))
+        XCTAssertEqual(details["stageMinutes"]["unspecified"], .null)
+    }
+
+    func testSleepDetailsPreferStageSourceWithoutAddingOtherWriters() {
+        let records = [sleepSample(-500, -100, .unspecified, source: "phone"),
+                       sleepSample(-480, -300, .core), sleepSample(-300, -120, .rem)]
+        let details = SleepDetails.summarize(records, now: sleepFixtureNow)
+        XCTAssertEqual(details["source"].string, "watch")
+        XCTAssertEqual(details["totalSleepMinutes"].number, 360)
+        XCTAssertEqual(details["stageMinutes"]["deep"], .null)
+    }
+
+    func testSleepDetailsSelectLatestNapRatherThanAnOlderDetailedNight() {
+        let records = [sleepSample(-1200, -800, .core), sleepSample(-100, -60, .unspecified, source: "phone")]
+        let details = SleepDetails.summarize(records, now: sleepFixtureNow)
+        XCTAssertEqual(details["source"].string, "phone")
+        XCTAssertEqual(details["totalSleepMinutes"].number, 40)
+        XCTAssertEqual(details["stageMinutes"]["rem"], .null)
+        XCTAssertEqual(details["stageMinutes"]["awake"], .null)
+        XCTAssertEqual(details["recordedAwakeIntervalCount"], .null)
+    }
+
+    func testSleepDetailsConflictsRemainUnspecifiedAndLookbackIsExplicit() {
+        let records = [sleepSample(-4500, -4100, .core), sleepSample(-4200, -4000, .deep),
+                       sleepSample(5, 10, .rem)]
+        let details = SleepDetails.summarize(records, now: sleepFixtureNow)
+        XCTAssertTrue(details["windowClipped"].bool)
+        XCTAssertEqual(details["totalSleepMinutes"].number, 320)
+        XCTAssertEqual(details["conflictingStageMinutes"].number, 100)
+        XCTAssertEqual(details["stageMinutes"]["unspecified"].number, 100)
+        XCTAssertEqual(details["stageMinutes"]["rem"], .null)
+        XCTAssertEqual(SleepDetails.summarize([sleepSample(-100, -50, .inBed)], now: sleepFixtureNow)["status"].string, "no_readable_data")
+    }
+
+    @MainActor func testSleepDetailsAreDiscoverableAndAbsentFromUnrequestedSnapshot() {
+        XCTAssertTrue(HealthReader.catalog.array.contains { $0["id"].string == "sleep_details" })
+        XCTAssertEqual(HealthReader().snapshot["sleepDetails"], .null)
+        XCTAssertTrue(NativeDeviceTools.healthTool["description"].string.contains("['sleep_details']"))
+        XCTAssertEqual(HealthReader.resolvedMetricIDs(for: ["sleep"]), ["sleep"])
+        XCTAssertEqual(HealthReader.resolvedMetricIDs(for: ["sleep_details"]), ["sleep_details"])
+        XCTAssertFalse(HealthReader.resolvedMetricIDs(for: ["heart_rate", "steps", "sleep", "wrist_temperature"]).contains("sleep_details"))
+    }
+
+    func testAlbumRenameKeepsPhotosAndUnrelatedProfileFields() throws {
+        let album: JSONValue = .object(["id": .string("album"), "name": .string("Old name"),
+                                       "photoIDs": .array([.string("photo"), .string("chat")])])
+        let other: JSONValue = .object(["id": .string("other"), "name": .string("Keep me"), "photoIDs": .array([.string("photo")])])
+        let profile: JSONValue = .object(["photoCollections": .array([album, other]),
+                                         "agentAvatar": .string("keep-avatar"), "mainConversationId": .string("keep-chat")])
+        let renamed = try AlbumPresentation.renameCollection(profile, id: "album", name: "Our moments")
+        XCTAssertEqual(renamed["photoCollections"].array[0]["name"].string, "Our moments")
+        XCTAssertEqual(renamed["photoCollections"].array[0]["photoIDs"], album["photoIDs"])
+        XCTAssertEqual(renamed["photoCollections"].array[1], other)
+        XCTAssertEqual(renamed["agentAvatar"], profile["agentAvatar"])
+        XCTAssertEqual(renamed["mainConversationId"], profile["mainConversationId"])
+        XCTAssertThrowsError(try AlbumPresentation.renameCollection(profile, id: "missing", name: "New"))
+    }
+
+    func testAlbumUsesUploadDateAndKeepsCollectionMembershipIndependentOfType() throws {
+        let screenshot: JSONValue = .object(["id": .string("chat"), "name": .string("chat-synthetic.jpg"),
+            "sourceMessageId": .string("original"), "createdAt": .string("2026-10-03T12:00:00Z"),
+            "sourceCreatedAt": .string("2026-09-01T00:00:00Z"), "takenAt": .string("2020-01-01T00:00:00Z"),
+            "savedAt": .string("2026-10-03T14:00:00Z")])
+        let photo: JSONValue = .object(["id": .string("photo"), "createdAt": .string("2026-10-02T12:00:00.000Z"),
+            "savedAt": .string("2026-10-03T15:00:00Z")])
+        XCTAssertTrue(AlbumPresentation.isChatScreenshot(screenshot))
+        XCTAssertFalse(AlbumPresentation.isChatScreenshot(photo))
+        XCTAssertEqual(AlbumPresentation.eventDate(screenshot), AlbumPresentation.date("2026-10-03T12:00:00Z"))
+        XCTAssertEqual(AlbumPresentation.sorted([photo, screenshot]).map(\.id), ["chat", "photo"])
+        XCTAssertEqual(AlbumPresentation.sorted([photo, screenshot], recent: true).map(\.id), ["photo", "chat"])
+        XCTAssertNil(AlbumPresentation.eventDate(.object(["savedAt": .string("2026-10-03T12:00:00Z")])))
+        let album: JSONValue = .object(["id": .string("album"), "name": .string("Little moments"), "photoIDs": .array([])])
+        var profile: JSONValue = .object(["agentAvatar": .string("keep-avatar"), "mainConversationId": .string("keep-chat"), "photoCollections": .array([album])])
+        profile = AlbumPresentation.setMembership(profile, collectionID: "album", photoID: "chat", included: true)
+        profile = AlbumPresentation.setMembership(profile, collectionID: "album", photoID: "chat", included: true)
+        XCTAssertEqual(profile["photoCollections"].array[0]["photoIDs"].array, [.string("chat")])
+        XCTAssertTrue(AlbumPresentation.inCollection(screenshot, collection: profile["photoCollections"].array[0]))
+        XCTAssertEqual(profile["agentAvatar"].string, "keep-avatar")
+        XCTAssertEqual(profile["mainConversationId"].string, "keep-chat")
+        profile = AlbumPresentation.setMembership(profile, collectionID: "album", photoID: "chat", included: false)
+        XCTAssertTrue(profile["photoCollections"].array[0]["photoIDs"].array.isEmpty)
+    }
+
+    @MainActor func testAlbumGridFitsThreeAndFiveColumnsAndViewerRenders() async throws {
+        let photos: [JSONValue] = (0..<15).map { index in .object([
+            "id": .string("fixture-\(index)"), "createdAt": .string("2026-10-03T12:00:00Z"),
+            "name": .string("chat-fixture.jpg"), "sourceMessageId": .string("fixture"),
+            "caption": .string("A synthetic little moment"), "url": .string("")
+        ]) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        for columns in [3, 5] {
+            let root = VStack(alignment: .leading, spacing: 12) {
+                Text("相册 · 每行 \(columns) 张").font(.title)
+                Text("2026年10月3日").font(.headline)
+                AlbumPhotoGrid(photos: photos, columns: columns, open: { _ in })
+                Spacer()
+            }.padding(12).background(Color.white).foregroundStyle(Color.black)
+            let host = UIHostingController(rootView: root)
+            window.rootViewController = host; window.makeKeyAndVisible()
+            host.view.frame = window.bounds
+            try await Task.sleep(for: .milliseconds(200)); host.view.layoutIfNeeded()
+            XCTAssertEqual(host.view.bounds.width, 393)
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image); attachment.name = "Album grid \(columns) columns"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let viewer = AlbumPhotoViewer(photos: photos, initialID: photos[4].id, membership: { _, _, _ in }).environmentObject(AppStore())
+        let host = UIHostingController(rootView: viewer)
+        window.rootViewController = host; host.view.frame = window.bounds
+        try await Task.sleep(for: .milliseconds(200)); host.view.layoutIfNeeded()
+        XCTAssertNotNil(host.view)
+    }
+
+    @MainActor func testOpeningChatDoesNotAutomaticallyPrependOlderPages() async throws {
+        ChatHistoryPaginationProtocol.reset()
+        URLProtocol.registerClass(ChatHistoryPaginationProtocol.self)
+        defer { URLProtocol.unregisterClass(ChatHistoryPaginationProtocol.self) }
+        let chat = ChatSession()
+        chat.configureConnection(api: APIClient(baseURL: "https://history-pagination.example",
+                                                historyURL: "https://history-pagination.example", token: "fixture"),
+                                 endpoint: "wss://invalid.example", threadID: "")
+        let opened = await chat.open(.object(["id": .string("pagination-room")]))
+        XCTAssertTrue(opened, chat.error ?? "Opening failed")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 1)
+        XCTAssertEqual(chat.messages.map(\.id), ["latest"])
+        XCTAssertTrue(chat.hasOlderMessages)
+        XCTAssertNil(chat.jumpMessageID)
+
+        await chat.loadOlder()
+        XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 2)
+        XCTAssertEqual(chat.messages.map(\.id), ["older", "latest"])
+        XCTAssertFalse(chat.hasOlderMessages)
+        XCTAssertNil(chat.jumpMessageID)
+        chat.disconnect()
+    }
+
     func testScreenshotDeliveryPreservesOriginalSource() {
         let result: JSONValue = .object(["attachments": .array([.object(["key": .string("screenshot.jpg"), "type": .string("image/jpeg"), "sourceConversationId": .string("original-chat"), "sourceMessageId": .string("original-message")])])])
         let delivered = ChatFileDelivery.message(result, conversationID: "current-chat", threadID: "t", turnID: "turn", callID: "capture", createdAt: "now")
@@ -242,7 +453,18 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(ChatPresentation.displayRows([before, after, wake]).map(\.id), ["before", "wake", "after"])
         XCTAssertEqual(ChatTranscript.merge([before, after], incoming: [wake], tombstones: []).map(\.id), ["before", "wake", "after"])
         let legacy: JSONValue = .object(["id": .string("wake:auto-1790597100:final"), "role": .string("agent"), "createdAt": .string("2026-09-28T12:20:00Z"), "metadata": .object(["wakeRunId": .string("auto-1790597100"), "source": .string("automation")])])
-        XCTAssertEqual(ChatPresentation.displayRows([before, after, legacy]).map(\.id), ["before", "wake:auto-1790597100:final", "after"])
+        XCTAssertEqual(ChatPresentation.displayRows([before, after, legacy]).map(\.id), ["before", "after", "wake:auto-1790597100:final"])
+    }
+    func testDelayedWakeRemainsLatestAcrossPagingAndThreadResume() {
+        let previous: JSONValue = .object(["id": .string("previous"), "role": .string("agent"), "createdAt": .string("2026-09-28T23:48:46Z")])
+        let wake: JSONValue = .object(["id": .string("wake:auto-1790626323:final"), "role": .string("agent"), "status": .string("delivered"), "createdAt": .string("2026-09-29T01:51:59.018971Z"), "metadata": .object(["source": .string("automation"), "wakeRunId": .string("auto-1790626323"), "blockType": .string("agentMessage"), "startedAt": .number(1790646692), "showTurnStatus": .bool(false)])])
+        let earlier: JSONValue = .object(["id": .string("earlier"), "role": .string("user"), "createdAt": .string("2026-09-28T20:00:00Z")])
+        let paged = ChatTranscript.merge([previous, wake], incoming: [earlier], tombstones: [])
+        let resumed = ChatRecovery.merge(paged, snapshot: .object(["thread": .object(["id": .string("main-thread"), "turns": .array([])])]), conversationID: "room", tombstones: [])
+        XCTAssertEqual(ChatPresentation.displayRows(resumed).map(\.id), ["earlier", "previous", wake.id])
+        XCTAssertEqual(resumed.last, wake)
+        var undated = wake; undated["createdAt"] = .null; undated["metadata"]["startedAt"] = .null
+        XCTAssertEqual(ChatTranscript.ordered([previous, undated, earlier]).map(\.id), ["earlier", wake.id, "previous"], "A job ID alone must not invent a message date")
     }
     func testMixedToolCatalogUsesOneCanonicalFormat() throws {
         let legacy: JSONValue = .object(["name": .string("native_health"), "description": .string("Read"), "inputSchema": .object(["type": .string("object")])])
@@ -524,6 +746,53 @@ final class ContractTests: XCTestCase {
         while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
     }
+    func testStreamingBurstPublishesInBatchesWithoutLosingText() async throws {
+        let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
+        try await chat.connect()
+        var publications = 0
+        let observation = chat.$messages.dropFirst().sink { _ in publications += 1 }
+        defer { observation.cancel() }
+        for _ in 0..<100 {
+            try socket.emit(.object(["method": .string("item/agentMessage/delta"), "params": .object(["itemId": .string("reply"), "delta": .string("字")])]))
+        }
+        await eventually { chat.messages.first?["content"].string.count == 100 }
+        XCTAssertLessThan(publications, 10, "Token bursts must not publish one full transcript per token")
+        XCTAssertEqual(chat.messages.first?["content"].string, String(repeating: "字", count: 100))
+    }
+
+    func testCompletionFlushesPendingTailBeforeFinalReceipt() async throws {
+        let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
+        // Calls use the same stream handler but skip HTTP history persistence.
+        chat.voiceCallContext = "stream test"
+        try await chat.connect()
+        try socket.emit(.object(["method": .string("item/reasoning/summaryTextDelta"), "params": .object(["delta": .string("summary")])]))
+        try socket.emit(.object(["method": .string("item/agentMessage/delta"), "params": .object(["itemId": .string("reply"), "delta": .string("partial")])]))
+        try socket.emit(.object(["method": .string("item/completed"), "params": .object(["item": .object(["id": .string("reply"), "type": .string("agentMessage"), "text": .string("final reply")])])]))
+        await eventually { chat.messages.first?["status"].string == "delivered" }
+        XCTAssertEqual(chat.messages.first?["content"].string, "final reply")
+        XCTAssertEqual(chat.messages.first?["metadata"]["thoughtSummary"].string, "summary")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(chat.messages.count, 1)
+        XCTAssertEqual(chat.messages.first?["content"].string, "final reply")
+    }
+
+    func testProtocolBoundaryFlushesTextAndDisconnectCannotLeakToNextChat() async throws {
+        let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
+        try await chat.connect()
+        try socket.emit(.object(["method": .string("item/agentMessage/delta"), "params": .object(["itemId": .string("old-reply"), "delta": .string("tail")])]))
+        try socket.emit(.object(["method": .string("item/reasoning/summaryTextDelta"), "params": .object(["delta": .string("thought")])]))
+        // A non-delta event must flush synchronously, ahead of completion/persistence.
+        try socket.emit(.object(["method": .string("thread/tokenUsage/updated"), "params": .object(["tokenUsage": .object(["total": .number(7)])])]))
+        await eventually { chat.contextUsage["total"].number == 7 }
+        XCTAssertEqual(chat.messages.first?["content"].string, "tail")
+        XCTAssertEqual(chat.thinkingSummary, "thought")
+        chat.disconnect()
+        chat.newConversation(id: "next-chat")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertTrue(chat.thinkingSummary.isEmpty)
+    }
+
     func testOfflineStateDoesNotSpinWithoutAnAttempt() async {
         let chat = session([RecoverySocket()]); defer { chat.disconnect() }
         chat.networkChanged(available: false)

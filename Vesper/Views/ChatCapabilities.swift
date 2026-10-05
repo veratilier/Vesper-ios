@@ -4,6 +4,7 @@ import Speech
 import AVFoundation
 import CoreLocation
 import UniformTypeIdentifiers
+import os
 
 struct ChatFile: Identifiable {
     let id = UUID()
@@ -35,7 +36,7 @@ struct ChatFile: Identifiable {
         do {
             let session = AVAudioSession.sharedInstance()
             if InAppCalls.shared.id == nil {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
             }
             // The system may deactivate the call's audio session while the app is away.
             // Reactivate it before creating a new recognition tap on return.
@@ -82,11 +83,19 @@ struct ChatFile: Identifiable {
         default: loading = false; error = "Allow location access in Settings."
         }
     }
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if loading && manager.authorizationStatus != .notDetermined { locate() }
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            if self.loading && self.manager.authorizationStatus != .notDetermined { self.locate() }
+        }
     }
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) { coordinate = locations.last?.coordinate; loading = false }
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) { self.error = error.localizedDescription; loading = false }
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        let coordinate = locations.last?.coordinate
+        Task { @MainActor in self.coordinate = coordinate; self.loading = false }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let detail = error.localizedDescription
+        Task { @MainActor in self.error = detail; self.loading = false }
+    }
 }
 
 struct ChatCameraPicker: UIViewControllerRepresentable {
@@ -104,71 +113,99 @@ struct ChatCameraPicker: UIViewControllerRepresentable {
     }
 }
 
-final class CallCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    let session = AVCaptureSession()
-    @Published private(set) var position: AVCaptureDevice.Position = .front
+// Checked Sendable: all mutable capture state is owned by the lock. Session
+// configuration, start/stop and delegate delivery also share one serial queue.
+final class CallCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, Sendable {
+    private struct State {
+        let session = AVCaptureSession()
+        let context = CIContext()
+        var position: AVCaptureDevice.Position = .front
+        var frame: Data?
+        var frameAt = Date.distantPast
+        var configured = false
+        var lastFrame = Date.distantPast
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
     private let queue = DispatchQueue(label: "vesper.call.camera")
-    private let lock = NSLock()
-    private var frame: Data?
-    private var frameAt = Date.distantPast
-    private var configured = false
-    private var lastFrame = Date.distantPast
-    private let context = CIContext()
+
+    @MainActor func attachPreview(_ layer: AVCaptureVideoPreviewLayer) {
+        // Synchronous access: the main-actor layer never escapes this closure.
+        state.withLockUnchecked { layer.session = $0.session }
+    }
     func start() async throws {
         guard await AVCaptureDevice.requestAccess(for: .video) else { throw ServiceError(message: "Allow camera access in Settings.") }
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            queue.async {
-                do {
-                    if !self.configured {
-                        self.session.beginConfiguration(); defer { self.session.commitConfiguration() }
-                        self.session.sessionPreset = .medium
-                        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else { throw ServiceError(message: "Camera unavailable.") }
-                        let input = try AVCaptureDeviceInput(device: device)
-                        guard self.session.canAddInput(input) else { throw ServiceError(message: "Camera unavailable.") }
-                        self.session.addInput(input)
-                        let output = AVCaptureVideoDataOutput(); output.alwaysDiscardsLateVideoFrames = true
-                        output.setSampleBufferDelegate(self, queue: self.queue)
-                        guard self.session.canAddOutput(output) else { throw ServiceError(message: "Camera output unavailable.") }
-                        self.session.addOutput(output)
-                        if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
-                        self.configured = true
-                    }
-                    self.session.startRunning(); c.resume()
-                } catch { c.resume(throwing: error) }
-            }
-        }
-    }
-    @MainActor func flip() async throws {
-        let target: AVCaptureDevice.Position = position == .front ? .back : .front
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
-                guard self.configured, self.session.isRunning,
-                      let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: target),
-                      let previous = self.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first else {
-                    continuation.resume(throwing: ServiceError(message: "Camera unavailable.")); return
-                }
                 do {
-                    let replacement = try AVCaptureDeviceInput(device: device)
-                    self.session.beginConfiguration()
-                    self.session.removeInput(previous)
-                    guard self.session.canAddInput(replacement) else {
-                        self.session.addInput(previous)
-                        self.session.commitConfiguration()
-                        throw ServiceError(message: "Could not switch cameras.")
+                    try self.state.withLock { state in
+                        if !state.configured {
+                            state.session.beginConfiguration()
+                            do {
+                                defer { state.session.commitConfiguration() }
+                                state.session.sessionPreset = .medium
+                                guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else { throw ServiceError(message: "Camera unavailable.") }
+                                let input = try AVCaptureDeviceInput(device: device)
+                                guard state.session.canAddInput(input) else { throw ServiceError(message: "Camera unavailable.") }
+                                state.session.addInput(input)
+                                let output = AVCaptureVideoDataOutput()
+                                output.alwaysDiscardsLateVideoFrames = true
+                                guard state.session.canAddOutput(output) else {
+                                    state.session.removeInput(input)
+                                    throw ServiceError(message: "Camera output unavailable.")
+                                }
+                                output.setSampleBufferDelegate(self, queue: self.queue)
+                                state.session.addOutput(output)
+                                if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
+                                state.configured = true
+                            }
+                        }
+                        state.session.startRunning()
                     }
-                    self.session.addInput(replacement)
-                    self.lock.lock(); self.frame = nil; self.frameAt = .distantPast; self.lock.unlock()
-                    self.session.commitConfiguration()
                     continuation.resume()
                 } catch { continuation.resume(throwing: error) }
             }
         }
-        position = target
     }
-    func stop() { queue.async { self.session.stopRunning(); self.lock.lock(); self.frame = nil; self.lock.unlock() } }
+    func stop() {
+        queue.async {
+            self.state.withLock { state in
+                state.session.stopRunning()
+                state.frame = nil; state.frameAt = .distantPast; state.lastFrame = .distantPast
+            }
+        }
+    }
+    var position: AVCaptureDevice.Position { state.withLock { $0.position } }
+    @MainActor func flip() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do {
+                    try self.state.withLock { state in
+                        let target: AVCaptureDevice.Position = state.position == .front ? .back : .front
+                        guard state.configured, state.session.isRunning,
+                              let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: target),
+                              let previous = state.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first else {
+                            throw ServiceError(message: "Camera unavailable.")
+                        }
+                        let replacement = try AVCaptureDeviceInput(device: device)
+                        state.session.beginConfiguration()
+                        defer { state.session.commitConfiguration() }
+                        state.session.removeInput(previous)
+                        guard state.session.canAddInput(replacement) else {
+                            state.session.addInput(previous)
+                            throw ServiceError(message: "Could not switch cameras.")
+                        }
+                        state.session.addInput(replacement)
+                        state.position = target
+                        state.frame = nil; state.frameAt = .distantPast; state.lastFrame = .distantPast
+                    }
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+        objectWillChange.send()
+    }
     func snapshot() -> Data? {
-        lock.lock(); defer { lock.unlock() }
-        return Date().timeIntervalSince(frameAt) < 3 ? frame : nil
+        state.withLock { Date().timeIntervalSince($0.frameAt) < 3 ? $0.frame : nil }
     }
     func freshSnapshot() async throws -> Data {
         // The capture session can be running before its first frame arrives.
@@ -180,11 +217,16 @@ final class CallCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         throw ServiceError(message: "No camera frame available. Keep Vesper open and try sharing again.")
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard Date().timeIntervalSince(lastFrame) > 0.7, let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        lastFrame = Date(); let image = CIImage(cvPixelBuffer: pixel)
-        guard let cg = context.createCGImage(image, from: image.extent) else { return }
-        let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.65)
-        lock.lock(); frame = data; frameAt = Date(); lock.unlock()
+        // The delegate-owned buffer is consumed synchronously, never sent to another task.
+        state.withLockUnchecked { state in
+            guard state.session.isRunning, Date().timeIntervalSince(state.lastFrame) > 0.7,
+                  let pixel = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            state.lastFrame = Date()
+            let image = CIImage(cvPixelBuffer: pixel)
+            guard let cg = state.context.createCGImage(image, from: image.extent) else { return }
+            state.frame = UIImage(cgImage: cg).jpegData(compressionQuality: 0.65)
+            state.frameAt = Date()
+        }
     }
 }
 struct CallCameraPreview: UIViewRepresentable {
@@ -194,7 +236,7 @@ struct CallCameraPreview: UIViewRepresentable {
     }
     func makeUIView(context: Context) -> Preview {
         let view = Preview(); let layer = view.layer as! AVCaptureVideoPreviewLayer
-        layer.session = camera.session; layer.videoGravity = .resizeAspectFill; return view
+        camera.attachPreview(layer); layer.videoGravity = .resizeAspectFill; return view
     }
     func updateUIView(_ view: Preview, context: Context) {}
 }
@@ -213,7 +255,7 @@ struct CallCameraPreview: UIViewRepresentable {
         stop(); error = nil; let id = UUID(); generation = id; loading = true
         do {
             if InAppCalls.shared.id == nil {
-                try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
             }
             try AVAudioSession.sharedInstance().setActive(true)
             let connection = VoiceConfiguration.normalized(connectionOverride ?? VoiceConfiguration.connection(store))

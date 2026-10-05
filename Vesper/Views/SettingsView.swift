@@ -10,7 +10,7 @@ struct SettingsView: View {
         Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
             NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
             NavigationLink { UsageView() } label: { settingsRow("Usage & balances", subtitle: "GPT, ElevenLabs and MiniMax", icon: "chart.bar") }
-            NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Health, calendar, reminders and alarms", icon: "hand.raised") }
+            NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Weather, health, calendar and reminders", icon: "hand.raised") }
             NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
             NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
             NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
@@ -27,7 +27,7 @@ struct DevicePermissionsView: View {
             NavigationLink { NotificationSettingsView() } label: { Label("Notifications", systemImage: "bell") }
             NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
             NavigationLink { SystemPlannerView() } label: { Label("Calendar & Reminders", systemImage: "calendar") }
-            NavigationLink { AlarmsView() } label: { Label("Alarms", systemImage: "alarm") }
+            NavigationLink { WeatherPermissionsView() } label: { Label("Weather", systemImage: "cloud.sun") }
         }.navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
             .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
     }
@@ -85,7 +85,7 @@ struct WakeView: View {
                 NavigationLink("Sleep time") { WakeSleepView() }
                 NavigationLink("Wake prompt") { WakePromptView() }.disabled(!supported)
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
-                NavigationLink("Recent activity") { activityPage }
+                NavigationLink("Workflow") { WakeWorkflowView() }
             }
             if !supported {
                 Section { Text("Refresh the service to check permission support. If unavailable, update the VPS wake service.").font(.caption) }
@@ -398,32 +398,97 @@ private struct WakeSaveButton: View {
         .padding(.bottom, 12)
     }
 }
-private struct WakeRunDetail: View {
-    let job: JSONValue
+enum WakeWorkflowPresentation {
+    static func status(_ value: String) -> String {
+        ["running": "进行中", "queued": "等待开始", "saved": "发送中", "success": "完成", "completed": "完成", "partial_failure": "部分未完成", "failure": "失败", "failed": "失败", "interrupted": "已中止", "cancelled": "已取消", "silent": "保持安静", "request_accepted": "请求已受理", "unknown": "尚未确认", "pending": "等待处理"][value] ?? value
+    }
+    static func time(_ value: Double) -> String {
+        value > 0 ? Date(timeIntervalSince1970: value).formatted(date: .abbreviated, time: .shortened) : ""
+    }
+}
+
+struct WakeWorkflowView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var phase
+    @State private var jobs: [JSONValue] = []
+    @State private var nextOffset: Int?
+    @State private var loading = false
+    @State private var error = ""
     var body: some View {
-        Page(title: "Run details", subtitle: job["status"].string) {
+        Page(title: "Workflow", subtitle: "Rowan 醒来后实际做过的事") {
+            if jobs.isEmpty && !loading && error.isEmpty { EmptyCard(title: "暂时没有记录", message: "下一次醒来后，真实活动和静默原因会留在这里。") }
+            ForEach(jobs) { job in
+                NavigationLink { WakeRunDetail(job: job) } label: {
+                    GlassCard { VStack(alignment: .leading, spacing: 10) {
+                        HStack { Text(job["title"].string.isEmpty ? "自唤醒" : job["title"].string).font(.headline); Spacer(); Image(systemName: "chevron.right").font(.caption) }
+                        Text(job["summary"].string).font(.subheadline).lineLimit(3)
+                        HStack { Text(WakeWorkflowPresentation.time(job["created"].number)); Spacer(); Text(WakeWorkflowPresentation.status(job["outcome"].string.isEmpty ? job["status"].string : job["outcome"].string)) }.font(.caption).foregroundStyle(VesperTheme.muted)
+                    } }
+                }.buttonStyle(.plain)
+            }
+            if loading { ProgressView() }
+            if !error.isEmpty { Text(error).foregroundStyle(.red).font(.caption); Button("重试") { Task { await load(reset: true) } } }
+            if nextOffset != nil { Button("更早的记录") { Task { await load(reset: false) } }.disabled(loading) }
+        }.task { await load(reset: true) }.refreshable { await load(reset: true) }
+        .onChange(of: phase) { _, value in if value == .active { Task { await load(reset: true) } } }
+    }
+    private func load(reset: Bool) async {
+        guard !loading else { return }; loading = true; defer { loading = false }
+        do {
+            let value = try await store.api.request("/wake?view=workflow&limit=20&offset=\(reset ? 0 : nextOffset ?? 0)", history: true)
+            var seen = Set<String>()
+            jobs = ((reset ? [] : jobs) + value["jobs"].array).filter { seen.insert($0.id).inserted }
+            if case .number(let number) = value["nextOffset"] { nextOffset = Int(number) } else { nextOffset = nil }
+            error = ""
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+struct WakeRunDetail: View {
+    let job: JSONValue
+    @EnvironmentObject private var store: AppStore
+    @State private var updated: JSONValue = .null
+    private var record: JSONValue { updated == .null ? job : updated }
+    var body: some View {
+        Page(title: "Workflow", subtitle: record["title"].string) {
             GlassCard { VStack(alignment: .leading, spacing: 10) {
-                Text(Date(timeIntervalSince1970: job["created"].number).formatted())
-                if job["finished"].number > 0 { Text("Finished " + Date(timeIntervalSince1970: job["finished"].number).formatted()) }
-                if !job["decision"].string.isEmpty { Text(job["decision"].string.replacingOccurrences(of: "_", with: " ")) }
-                Text("\(Int(job["tokens"].number)) tokens").font(.caption)
+                Text(WakeWorkflowPresentation.status(record["outcome"].string)).font(.headline)
+                Text(WakeWorkflowPresentation.time(record["created"].number)).font(.caption).foregroundStyle(VesperTheme.muted)
+                if record["finished"].number > 0 { Text("结束于 " + WakeWorkflowPresentation.time(record["finished"].number)).font(.caption).foregroundStyle(VesperTheme.muted) }
+                Text(record["summary"].string).textSelection(.enabled)
             }.frame(maxWidth: .infinity, alignment: .leading) }
-            ForEach(Array(job["calls"].array.enumerated()), id: \.offset) { index, call in
+            ForEach(Array(record["calls"].array.enumerated()), id: \.offset) { index, call in
                 GlassCard { VStack(alignment: .leading, spacing: 8) {
-                    Text("\(index + 1). " + call["name"].string).font(.headline)
-                    Text(call["status"].string).font(.subheadline)
-                    if call["started"].number > 0 { Text(Date(timeIntervalSince1970: call["started"].number).formatted()).font(.caption) }
-                    if call["finished"].number > 0 { Text("Finished " + Date(timeIntervalSince1970: call["finished"].number).formatted()).font(.caption) }
-                    Text(call["status"].string == "done" ? "Tool returned a result." : "This step did not confirm success.").font(.caption).foregroundStyle(VesperTheme.muted)
+                    Text("\(index + 1). " + (call["action"].string.isEmpty ? call["name"].string : call["action"].string)).font(.headline)
+                    Text(WakeWorkflowPresentation.status(call["completion"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
+                    Text(call["result"].string).font(.subheadline).textSelection(.enabled)
+                    if call["started"].number > 0 { Text(WakeWorkflowPresentation.time(call["started"].number)).font(.caption).foregroundStyle(VesperTheme.muted) }
+                    ForEach(call["references"].array) { reference in
+                        if reference["kind"].string == "jottings" { NavigationLink("查看 Sketch") { JottingReceiptView(id: reference.id) } }
+                        if reference["kind"].string == "bookmarks" { NavigationLink("查看书签") { BookmarksView() } }
+                    }
+                    DisclosureGroup("技术详情") { Text(call["name"].string).font(.caption).textSelection(.enabled); Text(call["status"].string).font(.caption) }
                 }.frame(maxWidth: .infinity, alignment: .leading) }
             }
-            if !job["notification"].string.isEmpty {
-                Text("Message").font(.headline)
-                Text(job["notification"].string).textSelection(.enabled)
-            }
+            GlassCard { VStack(alignment: .leading, spacing: 10) {
+                Text(record["notification"].string.isEmpty ? "保持安静" : "发给 Vera 的消息").font(.headline)
+                Text(record["notification"].string.isEmpty ? record["silentReason"].string : record["notification"].string).textSelection(.enabled)
+            }.frame(maxWidth: .infinity, alignment: .leading) }
+            DisclosureGroup("运行详情") { Text("\(Int(record["tokens"].number)) tokens").font(.caption); Text(record.id).font(.caption).textSelection(.enabled) }
+        }.task {
+            var components = URLComponents()
+            components.path = "/wake"
+            components.queryItems = [URLQueryItem(name: "view", value: "workflow"), URLQueryItem(name: "id", value: job.id)]
+            guard let path = components.string else { return }
+            repeat {
+                if let value = try? await store.api.request(path, history: true) { updated = value["job"] }
+                guard ["running", "queued", "saved"].contains(record["status"].string) else { return }
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            } while !Task.isCancelled
         }
     }
 }
+
 struct AgentSettingsView: View {
     @AppStorage("nativeInstructions") private var instructions = "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese. Use Vesper’s built-in tools for its data."
     var body: some View {

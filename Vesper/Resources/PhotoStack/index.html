@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http: data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'">
+<link rel="stylesheet" href="photo-stack.css">
+<style>
+html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;height:100%;-webkit-text-size-adjust:100%}
+#album{position:absolute;left:50%;top:14px;transform:translateX(-50%)} .pstack-card img{object-fit:cover}
+@media(prefers-reduced-motion:reduce){.pstack-card{transition:none!important}}
+</style></head><body>
+<div id="album" role="group" aria-label="Photos"></div>
+<script src="photo-stack.js"></script>
+<script>
+// Vesper adapter. The upstream PhotoStack class is loaded unchanged above.
+const normalFinish=PhotoStack.prototype._finish;
+window.setReducedMotion=function(enabled){
+ PhotoStack.prototype._finish=enabled?function(dir){
+  if(this._anim)cancelAnimationFrame(this._anim);this._anim=null;this._animDir=0;
+  this.cur=Math.max(0,Math.min(this.cards.length-1,this.cur+(dir<0?1:-1)));
+  this._apply();if(this.opt.onChange)this.opt.onChange(this.cur);
+ }:normalFinish;
+};
+function post(action,index){window.webkit.messageHandlers.photoStack.postMessage({action,index});}
+function updateAccessibility(index){
+ window.stack.cards.forEach((card,i)=>{card.setAttribute('aria-hidden',i===index?'false':'true');card.querySelector('img').alt='Photo '+(i+1)+' of '+window.stack.cards.length;});
+ document.getElementById('album').setAttribute('aria-label','Photo '+(index+1)+' of '+window.stack.cards.length);
+}
+window.setPhotos=function(urls,reduced){
+ if(window.stack)window.stack.destroy();window.setReducedMotion(reduced);
+ const width=Math.min(150,(window.innerWidth-24)/2.04);
+ window.stack=new PhotoStack('#album',urls,{width,height:width*4/3,counter:false,
+ onTap:index=>post('tap',index),onChange:index=>{updateAccessibility(index);post('change',index);}});
+ updateAccessibility(0);post('ready',0);
+};
+</script></body></html>

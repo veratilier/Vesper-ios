@@ -33,6 +33,25 @@ import EventKitUI
             }
         } else { reminders = [] }
     }
+    func calendarSnapshot() throws -> JSONValue {
+        try Self.calendarSnapshot(authorized: EKEventStore.authorizationStatus(for: .event) == .fullAccess, now: Date()) { start, end in
+            store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil))
+                .sorted { $0.startDate < $1.startDate }.map { event in
+                    .object(["title": .string(event.title ?? "Event"), "calendar": .string(event.calendar.title),
+                             "start": .string(ISO8601DateFormatter().string(from: event.startDate)),
+                             "end": .string(ISO8601DateFormatter().string(from: event.endDate)), "allDay": .bool(event.isAllDay)])
+                }
+        }
+    }
+    static func calendarSnapshot(authorized: Bool, now: Date, fetch: (Date, Date) -> [JSONValue]) throws -> JSONValue {
+        guard authorized else { throw ServiceError(message: "Calendar read access is unavailable. Allow Calendar access in Vesper Settings → Calendar & Reminders.") }
+        let start = Calendar.current.startOfDay(for: now)
+        let end = Calendar.current.date(byAdding: .day, value: 7, to: start)!
+        let events = fetch(start, end)
+        return .object(["source": .string("iPhone Calendar"), "readAt": .string(ISO8601DateFormatter().string(from: now)),
+                        "from": .string(ISO8601DateFormatter().string(from: start)), "until": .string(ISO8601DateFormatter().string(from: end)),
+                        "timeZone": .string(TimeZone.current.identifier), "events": .array(Array(events.prefix(100))), "hasMore": .bool(events.count > 100)])
+    }
     func create(title: String, reminder: Bool, date: Date, end: Date) async -> Bool {
         do {
             guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ServiceError(message: "Enter a title.") }
@@ -73,7 +92,7 @@ struct SystemPlannerView: View {
             Section("Permissions") {
                 Button("Allow Calendar access") { Task { await planner.authorize(reminders: false) } }
                 Button("Allow Reminders access") { Task { await planner.authorize(reminders: true) } }
-                Text("These are your iPhone calendars and reminder lists. Entries stay on your device and its configured accounts.").font(.caption)
+                Text("These are your iPhone calendars and reminder lists. When you ask Rowan to read your calendar, a seven-day event summary is sent to the chat service and becomes part of the conversation. Reminders are not shared by this tool.").font(.caption)
             }
             if let error = planner.error { Text(error).foregroundStyle(.red).font(.caption) }
             Section("Calendar · next 7 days") {

@@ -45,7 +45,7 @@ import Combine
         error = nil
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
             try session.setActive(true)
             id = UUID(); muted = false; audioReady = true
             refreshOutput()
@@ -58,7 +58,7 @@ import Combine
         do {
             let session = AVAudioSession.sharedInstance()
             // Remove defaultToSpeaker so switching off can restore the receiver/headset.
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
             try session.overrideOutputAudioPort(enabled ? .speaker : .none)
         } catch { self.error = "Could not change audio output: " + error.localizedDescription }
         refreshOutput()

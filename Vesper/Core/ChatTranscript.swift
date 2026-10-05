@@ -48,19 +48,17 @@ enum ChatTranscript {
         guard isWake(message) else { return created }
         // A wake reply may be inserted into history after the run finishes.
         // Prefer its recorded delivery/completion time over the insertion time.
-        for value in [wake["deliveredAt"], wake["completedAt"], wake["createdAt"],
-                      meta["deliveredAt"], meta["completedAt"], meta["sentAt"],
-                      wake["startedAt"], meta["startedAt"]] {
+        for value in [wake["deliveredAt"], wake["completedAt"],
+                      meta["deliveredAt"], meta["completedAt"], meta["sentAt"]] {
             if let time = parsedTime(value) { return time }
         }
-        // The wake runner's scheduled jobs use auto-<unix seconds> as their
-        // durable run ID. Older history lacks a separate run timestamp, so
-        // place those replies at the wake's scheduled time, not when a late
-        // run happened to finish and write its message to history.
-        let runID = meta["wakeRunId"].string
-        if runID.hasPrefix("auto-"), let seconds = Double(runID.dropFirst(5)),
-           let scheduled = parsedTime(.number(seconds)) { return scheduled }
-        return created
+        // auto-<seconds> identifies the planned job, not when its reply was
+        // sent. A delayed run must remain at its actual message timestamp.
+        if let created { return created }
+        for value in [wake["startedAt"], meta["startedAt"]] {
+            if let time = parsedTime(value) { return time }
+        }
+        return nil
     }
 
     static func isDeleted(_ message: JSONValue, tombstones: [JSONValue]) -> Bool {

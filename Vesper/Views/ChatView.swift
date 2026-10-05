@@ -122,7 +122,16 @@ struct ChatIssueSheet: View {
                                         .buttonStyle(.borderedProminent).tint(VesperTheme.ink)
                                         .foregroundStyle(palette == "black" ? Color.black : Color.white)
                                 }
-                                if issue.dismissible { Button("Dismiss") { dismiss(issue.id) }.buttonStyle(.plain) }
+                                if issue.dismissible {
+                                    Button { dismiss(issue.id) } label: {
+                                        Text("Dismiss").font(.body.weight(.medium))
+                                            .foregroundStyle(VesperTheme.ink)
+                                            .padding(.horizontal, 18).frame(minHeight: 44)
+                                            .background(VesperTheme.ink.opacity(0.08), in: Capsule())
+                                            .background(.thinMaterial, in: Capsule())
+                                            .overlay(Capsule().stroke(VesperTheme.ink.opacity(0.18), lineWidth: 1))
+                                    }.buttonStyle(.plain)
+                                }
                             }
                         }
                         if issue.id != issues.last?.id { Divider() }

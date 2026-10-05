@@ -6,10 +6,21 @@ import Security
 import EventKit
 import HealthKit
 
+// Opt in only on the requested settings surfaces; other pages keep their existing material.
+private struct SettingsGlassCard<Content: View>: View {
+    var padding: CGFloat = 18
+    var interactive = false
+    @ViewBuilder var content: Content
+    var body: some View {
+        content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 25), interactive: interactive)
+    }
+}
+
 struct SettingsView: View {
     var body: some View {
         Page(title: "Settings") {
-            VStack(spacing: 0) {
+            SettingsGlassCard(padding: 0, interactive: true) { VStack(spacing: 0) {
                 NavigationLink { ConnectionView() } label: { settingsRow("Connection", icon: "network") }
                 separator
                 NavigationLink { UsageView() } label: { settingsRow("Usage & balances", icon: "chart.bar") }
@@ -23,8 +34,8 @@ struct SettingsView: View {
                 NavigationLink { ToolsView() } label: { settingsRow("Tools", icon: "link") }
                 separator
                 NavigationLink { DataSettingsView() } label: { settingsRow("Data", icon: "archivebox") }
-            }.vesperGlass(in: RoundedRectangle(cornerRadius: 25)).buttonStyle(.plain)
-        }.buttonStyle(.plain)
+            } }.buttonStyle(.plain)
+        }.buttonStyle(.plain).background { Background() }.transparentNavigationTop()
     }
     private var separator: some View { Divider().padding(.leading, 62).padding(.trailing, 16) }
     private func settingsRow(_ title: String, icon: String) -> some View {
@@ -138,7 +149,7 @@ struct ConnectionView: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
         Page(title: "Connection", subtitle: "Use the same device token as your existing Vesper.") {
-            GlassCard { VStack(spacing: 16) {
+            SettingsGlassCard { VStack(spacing: 16) {
                 FormField(label: "API address", text: $store.baseURL)
                 FormField(label: "History address", text: $store.historyURL)
                 FormField(label: "Chat address", text: $store.socketURL)
@@ -148,7 +159,7 @@ struct ConnectionView: View {
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
-        }
+        }.background { Background() }.transparentNavigationTop()
     }
 }
 struct WakeView: View {
@@ -606,7 +617,7 @@ struct DataSettingsView: View {
     @State private var status = ""
     var body: some View {
         Page(title: "Data", subtitle: "Your data stays with your existing Vesper services.") {
-            GlassCard { VStack(alignment: .leading, spacing: 16) {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Text("Device credentials are stored in the iOS Keychain. This app does not copy web browser credentials automatically.").font(.subheadline)
                 Button("Prepare document export") {
                     do { let url = FileManager.default.temporaryDirectory.appendingPathComponent("Vesper-documents.json"); try JSONEncoder.pretty.encode(JSONValue.object(store.documents)).write(to: url, options: [.atomic, .completeFileProtection]); exportURL = url }
@@ -616,7 +627,7 @@ struct DataSettingsView: View {
                 Text("Export includes synced documents. Chat history, media files and server memory are not included.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
             }}
-        }
+        }.background { Background() }.transparentNavigationTop()
     }
 }
 
@@ -662,7 +673,7 @@ struct VoiceSettingsView: View {
     private var configuration: JSONValue { .object(["provider": .string(provider), "baseUrl": .string(baseURL.trimmingCharacters(in: .whitespacesAndNewlines)), "apiKey": .string(apiKey.trimmingCharacters(in: .whitespacesAndNewlines)), "voiceId": .string(voiceID.trimmingCharacters(in: .whitespacesAndNewlines)), "model": .string(model), "groupId": .string(groupID), "speed": .string(String(speed))]) }
     var body: some View {
         Page(title: "Voice", subtitle: "Rowan’s voice in audio and video calls.") {
-            GlassCard { VStack(alignment: .leading, spacing: 16) {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Picker("Provider", selection: Binding(get: { provider }, set: { value in provider = value; baseURL = value == "ElevenLabs" ? "https://api.elevenlabs.io" : "https://api.minimax.chat"; model = value == "ElevenLabs" ? "eleven_multilingual_v2" : "speech-2.6-hd"; voiceID = ""; apiKey = ""; groupID = "" })) { Text("ElevenLabs").tag("ElevenLabs"); Text("MiniMax").tag("MiniMax") }
                 FormField(label: "API address", text: $baseURL)
                 Text("API key").font(.caption)
@@ -677,7 +688,7 @@ struct VoiceSettingsView: View {
                 if !status.isEmpty { Text(status).font(.caption) }
                 if let error = preview.error { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
-        }.onAppear {
+        }.background { Background() }.transparentNavigationTop().onAppear {
             let saved = VoiceConfiguration.connection(store)
             if !saved["provider"].string.isEmpty { provider = saved["provider"].string }
             if !saved["baseUrl"].string.isEmpty { baseURL = saved["baseUrl"].string }
@@ -705,12 +716,12 @@ struct ToolsView: View {
     @State private var editing: JSONValue?
     var body: some View {
         Page(title: "Tools", subtitle: "Manage the tools available to Vesper.") {
-            NavigationLink { VesperConnectorView() } label: { GlassCard { Label("Connect Rowan to Vesper", systemImage: "link.badge.plus").font(.headline) } }.buttonStyle(.plain)
+            NavigationLink { VesperConnectorView() } label: { SettingsGlassCard { Label("Connect Rowan to Vesper", systemImage: "link.badge.plus").font(.headline) } }.buttonStyle(.plain)
             Button { editing = .object(["id": .string(UUID().uuidString), "enabled": .bool(true), "authMode": .string("none")]) } label: { Label("Add MCP server", systemImage: "plus").frame(minHeight: 44) }
             if !status.isEmpty { Text(status).font(.caption) }
             ForEach(items) { item in
                 Button { editing = item } label: {
-                    GlassCard { VStack(alignment: .leading, spacing: 8) {
+                    SettingsGlassCard { VStack(alignment: .leading, spacing: 8) {
                         HStack { Text(item["name"].string).font(.headline); Spacer(); Image(systemName: "pencil") }
                         Text(item["url"].string).font(.caption).lineLimit(2)
                         Text("\(item["enabled"].bool ? "Enabled" : "Disabled") · \(item["tools"].array.count) tools · \(item["authMode"].string)").font(.caption).foregroundStyle(VesperTheme.muted)
@@ -718,7 +729,8 @@ struct ToolsView: View {
                 }.buttonStyle(.plain)
             }
             if items.isEmpty { Text("Add a server to make its tools available in new chats.").font(.caption) }
-        }.task { await load() }.refreshable { await load() }
+        }.background { Background() }.transparentNavigationTop()
+            .task { await load() }.refreshable { await load() }
             .sheet(item: $editing, onDismiss: { Task { await load() } }) { item in McpEditor(item: item, existing: items.contains { $0.id == item.id }) }
     }
     private func load() async {
@@ -890,7 +902,7 @@ private struct VesperConnectorView: View {
     private let endpoint = "https://mcp.vesper.r-vera.com/mcp"
     var body: some View {
         Page(title: "Vesper MCP", subtitle: "Let Rowan access your Vesper through a connector.") {
-            GlassCard { VStack(alignment: .leading, spacing: 16) {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Text("MCP URL").font(.caption)
                 Text(endpoint).font(.subheadline).textSelection(.enabled)
                 Button("Copy MCP URL") { UIPasteboard.general.string = endpoint; status = "URL copied" }
@@ -901,7 +913,8 @@ private struct VesperConnectorView: View {
                 Text("Use this URL and Bearer token when adding Vesper to ChatGPT. This token is separate from your device pairing token.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
             } }
-        }.confirmationDialog("Replace Vesper’s MCP access token? Existing connectors using the old token will need updating.", isPresented: $confirming, titleVisibility: .visible) {
+        }.background { Background() }.transparentNavigationTop()
+            .confirmationDialog("Replace Vesper’s MCP access token? Existing connectors using the old token will need updating.", isPresented: $confirming, titleVisibility: .visible) {
             Button("Set token") { Task { await setup() } }
         }
     }

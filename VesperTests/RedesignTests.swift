@@ -56,14 +56,19 @@ private struct SurfacePalettePreview: View {
     @AppStorage("vesperPalette") private var paletteName = "white"
     var body: some View {
         NavigationStack {
-            ZStack {
+            if page == "Connection" { ConnectionView() }
+            else if page == "Voice" { VoiceSettingsView() }
+            else if page == "Tools" { ToolsView() }
+            else if page == "Data" { DataSettingsView() }
+            else if page == "Settings" { SettingsView() }
+            else { ZStack {
                 Background()
                 if page == "MyMusic" { MusicLibraryView(catalog: catalog, preview: true) }
                 else if page == "Contacts" { NativeChatHome() }
                 else if page == "Notes" { CollectionView(kind: .notes) }
                 else if page == "Alarms" { AlarmsView() }
                 else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
-            }
+            } }
         }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
             .preferredColorScheme(paletteName == "black" ? .dark : .light)
     }
@@ -73,7 +78,9 @@ private final class DesktopContactProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "desktop-preview.example" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let body = #"{"conversations":[{"id":"main","title":"Rowan","preview":"今天的小事，也可以慢慢说。"},{"id":"reading","title":"一起读书","preview":"留在这里的几页书。"}]}"#
+        let body = request.url?.path == "/api/mcp/connections"
+            ? #"{"connections":[{"id":"preview-mcp","name":"Vesper","url":"https://desktop-preview.example/mcp","enabled":true,"authMode":"none","tools":[]}]}"#
+            : #"{"conversations":[{"id":"main","title":"Rowan","preview":"今天的小事，也可以慢慢说。"},{"id":"reading","title":"一起读书","preview":"留在这里的几页书。"}]}"#
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
             headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
@@ -88,7 +95,7 @@ private final class DesktopContactProtocol: URLProtocol {
         defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
         URLProtocol.registerClass(DesktopContactProtocol.self)
         defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
-        let store = AppStore(); store.token = ""; store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example"
+        let store = AppStore(); store.token = ""; store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example"; store.socketURL = "wss://desktop-preview.example"
         let chat = ChatSession(); chat.configure(store)
         store.documents["profile"] = .object(["agentName": .string("Rowan")])
         store.documents["notes"] = .array([.object(["id": .string("glass-note"), "text": .string("今天的小事，也可以慢慢说。"), "kind": .string("agent")])])
@@ -99,8 +106,8 @@ private final class DesktopContactProtocol: URLProtocol {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         for palette in ["white", "blue", "black"] {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
-            for page in ["MyMusic", "Contacts", "Notes", "Panels", "Alarms"] {
-                store.token = page == "Contacts" ? "preview-contact-token" : ""
+            for page in ["MyMusic", "Contacts", "Notes", "Panels", "Alarms", "Connection", "Voice", "Tools", "Data", "Settings"] {
+                store.token = ["Contacts", "Tools"].contains(page) ? "preview-contact-token" : ""
                 store.error = nil; chat.error = nil
                 if page == "Contacts" { chat.configure(store) }
                 let content = SurfacePalettePreview(page: page, catalog: catalog).environmentObject(store).environmentObject(chat).environmentObject(player)

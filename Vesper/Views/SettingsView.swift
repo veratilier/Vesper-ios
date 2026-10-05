@@ -916,34 +916,41 @@ struct NotificationSettingsView: View {
     @State private var loaded = false
     @State private var busy = false
     @State private var error = ""
-    private var statusText: String {
-        guard loaded else { return "Checking permission…" }
-        switch authorization {
-        case .notDetermined: return "Not requested"
-        case .denied: return "Notifications are off"
-        case .authorized: return "Notifications are allowed"
-        case .provisional: return "Quiet notifications are allowed"
-        case .ephemeral: return "Temporary permission"
-        @unknown default: return "Unknown permission status"
-        }
-    }
     var body: some View {
         PermissionPage(title: "Notifications") {
-            PermissionPanel { VStack(alignment: .leading, spacing: 18) {
-                Text(statusText).font(.headline)
-                Text("Allows date reminders and opening reminders for letters synced to this phone, even when the app is closed. Open Vesper to sync newly received letters. Remote push for unsynced letters and new chat replies is not connected yet.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+            PermissionPanel {
+                HStack {
+                    Label("Notification access", systemImage: "bell.fill").font(.headline)
+                    Spacer()
+                    Text(accessStatus).font(.caption).foregroundStyle(VesperTheme.muted)
+                }
+                Text("Receive reminders for dates and letters synced to this iPhone.").foregroundStyle(VesperTheme.muted)
                 if loaded && authorization == .notDetermined {
                     Button { Task { await requestPermission() } } label: {
                         Text(busy ? "Requesting…" : "Allow notifications")
                     }.buttonStyle(PermissionActionStyle()).disabled(busy)
                 } else if loaded {
-                    Button("Open notification settings") {
+                    Button("Open iPhone Settings") {
                         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
                     }.buttonStyle(PermissionActionStyle())
                 }
-                if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
-            } }
+                DisclosureGroup("About this access") {
+                    Text("Synced date and letter reminders can appear when Vesper is closed. Open Vesper to sync new letters. Remote push for unsynced letters and new chat replies is not connected yet.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+                }.font(.subheadline)
+                if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.red) }
+            }
         }.task(id: scenePhase) { if scenePhase == .active { await refreshPermission() } }
+    }
+    private var accessStatus: String {
+        guard loaded else { return "Checking…" }
+        switch authorization {
+        case .authorized: return "Allowed"
+        case .provisional, .ephemeral: return "Limited"
+        case .denied: return "Off"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
     }
     @MainActor private func refreshPermission() async {
         authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus

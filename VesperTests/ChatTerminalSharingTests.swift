@@ -81,6 +81,8 @@ import SwiftUI
             _ = try await renderFixture(AnyView(NavigationStack { DevicePermissionsView() }.environment(\.scenePhase, .active).preferredColorScheme(scheme)), name: "Permissions " + palette)
             _ = try await renderFixture(AnyView(NavigationStack { SystemPlannerView(reminderOnly: false) }.preferredColorScheme(scheme)), name: "Calendar permission " + palette)
             _ = try await renderFixture(AnyView(NavigationStack { HealthView() }.preferredColorScheme(scheme)), name: "Health permission " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { WeatherPermissionsView() }.preferredColorScheme(scheme)), name: "Location permission " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { NotificationSettingsView() }.environment(\.scenePhase, .active).preferredColorScheme(scheme)), name: "Notification permission " + palette)
         }
     }
 

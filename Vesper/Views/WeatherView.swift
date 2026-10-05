@@ -214,20 +214,34 @@ struct WeatherPermissionsView: View {
     var body: some View {
         PermissionPage(title: "Location") {
             PermissionPanel {
-                Toggle("Use location for weather", isOn: Binding(get: { weather.enabled }, set: { weather.setEnabled($0) }))
-                    .accessibilityIdentifier("weather-location-permission")
-                Text(status).font(.subheadline).foregroundStyle(VesperTheme.muted)
-                if weather.enabled && !weather.authorized {
-                    if weather.authorization == .notDetermined {
-                        Button("Allow location") { weather.setEnabled(true) }.buttonStyle(PermissionActionStyle())
-                    } else { Button("Open iPhone Settings") { openSettings() }.buttonStyle(PermissionActionStyle()) }
+                HStack {
+                    Label("Location access", systemImage: "location.fill").font(.headline)
+                    Spacer()
+                    Text(accessStatus).font(.caption).foregroundStyle(VesperTheme.muted)
                 }
+                Text("Use your approximate location to show the weather where you are.").foregroundStyle(VesperTheme.muted)
+                if weather.authorization == .notDetermined {
+                    Button("Allow location") { weather.setEnabled(true) }.buttonStyle(PermissionActionStyle())
+                } else {
+                    Button("Open iPhone Settings") { openSettings() }.buttonStyle(PermissionActionStyle())
+                }
+                DisclosureGroup("About this access") {
+                    Text("Uses location while Vesper is open. Coordinates rounded to about 1 km are sent to Open-Meteo to fetch weather.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+                }.font(.subheadline)
             }
             PermissionPanel {
-                Text("Uses your approximate location while Vesper is open. Coordinates rounded to about 1 km are sent to Open-Meteo to fetch weather. Turning this off stops weather location requests.")
+                Toggle("Use location for weather", isOn: Binding(get: { weather.enabled }, set: { weather.setEnabled($0) }))
+                    .font(.subheadline).accessibilityIdentifier("weather-location-permission")
+                Text(status).font(.footnote).foregroundStyle(VesperTheme.muted)
             }
-        }
-            .onChange(of: phase) { _, value in if value == .active { weather.refresh() } }
+        }.onChange(of: phase) { _, value in if value == .active { weather.refresh() } }
+    }
+    private var accessStatus: String {
+        if weather.authorized { return "Allowed" }
+        if weather.authorization == .notDetermined { return "Not requested" }
+        if weather.authorization == .restricted { return "Restricted" }
+        return "Off"
     }
     private var status: String {
         if !weather.enabled { return "Weather location is off." }

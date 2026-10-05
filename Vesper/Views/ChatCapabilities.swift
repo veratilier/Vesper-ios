@@ -36,7 +36,7 @@ struct ChatFile: Identifiable {
         do {
             let session = AVAudioSession.sharedInstance()
             if InAppCalls.shared.id == nil {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
             }
             // The system may deactivate the call's audio session while the app is away.
             // Reactivate it before creating a new recognition tap on return.
@@ -255,7 +255,7 @@ struct CallCameraPreview: UIViewRepresentable {
         stop(); error = nil; let id = UUID(); generation = id; loading = true
         do {
             if InAppCalls.shared.id == nil {
-                try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             }
             try AVAudioSession.sharedInstance().setActive(true)
             let connection = VoiceConfiguration.normalized(connectionOverride ?? VoiceConfiguration.connection(store))

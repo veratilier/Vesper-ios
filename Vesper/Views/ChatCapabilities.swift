@@ -620,7 +620,7 @@ struct NativeCallView: View {
                 }
                 if let error = voice.error ?? notice ?? speech.error ?? cameraNotice ?? systemCall.error {
                     Text(error).font(.caption).foregroundStyle(.red)
-                        .padding(9).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(9).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                 }
                 HStack(spacing: 10) {
                     TextField("Type to Rowan…", text: $typedMessage, axis: .vertical)
@@ -637,7 +637,7 @@ struct NativeCallView: View {
                     .disabled(!active || waiting || callChat.busy || typedMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+                .vesperGlass(in: RoundedRectangle(cornerRadius: 22))
                 if !active {
                     Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: {
                         Text(systemCall.id == nil ? "Start call" : "Connecting…")
@@ -919,7 +919,7 @@ struct CallInvitation: View {
                 Button(action: decline) { VStack(spacing: 8) { Image(systemName: "phone.down.fill").frame(width: 52, height: 52).vesperGlass(in: Circle(), interactive: true); Text("Decline").font(.caption) }.foregroundStyle(.red) }
                 Button(action: accept) { VStack(spacing: 8) { Image(systemName: "phone.fill").frame(width: 52, height: 52).vesperGlass(in: Circle(), interactive: true).foregroundStyle(VesperTheme.ink); Text("Accept").font(.caption) } }
             }.font(.system(size: 21)).buttonStyle(.plain).padding(.top, 8)
-        }.padding(28).frame(maxWidth: 320).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
+        }.padding(28).frame(maxWidth: 320).vesperGlass(in: RoundedRectangle(cornerRadius: 30))
             .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.6), lineWidth: 1))
             .shadow(color: .black.opacity(0.08), radius: 24, y: 12).accessibilityAddTraits(.isModal)
     }
@@ -953,7 +953,7 @@ struct ChatLocationCard: View {
                         Text("±\(Int(location["horizontalAccuracyMeters"].number)) m")
                     }.font(.caption2).foregroundStyle(VesperTheme.muted).padding(10)
                 }.frame(width: 270).foregroundStyle(VesperTheme.ink)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .vesperGlass(in: RoundedRectangle(cornerRadius: 16))
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(VesperTheme.muted.opacity(0.18)))
             }.buttonStyle(.plain).accessibilityLabel("Shared location. Open in Maps")

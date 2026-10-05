@@ -327,9 +327,9 @@ struct ReaderView: View {
                 }.accessibilityLabel("目录与进度，第 \(pageIndex + 1) 页，共 \(pages.count) 页")
                 Button { turn(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
                     .disabled(pageIndex + 1 >= pages.count).accessibilityLabel("下一页")
-            }.buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 12)
+            }.buttonStyle(VesperGlassButtonStyle()).foregroundStyle(VesperTheme.ink).padding(.horizontal, 12)
         }
-        .background(Color(uiColor: .systemBackground))
+        .background { Background() }
         .navigationTitle(book["title"].string.replacingOccurrences(of: "_", with: " "))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
@@ -350,7 +350,7 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $showContents) {
             NavigationStack {
-                List {
+                VesperList {
                     Section("目录") {
                         ForEach(chapters.indices, id: \.self) { index in
                             Button {
@@ -450,7 +450,7 @@ private struct ReadingNoteSheet: View {
                     if !target.quote.isEmpty {
                         Text(target.quote).font(.system(.body, design: .serif)).italic()
                             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                            .vesperGlass(in: RoundedRectangle(cornerRadius: 14))
                         Button { bookmark = true } label: { Label("存到书签", systemImage: "bookmark") }
                     }
                     if notes.isEmpty {
@@ -471,7 +471,7 @@ private struct ReadingNoteSheet: View {
                     Text("我的批注").font(.headline)
                     TextEditor(text: $draft).frame(minHeight: 95)
                         .scrollContentBackground(.hidden)
-                        .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        .padding(8).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
                     Text("橙色是你的批注，青色是 Rowan 的批注。选中同一段文字，可以接着写。")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("保存批注", action: save).buttonStyle(VesperGlassButtonStyle())

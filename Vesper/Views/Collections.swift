@@ -106,22 +106,7 @@ private struct CollectionCard<Content: View>: View {
     var paper: Bool
     @ViewBuilder var content: Content
     var body: some View {
-        if paper {
-            content.padding(.horizontal, 20).padding(.top, 32).padding(.bottom, 24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    Rectangle().fill(LinearGradient(colors: [Color(red: 0.98, green: 0.97, blue: 0.91), Color(red: 0.94, green: 0.93, blue: 0.85)], startPoint: .top, endPoint: .bottom))
-                        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.30)).frame(height: 22) }
-                        .overlay { Canvas { context, size in
-                            for i in 0..<180 {
-                                let x = CGFloat((i * 53) % 997) / 997 * size.width
-                                let y = CGFloat((i * 97) % 991) / 991 * size.height
-                                context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.brown.opacity(0.07)))
-                            }
-                        }.allowsHitTesting(false) }
-                        .shadow(color: .black.opacity(0.12), radius: 4, x: 1, y: 5)
-                }
-        } else { GlassCard { content } }
+        GlassCard { content }
     }
 }
 
@@ -198,7 +183,8 @@ struct JournalView: View {
                     if !store.document("diary")[key]["agent"].string.isEmpty { Circle().fill(Color.brown).frame(width: 3, height: 3) }
                 }.frame(height: 3)
             }.frame(maxWidth: .infinity, minHeight: 48)
-                .background(heatColor(ready ? level : 0), in: RoundedRectangle(cornerRadius: 7))
+                .vesperGlass(in: RoundedRectangle(cornerRadius: 7), interactive: true)
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(heatColor(ready ? level : 0), lineWidth: 3))
                 .overlay { RoundedRectangle(cornerRadius: 7).stroke(key == dateKey(.now) ? VesperTheme.ink : .clear, lineWidth: 1) }
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("\(key), \(ready ? String(count) : "unknown") chat messages")
@@ -367,9 +353,9 @@ private struct DatesBoard: View {
                 Text(item["title"].string + DateCounter.relation(item)).font(.system(size: 15, weight: item["highlight"].bool ? .bold : .medium)).lineLimit(2)
                 if !item["category"].string.isEmpty { Text(item["category"].string).font(.caption2).foregroundStyle(VesperTheme.muted) }
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            Text(DateCounter.count(item).map(String.init) ?? "—").font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).frame(width: 78).frame(maxHeight: .infinity).background(DateCounter.color(item))
-            Text("天").font(.subheadline).frame(width: 34).frame(maxHeight: .infinity).background(DateCounter.color(item).opacity(0.85))
-        }.foregroundStyle(VesperTheme.ink).frame(height: 60).background(VesperTheme.surface)
+            Text(DateCounter.count(item).map(String.init) ?? "—").font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).frame(width: 78).frame(maxHeight: .infinity)
+            Text("天").font(.subheadline).frame(width: 34).frame(maxHeight: .infinity)
+        }.foregroundStyle(VesperTheme.ink).frame(height: 60).vesperGlass(in: RoundedRectangle(cornerRadius: 8))
             .clipShape(RoundedRectangle(cornerRadius: 8)).shadow(color: .black.opacity(0.05), radius: 2, y: 2)
     }
 }
@@ -400,7 +386,7 @@ private struct DateEditor: View {
     @State private var loadingBackground = false
     var body: some View {
         NavigationStack {
-            Form {
+            VesperForm {
                 Section {
                     TextField("事件名称", text: $title)
                     Toggle("农历", isOn: $lunar)

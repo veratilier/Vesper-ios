@@ -58,8 +58,7 @@ struct PermissionPanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 10 : 16) { content }
             .frame(maxWidth: .infinity, alignment: .leading).padding(compact ? 15 : 20)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
-            .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.palette == .black ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 24))
     }
 }
 struct PermissionActionStyle: ButtonStyle {
@@ -143,7 +142,7 @@ struct ConnectionView: View {
                 FormField(label: "History address", text: $store.historyURL)
                 FormField(label: "Chat address", text: $store.socketURL)
                 Text("Device token").font(.caption).foregroundStyle(VesperTheme.muted)
-                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                 Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(VesperTheme.ink).frame(maxWidth: .infinity, minHeight: 44).vesperGlass(in: Capsule(), interactive: true) }.buttonStyle(.plain).disabled(store.loading)
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
@@ -167,7 +166,7 @@ struct WakeView: View {
         return Date(timeIntervalSince1970: timestamp)
     }
     var body: some View {
-        List {
+        VesperList {
             Section {
                 Toggle("Automatic wake-up", isOn: $enabled).disabled(!supported || busy)
                 if runtime != .null { nextWakeRow }
@@ -249,7 +248,7 @@ struct WakeView: View {
         }
     }
     private var permissionsPage: some View {
-        List {
+        VesperList {
             NavigationLink {
                 permissionPage(messages: true)
             } label: {
@@ -265,7 +264,7 @@ struct WakeView: View {
             .safeAreaInset(edge: .bottom) { saveBar }
     }
     private var activityPage: some View {
-        List {
+        VesperList {
             if jobs.isEmpty { Text("No activity to show").foregroundStyle(VesperTheme.muted) }
             ForEach(jobs) { job in
                 NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
@@ -274,7 +273,7 @@ struct WakeView: View {
             .navigationTitle("Recent activity").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
     }
     private func permissionPage(messages: Bool) -> some View {
-        List {
+        VesperList {
             Section {
                 ForEach(runtime[messages ? "messageOptions" : "toolOptions"].array.map { $0.string }, id: \.self) { name in
                     Toggle(name.replacingOccurrences(of: "_", with: " ").capitalized, isOn: permission(name, messages: messages))
@@ -356,7 +355,7 @@ struct WakeSleepView: View {
         return String(format: "%02d:%02d", calendar.component(.hour, from: date), calendar.component(.minute, from: date))
     }
     var body: some View {
-        Form {
+        VesperForm {
             if busy { ProgressView("Loading sleep settings…") }
             Section {
                 Toggle("Sleep time", isOn: $enabled)
@@ -424,7 +423,7 @@ private struct WakePromptView: View {
     @State private var busy = false
     @State private var status = ""
     var body: some View {
-        List {
+        VesperList {
             Section {
                 TextEditor(text: $prompt)
                     .frame(minHeight: 220)
@@ -666,7 +665,7 @@ struct VoiceSettingsView: View {
                 Picker("Provider", selection: Binding(get: { provider }, set: { value in provider = value; baseURL = value == "ElevenLabs" ? "https://api.elevenlabs.io" : "https://api.minimax.chat"; model = value == "ElevenLabs" ? "eleven_multilingual_v2" : "speech-2.6-hd"; voiceID = ""; apiKey = ""; groupID = "" })) { Text("ElevenLabs").tag("ElevenLabs"); Text("MiniMax").tag("MiniMax") }
                 FormField(label: "API address", text: $baseURL)
                 Text("API key").font(.caption)
-                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                 FormField(label: "Voice ID", text: $voiceID)
                 FormField(label: "Model", text: $model)
                 if provider == "MiniMax" { FormField(label: "Group ID (optional)", text: $groupID) }
@@ -743,7 +742,7 @@ private struct McpEditor: View {
     @StateObject private var oauth = McpOAuthSession()
     var body: some View {
         NavigationStack {
-            Form {
+            VesperForm {
                 TextField("Name", text: $name)
                 TextField("HTTPS MCP URL", text: $url).keyboardType(.URL)
                 Toggle("Enabled", isOn: $enabled)

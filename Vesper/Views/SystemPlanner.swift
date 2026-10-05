@@ -221,7 +221,7 @@ struct SystemPlannerView: View {
         }
         .sheet(isPresented: $adding) {
             NavigationStack {
-                Form {
+                VesperForm {
                     Picker("Type", selection: $reminder) { Text("Event").tag(false); Text("Reminder").tag(true) }
                     TextField("Title", text: $title)
                     DatePicker(reminder ? "Due" : "Start", selection: $date)
@@ -289,7 +289,7 @@ struct ReminderEditor: View {
     @State private var error: String?
     var body: some View {
         NavigationStack {
-            Form {
+            VesperForm {
                 TextField("Title", text: $title)
                 TextField("Notes", text: $notes, axis: .vertical)
                 Toggle("Due date", isOn: $hasDueDate)

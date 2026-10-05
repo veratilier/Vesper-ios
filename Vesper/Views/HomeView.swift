@@ -161,7 +161,7 @@ struct HomeView: View {
             }
             .padding(.horizontal, 20).padding(.vertical, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background { DesktopPaper(seed: 9) }
+            .vesperGlass(in: PaperEdge(seed: 9))
         }
         .accessibilityHint("Open Notes to read the full letter")
         .accessibilityIdentifier("home-rowan-letter")
@@ -210,7 +210,7 @@ struct HomeView: View {
             }
             .foregroundStyle(palette.muted).padding(.horizontal, 8).padding(.vertical, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 13))
         }
         .accessibilityLabel(upcomingDate.map { $0["title"].string + ", " + (DateCounter.days($0).map(HomeDesktopContent.countdown) ?? "") } ?? "Dates, add a date")
         .accessibilityIdentifier("home-date-leaf")
@@ -250,7 +250,7 @@ struct HomeView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
+        .vesperGlass(in: RoundedRectangle(cornerRadius: 13))
         .accessibilityIdentifier("home-reminders-slip")
     }
     private var musicRow: some View {

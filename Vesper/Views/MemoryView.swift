@@ -41,8 +41,7 @@ private func memoryDate(_ value: String) -> String {
 private struct MemorySurface: ViewModifier {
     func body(content: Content) -> some View {
         content.padding(13).frame(maxWidth: .infinity, alignment: .leading)
-            .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(VesperTheme.palette == .black ? 0.12 : 0.8), lineWidth: 1))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 18))
     }
 }
 
@@ -108,7 +107,7 @@ struct MemoryView: View {
                 Text("把一起走过的，留在这里。").font(.caption).foregroundStyle(VesperTheme.muted)
             }
             Spacer()
-            Button { adding = true } label: { Image(systemName: "plus").frame(width: 44, height: 44).background(VesperTheme.surface, in: Circle()) }.accessibilityLabel("新增记忆")
+            Button { adding = true } label: { Image(systemName: "plus").frame(width: 44, height: 44).vesperGlass(in: Circle()) }.accessibilityLabel("新增记忆")
         }.padding(.horizontal, 20).padding(.top, 8)
     }
     private var search: some View {
@@ -119,7 +118,7 @@ struct MemoryView: View {
                 Button { query = ""; refresh() } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("清空搜索")
             }
             Button { filtering = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 32, height: 32) }.accessibilityLabel("筛选记忆")
-        }.padding(.horizontal, 12).padding(.vertical, 5).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 15)).padding(.horizontal, 18)
+        }.padding(.horizontal, 12).padding(.vertical, 5).vesperGlass(in: RoundedRectangle(cornerRadius: 15)).padding(.horizontal, 18)
     }
     private var categories: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -127,8 +126,9 @@ struct MemoryView: View {
                 ForEach(memoryCategories, id: \.self) { value in
                     Button { kind = value } label: {
                         Text(libraryKind(value)).font(.subheadline).padding(.horizontal, 11).padding(.vertical, 9)
-                            .foregroundStyle(kind == value ? (VesperTheme.palette == .black ? Color.black : Color.white) : VesperTheme.muted)
-                            .background(kind == value ? VesperTheme.muted : .clear, in: RoundedRectangle(cornerRadius: 12))
+                            .foregroundStyle(kind == value ? VesperTheme.ink : VesperTheme.muted)
+                            .vesperGlass(in: RoundedRectangle(cornerRadius: 12), interactive: true)
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(kind == value ? VesperTheme.accent : .clear, lineWidth: 2))
                     }.buttonStyle(.plain).accessibilityAddTraits(kind == value ? .isSelected : [])
                 }
             }.padding(.horizontal, 18)
@@ -165,7 +165,7 @@ struct MemoryView: View {
     }
     private var filters: some View {
         NavigationStack {
-            Form {
+            VesperForm {
                 Section("记录范围") { Toggle("包含已替代、已撤回及待核对记录", isOn: $oldVersions) }
                 Section { NavigationLink("旧 Vesper 记忆") { LegacyMemoryView() } }
             }.navigationTitle("筛选记忆").navigationBarTitleDisplayMode(.inline)
@@ -542,7 +542,7 @@ private struct MemoryRelations: View {
             if !tags.isEmpty { MemoryRelationGraph(items: items) }
             if tags.isEmpty { EmptyCard(title: "No connections yet", message: "Add people, places or topics to a memory to connect its records.") }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 90))], spacing: 12) {
-                ForEach(tags, id: \.self) { value in Button { tag = value } label: { Text(value).padding(12).frame(maxWidth: .infinity).background(tag == value ? VesperTheme.accent.opacity(0.3) : VesperTheme.surface, in: Capsule()) }.buttonStyle(.plain) }
+                ForEach(tags, id: \.self) { value in Button { tag = value } label: { Text(value).padding(12).frame(maxWidth: .infinity).vesperGlass(in: Capsule(), interactive: true).overlay(Capsule().stroke(tag == value ? VesperTheme.accent : .clear, lineWidth: 2)) }.buttonStyle(.plain) }
             }
             if !tag.isEmpty {
                 ForEach(items.filter { $0["tags"].array.contains(.string(tag)) }) { item in
@@ -607,7 +607,7 @@ struct MemoryRecallView: View {
     @State private var debug = false
     var body: some View {
         NavigationStack {
-            List {
+            VesperList {
                 Section { Text("这里记录实际提供给模型的历史资料，不表示回复一定采用。待核对候选不会参与召回。").font(.caption) }
                 if !error.isEmpty { Section { Text(error).foregroundStyle(.red); Button("重试") { Task { await load() } } } }
                 if busy { ProgressView() }

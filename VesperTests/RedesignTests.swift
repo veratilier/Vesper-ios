@@ -50,6 +50,24 @@ private struct ControlsPalettePreview: View {
     }
 }
 
+private struct SurfacePalettePreview: View {
+    let page: String
+    let catalog: MusicCatalog
+    @AppStorage("vesperPalette") private var paletteName = "white"
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Background()
+                if page == "MyMusic" { MusicLibraryView(catalog: catalog, preview: true) }
+                else if page == "Contacts" { NativeChatHome() }
+                else if page == "Notes" { CollectionView(kind: .notes) }
+                else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
+            }
+        }.vesperButtonStyle().foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            .preferredColorScheme(paletteName == "black" ? .dark : .light)
+    }
+}
+
 private final class DesktopContactProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "desktop-preview.example" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -64,6 +82,37 @@ private final class DesktopContactProtocol: URLProtocol {
 }
 
 @MainActor final class RedesignTests: XCTestCase {
+    func testLibraryRowsAndSecondarySurfacesUseDockGlass() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        URLProtocol.registerClass(DesktopContactProtocol.self)
+        defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
+        let store = AppStore(); store.token = ""; store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example"
+        let chat = ChatSession(); chat.configure(store)
+        store.documents["profile"] = .object(["agentName": .string("Rowan")])
+        store.documents["notes"] = .array([.object(["id": .string("glass-note"), "text": .string("今天的小事，也可以慢慢说。"), "kind": .string("agent")])])
+        store.documents["musicPlaylists"] = .array([.object(["id": .string("vesper-preview"), "name": .string("夜里，慢慢听"), "tracks": .array([.object(["id": .string("song"), "title": .string("天天")])])])])
+        let player = MusicPlayer(), catalog = MusicCatalog()
+        catalog.playlists = ["Favourite Songs", "kpop", "Recent", "深夜 R&B"].enumerated().map { .object(["id": .string("preview-\($0.offset)"), "name": .string($0.element)]) }
+        catalog.connected = true
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for palette in ["white", "blue", "black"] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            for page in ["MyMusic", "Contacts", "Notes", "Panels"] {
+                store.token = page == "Contacts" ? "preview-contact-token" : ""
+                store.error = nil; chat.error = nil
+                if page == "Contacts" { chat.configure(store) }
+                let content = SurfacePalettePreview(page: page, catalog: catalog).environmentObject(store).environmentObject(chat).environmentObject(player)
+                let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+                window.rootViewController = UIHostingController(rootView: content); window.makeKeyAndVisible()
+                try await Task.sleep(for: .milliseconds(600))
+                window.rootViewController?.view.layoutIfNeeded()
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "Surfaces-\(page)-\(palette)"; attachment.lifetime = .keepAlways; add(attachment)
+                window.isHidden = true; window.rootViewController = nil
+            }
+        }
+    }
     func testControlGlassAndPlaybackDockRemainAboveTheTabBar() async throws {
         let suite = "controls-layout-" + UUID().uuidString
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))

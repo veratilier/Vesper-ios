@@ -255,7 +255,7 @@ struct RootView: View {
                 Divider()
                 WeeklyUsageView().padding(.horizontal, 28).padding(.bottom, 12)
             }.padding(.top, 8).frame(width: 280).frame(maxHeight: .infinity)
-                .background(.regularMaterial).transition(.move(edge: .leading))
+                .vesperGlass(in: RoundedRectangle(cornerRadius: 22)).transition(.move(edge: .leading))
                 .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
                 .accessibilityAddTraits(.isModal)
     }

@@ -111,7 +111,7 @@ struct LettersView: View {
                     Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
                         .foregroundStyle(colors.ink).vesperGlass(in: Capsule(), interactive: true)
                 }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
-            }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            }.foregroundStyle(colors.ink).padding(14).vesperGlass(in: RoundedRectangle(cornerRadius: 20))
                 .padding(.horizontal, 22).padding(.bottom, 8)
         }
     }
@@ -133,7 +133,7 @@ struct LettersView: View {
                                     }
                                     Spacer(minLength: 0)
                                     Image(systemName: "lock").font(.caption)
-                                }.padding(12).frame(minHeight: 78).containerRelativeFrame(.horizontal).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
+                                }.padding(12).frame(minHeight: 78).containerRelativeFrame(.horizontal).vesperGlass(in: RoundedRectangle(cornerRadius: 15))
                             }.buttonStyle(.plain)
                         }
                     }
@@ -147,7 +147,7 @@ struct LettersView: View {
                     }
                     Spacer(minLength: 0)
                 }.padding(12).frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
-                    .background(colors.paper.opacity(0.4), in: RoundedRectangle(cornerRadius: 15))
+                    .vesperGlass(in: RoundedRectangle(cornerRadius: 15))
                     .overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.25)))
                     .accessibilityIdentifier("empty-upcoming-letters")
             }
@@ -176,7 +176,7 @@ struct LettersView: View {
                 Text("Dear Rowan,").font(.system(size: 20, design: .serif))
                 TextEditor(text: $model.draft.text).scrollContentBackground(.hidden).frame(minHeight: 230).font(.system(size: 17, design: .serif)).background(.clear).accessibilityLabel("Letter body")
                 Text("Vera").font(VesperTheme.title(40)).frame(maxWidth: .infinity, alignment: .trailing)
-            }.padding(24).background(colors.paper).overlay(Rectangle().stroke(colors.line.opacity(0.3))).shadow(color: .black.opacity(0.1), radius: 5, y: 4).disabled(model.draft.deliveryAttempted)
+            }.padding(24).vesperGlass(in: RoundedRectangle(cornerRadius: 16)).disabled(model.draft.deliveryAttempted)
             Toggle("Open on a date", isOn: $model.draft.scheduled).disabled(model.draft.deliveryAttempted)
             if model.draft.scheduled { DatePicker("Opens", selection: $model.draft.unlockAt).disabled(model.draft.deliveryAttempted) }
             if model.draft.deliveryAttempted { Text("Delivery has already been attempted. Retry the same sealed letter to confirm it.").font(.footnote) }
@@ -208,7 +208,7 @@ struct LettersView: View {
                     Divider(); Text("Dear " + (letter.recipient ?? (letter.author == "Vera" ? "Rowan" : "Vera")) + ",").font(.system(size: 17, design: .serif))
                     Text(letter.text ?? "").font(.system(size: 17, design: .serif)).lineSpacing(8).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     Text(letter.author).font(VesperTheme.title(40)).frame(maxWidth: .infinity, alignment: .trailing)
-                }.padding(25).frame(minHeight: 420).background(colors.paper).overlay(Rectangle().stroke(colors.line.opacity(0.3))).shadow(color: .black.opacity(0.1), radius: 5, y: 4)
+                }.padding(25).frame(minHeight: 420).vesperGlass(in: RoundedRectangle(cornerRadius: 16))
                 HStack(spacing: 12) {
                     if letter.readerName == "Vera" {
                         action("Reply") { if model.reply(to: letter) { screen = "compose" } }

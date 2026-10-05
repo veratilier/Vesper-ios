@@ -64,7 +64,7 @@ struct ChatFileCard: View {
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(VesperTheme.muted)
         }.padding(14).frame(width: 280, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 16))
             .accessibilityElement(children: .combine).accessibilityHint("Preview file")
     }
 }

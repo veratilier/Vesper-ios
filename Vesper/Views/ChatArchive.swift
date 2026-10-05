@@ -31,7 +31,7 @@ struct NativeChatHome: View {
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
-            List {
+            VesperList {
                 Button { searching = true } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
                         .font(.subheadline)
@@ -102,9 +102,9 @@ struct NativeChatHome: View {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingFavorites = true } label: { Image(systemName: "bookmark") }
-                        .accessibilityLabel("Favorite messages")
+                        .buttonStyle(.plain).accessibilityLabel("Favorite messages")
                     Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("New Chat")
+                        .buttonStyle(.plain).accessibilityLabel("New Chat")
                         .disabled(rowDisabled || chat.loadingModels)
                 }
             }
@@ -281,7 +281,7 @@ struct ChatFavoritesView: View {
     }
 
     var body: some View {
-        List {
+        VesperList {
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             if favorites.isEmpty && error.isEmpty {
                 ContentUnavailableView(query.isEmpty ? "No favorite messages yet" : "No matching messages",
@@ -332,15 +332,7 @@ private extension View {
         return self
             .padding(.horizontal, 16).padding(.vertical, verticalPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                shape.fill(.ultraThinMaterial)
-                    .overlay {
-                        shape.fill(Color(red: 0.45, green: 0.66, blue: 0.86)
-                            .opacity(VesperTheme.palette == .blue ? 0.15 : 0.03))
-                    }
-            }
-            .overlay(shape.strokeBorder(.white.opacity(VesperTheme.palette == .black ? 0.24 : 0.7), lineWidth: 1))
-            .shadow(color: .black.opacity(0.09), radius: 12, y: 5)
+.vesperGlass(in: shape, interactive: true)
     }
 }
 
@@ -383,7 +375,7 @@ struct ChatSearchView: View {
     @State private var hasMore = false
     @State private var searchNotice = ""
     var body: some View {
-        List {
+        VesperList {
             Picker("Search in", selection: $scope) { Text("All chats").tag("All chats"); Text("This chat").tag("This chat") }.pickerStyle(.segmented)
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             if !searchNotice.isEmpty { Text(searchNotice).font(.caption).foregroundStyle(VesperTheme.muted) }

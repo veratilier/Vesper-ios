@@ -120,16 +120,14 @@ struct ChatIssueSheet: View {
                                 if issue.action != .none {
                                     Button(issue.action == .models ? "Reload models" : "Retry") { retry(issue.action) }
                                         .buttonStyle(VesperGlassButtonStyle()).tint(VesperTheme.ink)
-                                        .foregroundStyle(palette == "black" ? Color.black : Color.white)
+                                        .foregroundStyle(VesperTheme.ink)
                                 }
                                 if issue.dismissible {
                                     Button { dismiss(issue.id) } label: {
                                         Text("Dismiss").font(.body.weight(.medium))
                                             .foregroundStyle(VesperTheme.ink)
                                             .padding(.horizontal, 18).frame(minHeight: 44)
-                                            .background(VesperTheme.ink.opacity(0.08), in: Capsule())
-                                            .background(.thinMaterial, in: Capsule())
-                                            .overlay(Capsule().stroke(VesperTheme.ink.opacity(0.18), lineWidth: 1))
+                                            .vesperGlass(in: Capsule(), interactive: true)
                                     }.buttonStyle(.plain)
                                 }
                             }
@@ -220,7 +218,7 @@ struct ChatView: View {
                                         Label(message["content"].string, systemImage: "envelope.open")
                                             .font(.system(size: 14, design: .serif)).foregroundStyle(VesperTheme.muted)
                                             .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-                                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                            .vesperGlass(in: RoundedRectangle(cornerRadius: 14))
                                     }.buttonStyle(.plain).id(message.id)
                                 } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
                                 else if row.activity { AssistantMessageHeading(message: message, activities: row.activities, liveEvents: message.id == chat.liveHeadingID ? chat.events : [], isLive: message.id == chat.liveHeadingID) }
@@ -265,7 +263,7 @@ struct ChatView: View {
                                 pendingSticker = sticker
                                 stickerPicker = false; drawer = false
                             }
-                            .frame(height: attachmentPanelHeight).background(.regularMaterial)
+                            .frame(height: attachmentPanelHeight).vesperGlass(in: Rectangle())
                         } else if drawer {
                             attachmentDrawer
                                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { attachmentPanelHeight = $0 }
@@ -436,7 +434,7 @@ struct ChatView: View {
     }
     private var modelSheet: some View {
             NavigationStack {
-                List {
+                VesperList {
                     DisclosureGroup(isExpanded: $modelExpanded) {
                         Button { chat.selectModel("") } label: {
                             HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
@@ -632,7 +630,7 @@ struct ChatView: View {
                                    action: send)
                 }
             }
-        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
+        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).vesperGlass(in: RoundedRectangle(cornerRadius: 25)).padding(.horizontal, 12).padding(.vertical, 8)
     }
     private var attachmentDrawer: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 20) {
@@ -643,7 +641,7 @@ struct ChatView: View {
             drawerItem("File", "folder.fill") { filePicker = true }
             drawerItem("Music", "music.note") { musicPicker = true }
             drawerItem("Stickers", "face.smiling") { stickerPicker = true }
-        }.padding(20).background(.regularMaterial)
+        }.padding(20).vesperGlass(in: Rectangle())
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
         Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).vesperGlass(in: RoundedRectangle(cornerRadius: 16), interactive: true); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
@@ -663,7 +661,7 @@ struct ChatView: View {
         NavigationStack {
             VStack {
                 Picker("Collection", selection: $historyTab) { Text("Conversations").tag(0); Text("Favorites").tag(1) }.pickerStyle(.segmented).padding(.horizontal)
-                List {
+                VesperList {
                     if historyTab == 0 {
                         NavigationLink { ChatSearchView() { history = false } } label: { Label("Search all messages", systemImage: "magnifyingglass") }
                         Button { Task { await chat.openMainRoom(); history = false } } label: { Label("Main room", systemImage: "house") }.disabled(chat.busy)
@@ -1030,14 +1028,14 @@ private struct ChatQuestionSheet: View {
                                 } label: {
                                     Label("Other answer", systemImage: other.contains(question.id) ? "checkmark.circle.fill" : "circle")
                                         .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                                }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                }.buttonStyle(.plain).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
                             }
                             if question["options"].array.isEmpty || other.contains(question.id) {
                                 let value = Binding(get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 })
                                 Group {
                                     if question["isSecret"].bool { SecureField("Your answer…", text: value) }
                                     else { TextField("Your answer…", text: value, axis: .vertical).lineLimit(1...4) }
-                                }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
                             }
                         }
                     }
@@ -1069,7 +1067,7 @@ private struct ChatQuestionSheet: View {
                 }
                 Spacer(minLength: 0)
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
             .overlay { RoundedRectangle(cornerRadius: 14).stroke(selected ? VesperTheme.muted : .clear, lineWidth: 1) }
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -1157,7 +1155,7 @@ private struct MiniTerminal: View {
     @State private var expanded = false
     @State private var details = false
     private var title: String { execution["title"].string.isEmpty ? "Terminal" : execution["title"].string }
-    private var statusColor: Color { ["failed", "error"].contains(execution["status"].string) ? .red : execution["status"].string == "running" ? .yellow : .white.opacity(0.8) }
+    private var statusColor: Color { ["failed", "error"].contains(execution["status"].string) ? .red : execution["status"].string == "running" ? .yellow : VesperTheme.muted }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -1167,8 +1165,8 @@ private struct MiniTerminal: View {
                 Button { details = true } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.accessibilityLabel("Expand terminal")
             }
             if expanded { output.frame(maxHeight: 220) }
-        }.font(.system(size: 12, design: .monospaced)).foregroundStyle(Color.white.opacity(0.9))
-        .padding(12).background(Color(red: 0.12, green: 0.14, blue: 0.18), in: RoundedRectangle(cornerRadius: 12))
+        }.font(.system(size: 12, design: .monospaced)).foregroundStyle(VesperTheme.ink)
+        .padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
         .buttonStyle(.plain)
         .sheet(isPresented: $details) {
             VStack(alignment: .leading, spacing: 12) {
@@ -1178,8 +1176,8 @@ private struct MiniTerminal: View {
                     Button("Done") { details = false }
                 }
                 output
-            }.padding().font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
-            .background(Color(red: 0.12, green: 0.14, blue: 0.18)).presentationDetents([.height(300), .large])
+            }.padding().font(.system(size: 13, design: .monospaced)).foregroundStyle(VesperTheme.ink)
+            .background { Background() }.presentationDetents([.height(300), .large])
         }
     }
     private var output: some View {
@@ -1268,7 +1266,7 @@ private struct CallRecordButton: View {
     @State private var showing = false
     var body: some View {
         Button { showing = true } label: {
-            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).vesperGlass(in: RoundedRectangle(cornerRadius: 16))
         }.buttonStyle(.plain).sheet(isPresented: $showing) {
             NavigationStack {
                 ScrollView {

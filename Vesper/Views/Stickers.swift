@@ -112,7 +112,7 @@ struct StickerLibraryView: View {
                         Button { if compact { managing = true } else { editing = true } } label: {
                             Image(systemName: "square.and.pencil").font(.system(size: 27, weight: .light))
                                 .frame(maxWidth: .infinity).frame(height: 76)
-                                .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                                .vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(VesperTheme.muted.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5])))
                         }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
                     }
@@ -131,7 +131,7 @@ struct StickerLibraryView: View {
     }
     private func editor(_ sticker: JSONValue) -> some View {
         NavigationStack {
-            Form {
+            VesperForm {
                 StickerArtwork(sticker: sticker).frame(height: 150).frame(maxWidth: .infinity).allowsHitTesting(false)
                 TextField("Name", text: $editName)
                 TextField("Description", text: $editDescription, axis: .vertical)

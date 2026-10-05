@@ -45,29 +45,32 @@ struct UprightLetters: View {
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .topLeading) {
-                Ellipse().fill(.black.opacity(0.13)).blur(radius: 10).frame(width: g.size.width * 0.85, height: 28).offset(x: 12, y: 247)
-                RoundedRectangle(cornerRadius: 5).fill(colors.shade).overlay(RoundedRectangle(cornerRadius: 5).stroke(colors.line, lineWidth: 1)).frame(width: g.size.width * 0.78, height: 144).rotationEffect(.degrees(-5)).offset(x: g.size.width * 0.16, y: 95)
+                // Offsets below use this full canvas as their origin, rather than
+                // the smaller intrinsic bounds of the unpositioned box pieces.
+                Color.clear.frame(width: g.size.width, height: 330)
+                Ellipse().fill(.black.opacity(0.13)).blur(radius: 10).frame(width: g.size.width * 0.85, height: 28).offset(x: 12, y: 277)
+                RoundedRectangle(cornerRadius: 5).fill(colors.shade).overlay(RoundedRectangle(cornerRadius: 5).stroke(colors.line, lineWidth: 1)).frame(width: g.size.width * 0.78, height: 144).rotationEffect(.degrees(-5)).offset(x: g.size.width * 0.16, y: 125)
                 ForEach(Array(visible.enumerated()), id: \.element.id) { slot, letter in
                     envelope(letter, slot: slot, width: g.size.width)
                 }
-                Rectangle().fill(LinearGradient(colors: colors.metal, startPoint: .leading, endPoint: .trailing)).frame(width: g.size.width * 0.16, height: 137).rotationEffect(.degrees(-14)).offset(x: g.size.width * 0.80, y: 123).zIndex(101)
+                Rectangle().fill(LinearGradient(colors: colors.metal, startPoint: .leading, endPoint: .trailing)).frame(width: g.size.width * 0.16, height: 137).rotationEffect(.degrees(-14)).offset(x: g.size.width * 0.80, y: 153).zIndex(101)
                 HStack(spacing: 20) {
                     Text("RV").font(.system(size: 26, design: .serif)).italic()
                     Text("LETTERS TO KEEP").font(.system(size: 10, design: .serif)).tracking(1)
                 }.foregroundStyle(colors.ink.opacity(0.45)).frame(width: g.size.width * 0.82, height: 57)
                     .background(LinearGradient(colors: [colors.paper, colors.shade], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(colors.line, lineWidth: 2)).rotationEffect(.degrees(5)).offset(x: g.size.width * 0.04, y: 218).zIndex(102)
-            }.frame(width: g.size.width, height: 280).contentShape(Rectangle())
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(colors.line, lineWidth: 2)).rotationEffect(.degrees(5)).offset(x: g.size.width * 0.04, y: 248).zIndex(102)
+            }.frame(width: g.size.width, height: 330, alignment: .topLeading).contentShape(Rectangle())
                 .highPriorityGesture(DragGesture(minimumDistance: 0).onChanged { value in sweep(value.location) }.onEnded { _ in
                     touching = false; holding?.cancel(); lastPoint = nil
                     if selectedID == nil { withAnimation(motion) { hoverID = nil } }
                 })
-        }.frame(height: 280).onDisappear { holding?.cancel(); touching = false }
+        }.frame(height: 330).onDisappear { holding?.cancel(); touching = false }
     }
     private var motion: Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }
     private func envelope(_ letter: VesperLetter, slot: Int, width: CGFloat) -> some View {
         let front = hoverID == letter.id || selectedID == letter.id
-        let base = 140 - CGFloat(slot) * 15
+        let base = 170 - CGFloat(slot) * 15
         let lift: CGFloat = selectedID == letter.id ? 64 : hoverID == letter.id ? 42 : 0
         return Button { selectedID = letter.id; hoverID = letter.id } label: {
             LetterEnvelope(colors: colors, title: letter.displayTitle, author: letter.author, showTitle: front || slot == 0)
@@ -80,7 +83,7 @@ struct UprightLetters: View {
     }
     private func sweep(_ point: CGPoint) {
         guard !visible.isEmpty else { return }
-        let slot = min(visible.count - 1, max(0, Int(((130 - point.y) / 15).rounded())))
+        let slot = min(visible.count - 1, max(0, Int(((160 - point.y) / 15).rounded())))
         let candidate = visible[slot].id
         let moved = lastPoint.map { hypot($0.x - point.x, $0.y - point.y) > 7 } ?? true
         let changed = candidate != hoverID

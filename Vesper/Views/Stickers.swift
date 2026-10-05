@@ -10,7 +10,7 @@ struct StickerLibraryView: View {
     var onSelect: ((JSONValue) -> Void)? = nil
     @State private var editing = false
     @State private var loading = false
-    @State private var selected: JSONValue?
+    @State private var selected: StickerSelection?
     @State private var editName = ""
     @State private var editDescription = ""
     @State private var confirmDelete = false
@@ -47,13 +47,10 @@ struct StickerLibraryView: View {
                         }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
                     }
                     ForEach(stickers, id: \.selfID) { sticker in
-                        Button {
-                            if editing { selected = sticker; editName = sticker["name"].string; editDescription = sticker["description"].string; editError = "" }
+                        StickerTile(sticker: sticker) {
+                            if editing { selected = StickerSelection(sticker: sticker); editName = sticker["name"].string; editDescription = sticker["description"].string; editError = "" }
                             else { onSelect?(sticker) }
-                        } label: {
-                            StickerArtwork(sticker: sticker).frame(height: 76)
-                        }.buttonStyle(.plain).accessibilityLabel(sticker["description"].string.isEmpty ? sticker["name"].string : sticker["description"].string)
-                            .disabled((!editing && (onSelect == nil || chat.busy)) || busy)
+                        }.disabled((!editing && (onSelect == nil || chat.busy)) || busy)
                     }
                 }
                 if stickers.isEmpty && !loading && !busy {
@@ -68,7 +65,7 @@ struct StickerLibraryView: View {
             }
         }
         .task { await load() }.refreshable { await load() }
-        .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) { editor }
+        .sheet(item: $selected) { selection in editor(selection.sticker) }
         .onChange(of: photos) { _, picks in
             guard !picks.isEmpty else { return }
             busy = true
@@ -107,10 +104,10 @@ struct StickerLibraryView: View {
             }
         }
     }
-    private var editor: some View {
+    private func editor(_ sticker: JSONValue) -> some View {
         NavigationStack {
             Form {
-                if let selected { StickerArtwork(sticker: selected).frame(height: 150).frame(maxWidth: .infinity) }
+                StickerArtwork(sticker: sticker).frame(height: 150).frame(maxWidth: .infinity).allowsHitTesting(false)
                 TextField("Name", text: $editName)
                 TextField("Description", text: $editDescription, axis: .vertical)
                 if !editError.isEmpty { Text(editError).font(.caption).foregroundStyle(.red) }
@@ -127,7 +124,7 @@ struct StickerLibraryView: View {
     }
     private func saveSticker(delete: Bool) async {
         guard let selected, !saving else { return }
-        let assetID = selected["assetId"].string
+        let assetID = selected.sticker["assetId"].string
         guard !assetID.isEmpty, let encoded = assetID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
         saving = true; editError = ""; defer { saving = false }
         do {
@@ -153,6 +150,26 @@ struct StickerLibraryView: View {
         } else {
             _ = try await store.api.uploadFile(data, name: name, mime: type.preferredMIMEType ?? "application/octet-stream", sticker: true, description: importDescription.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+    }
+}
+
+private struct StickerSelection: Identifiable {
+    let sticker: JSONValue
+    var id: String { sticker["assetId"].string }
+}
+
+/// The SwiftUI button owns the whole cell; WebKit only paints the sticker.
+struct StickerTile: View {
+    let sticker: JSONValue
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Rectangle().fill(Color.clear).frame(maxWidth: .infinity).frame(height: 76)
+                .overlay { StickerArtwork(sticker: sticker).allowsHitTesting(false).accessibilityHidden(true) }
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityLabel(sticker["description"].string.isEmpty ? sticker["name"].string : sticker["description"].string)
+            .accessibilityIdentifier("sticker-" + sticker["assetId"].string)
     }
 }
 

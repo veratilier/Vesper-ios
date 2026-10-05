@@ -62,9 +62,10 @@ import SwiftUI
         guard let id = value["appleMusicId"].string.nonEmpty,
               artwork(for: value) == nil,
               artworkLookups.insert(id).inserted else { return }
+        defer { artworkLookups.remove(id) }
         guard let song = try? await song(for: id) else { return }
-        let detail = try? await song.with([.albums])
-        guard let image = detail?.albums?.first?.artwork else { return }
+        let detail = song.artwork == nil ? try? await song.with([.albums]) : nil
+        guard let image = song.artwork ?? detail?.albums?.first?.artwork else { return }
         resolvedArtwork[id] = image
         if track["appleMusicId"].string == id { currentArtwork = image }
     }
@@ -212,6 +213,15 @@ import SwiftUI
     }
     private func song(for id: String) async throws -> Song {
         if let song = songs[id] { return song }
+        // Library IDs are local MusicKit identities, not catalog resource IDs.
+        if id.hasPrefix("i.") {
+            guard MusicAuthorization.currentStatus == .authorized else { throw MusicError.unavailable }
+            var request = MusicLibraryRequest<Song>()
+            request.filter(matching: \.id, equalTo: MusicItemID(id))
+            guard let song = try await request.response().items.first else { throw MusicError.unavailable }
+            songs[id] = song
+            return song
+        }
         // Shared cards survive app restarts. Re-fetch catalog songs on demand.
         let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(id))
         guard let song = try await request.response().items.first else { throw MusicError.unavailable }

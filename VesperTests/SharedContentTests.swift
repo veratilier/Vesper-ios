@@ -239,3 +239,22 @@ extension SharedContentTests {
         XCTAssertEqual(VesperGridOrder.move(.notes, to: .home, in: pages), pages)
     }
 }
+
+
+extension SharedContentTests {
+    func testMusicCardPublicCoverAndLookupKeepLibraryIdentity() {
+        let library: JSONValue = .object(["id": .string("apple-i.local"), "appleMusicId": .string("i.local"),
+            "source": .string("appleMusic"), "cover": .string("musicKit://artwork/library/asset"), "title": .string("Library song")])
+        XCTAssertEqual(ChatMusicShare.coverURL(library), "", "Native library artwork must use MusicKit, not AsyncImage")
+        let publicTrack: JSONValue = .object(["id": .string("apple-123"), "appleMusicId": .string("123"),
+            "cover": .string("http://is1-ssl.mzstatic.com/cover.jpg"), "title": .string("Song"), "duration": .number(180)])
+        let merged = ChatMusicShare.mergingMetadata(library, lookup: publicTrack)
+        XCTAssertEqual(merged.id, library.id)
+        XCTAssertEqual(merged["appleMusicId"], library["appleMusicId"])
+        XCTAssertEqual(merged["title"].string, "Song")
+        XCTAssertEqual(merged["duration"].number, 180)
+        XCTAssertEqual(ChatMusicShare.coverURL(merged), "https://is1-ssl.mzstatic.com/cover.jpg")
+        XCTAssertEqual(ChatMusicShare.mergingMetadata(publicTrack, lookup: .object([:]))["cover"], publicTrack["cover"])
+        XCTAssertEqual(ChatMusicShare.coverURL(.object(["cover": .string("https://user:secret@example.com/a")])), "")
+    }
+}

@@ -1,4 +1,5 @@
 import SwiftUI
+import MusicKit
 
 enum ChatMusicShare {
     static func links(in text: String) -> [JSONValue] {
@@ -24,6 +25,25 @@ enum ChatMusicShare {
         if track.id.isEmpty { track["id"] = track["trackId"] }
         if !track["appleMusicId"].string.isEmpty { track["source"] = .string("appleMusic") }
         return track
+    }
+    static func coverURL(_ value: JSONValue) -> String {
+        for key in ["cover", "artwork"] {
+            guard var components = URLComponents(string: value[key].string),
+                  let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+                  components.host != nil, components.user == nil, components.password == nil else { continue }
+            components.scheme = "https"
+            return components.url?.absoluteString ?? ""
+        }
+        return ""
+    }
+    static func mergingMetadata(_ original: JSONValue, lookup: JSONValue) -> JSONValue {
+        var value = normalized(original)
+        for key in ["title", "artist", "album", "appleMusicURL"] {
+            if lookup[key] != .null && !lookup[key].string.isEmpty { value[key] = lookup[key] }
+        }
+        if lookup["duration"].number > 0 { value["duration"] = lookup["duration"] }
+        if !coverURL(lookup).isEmpty { value["cover"] = .string(coverURL(lookup)) }
+        return value
     }
     static func appleMetadata(_ value: JSONValue) -> JSONValue? {
         guard value["kind"].string == "song", value["trackId"].number > 0,
@@ -60,9 +80,11 @@ private struct ChatMusicCardContent: View {
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var store: AppStore
     @Environment(\.openURL) private var openURL
+    @AppStorage("vesperPalette") private var palette = "blue"
     @State private var resolved: JSONValue?
     @State private var albumTracks: [JSONValue] = []
     @State private var playbackError: String?
+    private var colors: VesperPalette { VesperPalette(rawValue: palette) ?? .blue }
     private var song: JSONValue { resolved ?? ChatMusicShare.normalized(track) }
     private var selected: Bool { (player.track.id == song.id || albumTracks.contains { $0.id == player.track.id }) && player.playing }
     private var playable: Bool { !song["appleMusicId"].string.isEmpty || !albumTracks.isEmpty }
@@ -82,18 +104,20 @@ private struct ChatMusicCardContent: View {
             } else if let url = shareURL { openURL(url) }
         } label: {
             HStack(spacing: 12) {
-                Artwork(url: song["cover"].string.isEmpty ? song["artwork"].string : song["cover"].string).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 8))
+                cover.frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel("Album cover")
                 VStack(alignment: .leading, spacing: 4) {
                     Text(song["title"].string).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text(song["artist"].string).font(.caption).foregroundStyle(Color(red: 0.55, green: 0.24, blue: 0.30)).lineLimit(1)
+                    Text(song["artist"].string).font(.caption).foregroundStyle(colors.muted).lineLimit(1)
                     Text(song["source"].string.hasPrefix("apple") ? " Music" : (song["provider"].string.isEmpty ? "Shared song" : song["provider"].string))
-                        .font(.caption2).foregroundStyle(Color(red: 0.55, green: 0.24, blue: 0.30))
+                        .font(.caption2).foregroundStyle(colors.muted)
                 }
                 Spacer(minLength: 4)
-                Image(systemName: playable ? (selected ? "pause.fill" : "play.fill") : "arrow.up.right").foregroundStyle(Color(red: 0.98, green: 0.20, blue: 0.34))
+                Image(systemName: playable ? (selected ? "pause.fill" : "play.fill") : "arrow.up.right").foregroundStyle(colors.ink)
             }.frame(maxWidth: 265, alignment: .leading).padding(12)
-                .foregroundStyle(Color(red: 0.16, green: 0.12, blue: 0.14))
-                .background(Color(red: 1, green: 0.96, blue: 0.97).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
+                .foregroundStyle(colors.ink)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette == "black" ? Color.white.opacity(0.16) : Color.white.opacity(0.65), lineWidth: 1))
         }.buttonStyle(.plain).disabled(!playable && shareURL == nil)
             .accessibilityLabel((playable ? "Play " : "Open ") + song["title"].string)
             .task(id: track.id) { await resolve() }
@@ -102,7 +126,17 @@ private struct ChatMusicCardContent: View {
                 Button("OK") { playbackError = nil }
             } message: { Text(playbackError ?? "") }
     }
+    @ViewBuilder private var cover: some View {
+        if let artwork = player.artwork(for: song) ?? player.artwork(for: track) {
+            MusicKit.ArtworkImage(artwork, width: 56, height: 56)
+        } else {
+            Artwork(url: ChatMusicShare.coverURL(song))
+        }
+    }
     private func resolve() async {
+        if ChatMusicShare.coverURL(track).isEmpty, MusicAuthorization.currentStatus == .authorized {
+            await player.ensureArtwork(for: track)
+        }
         // Public metadata needs neither a developer token nor Music permission.
         // Playback authorization is requested only when the user taps Play.
         let id = MusicPlayer.storeID(track)
@@ -121,7 +155,7 @@ private struct ChatMusicCardContent: View {
                   let body = try? JSONDecoder().decode(JSONValue.self, from: data), !Task.isCancelled else { continue }
             let tracks = body["results"].array.compactMap(ChatMusicShare.appleMetadata)
             if let id, let match = tracks.first(where: { $0["appleMusicId"].string == id }) {
-                resolved = match
+                resolved = ChatMusicShare.mergingMetadata(track, lookup: match)
                 return
             }
             if isAlbum, let album = body["results"].array.first(where: { $0["wrapperType"].string == "collection" }), !tracks.isEmpty {

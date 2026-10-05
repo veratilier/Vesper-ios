@@ -291,13 +291,21 @@ enum SleepDetails {
         }
         return values
     }
+    @Published var needsAuthorizationRequest = true
+    func checkAuthorizationRequest() async {
+        guard available else { return }
+        do {
+            let status = try await health.statusForAuthorizationRequest(toShare: [], read: types)
+            needsAuthorizationRequest = status != .unnecessary
+        } catch { self.error = error.localizedDescription }
+    }
     func connect() async {
         guard !busy else { return }
         if let accessError { error = accessError; return }
         busy = true; error = ""; defer { busy = false }
         do {
             try await health.requestAuthorization(toShare: [], read: types)
-            await read(requestedIDs: HealthMetric.defaultIDs)
+            await checkAuthorizationRequest()
         } catch { self.error = error.localizedDescription }
     }
     func refresh(requestedIDs: [String] = HealthMetric.defaultIDs) async {
@@ -464,13 +472,24 @@ enum SleepDetails {
 
 struct HealthView: View {
     @StateObject private var reader = HealthReader()
+    @Environment(\.scenePhase) private var phase
+    @State private var showingAccessGuide = false
     var body: some View {
         PermissionPage(title: "Health") {
             PermissionPanel {
                 Label("Health access", systemImage: "heart.fill").font(.headline)
                 Text("Choose the categories Vesper may read. Rowan can use the summaries you request in chat.").foregroundStyle(VesperTheme.muted)
-                Button("Choose permissions") { Task { await reader.connect() } }
-                    .buttonStyle(PermissionActionStyle()).disabled(reader.busy || !reader.available)
+                Button(reader.needsAuthorizationRequest ? "Request Health access" : "How to change access") {
+                    Task {
+                        await reader.checkAuthorizationRequest()
+                        if reader.needsAuthorizationRequest { await reader.connect() }
+                        else { showingAccessGuide = true }
+                    }
+                }.buttonStyle(PermissionActionStyle()).disabled(reader.busy || !reader.available)
+                if !reader.needsAuthorizationRequest {
+                    Text("Change existing permissions in Apple Health. This button shows the steps.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted)
+                }
                 DisclosureGroup("About your data") {
                     Text("Only requested summaries are sent to the chat service. Apple does not reveal whether read access was denied: no data may also mean no recorded samples. Manage access in the Health app.")
                         .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
@@ -498,6 +517,21 @@ struct HealthView: View {
                     if let updated = reader.updated { Text("Read at " + updated.formatted()).font(.caption).foregroundStyle(VesperTheme.muted) }
                 }
             }
+        }
+        .task(id: phase) { if phase == .active { await reader.checkAuthorizationRequest() } }
+        .sheet(isPresented: $showingAccessGuide) {
+            NavigationStack {
+                PermissionPage(title: "Change Health access") {
+                    PermissionPanel {
+                        Text("Manage in Apple Health").font(.headline)
+                        Text("1. Open the Health app.\n2. Tap your profile picture.\n3. Open Apps and Services → Vesper.\n4. Turn the categories you want on or off.").lineSpacing(6)
+                        Text("You can also find Health permissions in iPhone Settings → Privacy & Security → Health → Vesper.")
+                            .font(.footnote).foregroundStyle(VesperTheme.muted)
+                        Text("Apple’s permission manager cannot be embedded here. Requesting access again will not reopen choices you already made.")
+                            .font(.footnote).foregroundStyle(VesperTheme.muted)
+                    }
+                }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingAccessGuide = false } } }
+            }.presentationDetents([.medium, .large])
         }
     }
 }

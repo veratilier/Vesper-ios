@@ -291,7 +291,7 @@ import SwiftUI
                 let shared = command["track"]
                 guard shared.id == command["trackId"].string, shared["source"].string == "appleMusic", !shared["appleMusicId"].string.isEmpty else { throw ServiceError(message: "The command contains no playable Apple Music song.") }
                 let queue = command["queue"].array
-                setQueue(queue.isEmpty ? [shared] : queue)
+                setQueue(queue.isEmpty ? [shared] : queue, append: !command["replaceQueue"].bool)
                 select(shared)
                 let requested = selection
                 await playTask?.value
@@ -356,7 +356,7 @@ import SwiftUI
                                     "artist": track["artist"], "album": track["album"]]),
                  "playing": .bool(playing), "resolving": .bool(resolving),
                  "positionSeconds": .number(position), "durationSeconds": .number(duration),
-                 "observedAt": .string(isoNow()), "audioIncluded": .bool(false)])
+                 "observedAt": .string(isoNow()), "queueLength": .number(Double(tracks.count)), "audioIncluded": .bool(false)])
     }
     func pollControl() async {
         guard !pollingControl, let store, !store.token.isEmpty else { return }
@@ -698,6 +698,7 @@ enum ChatMusicContext {
         result["playback"] = .object(["track": track, "playing": live["playing"],
             "resolving": live["resolving"], "positionSeconds": live["positionSeconds"],
             "durationSeconds": live["durationSeconds"], "updatedAt": live["observedAt"]])
+        if live["queueLength"] != .null { result["queueLength"] = live["queueLength"] }
         result["audioIncluded"] = .bool(false)
         return result
     }

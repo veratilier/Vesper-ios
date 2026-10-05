@@ -4,6 +4,12 @@ import SafariServices
 @testable import Vesper
 
 @MainActor final class SharedContentTests: XCTestCase {
+    func testMusicStatusUsesTheDeviceQueueInsteadOfAnOldServerQueue() {
+        let live: JSONValue = .object(["track": .object(["id": .string("apple-1")]), "queueLength": .number(5)])
+        let result = ChatMusicContext.liveStatus(live, server: .object(["queueLength": .number(1)]))
+        XCTAssertEqual(result["queueLength"], .number(5))
+        XCTAssertEqual(result["playback"]["track"]["trackId"].string, "apple-1")
+    }
     func testMusicSeekClampsToDurationAndRejectsUnknownOrInvalidTimes() throws {
         XCTAssertEqual(try MusicPlayer.seekPosition(45, duration: 180), 45)
         XCTAssertEqual(try MusicPlayer.seekPosition(500, duration: 180), 180)

@@ -181,23 +181,23 @@ private struct ReadingBookCover: View {
     }
 }
 
-private struct ReadingChapter {
+struct ReadingChapter {
     let title: String
     let range: NSRange
 }
-private struct ReadingPage: Identifiable {
+struct ReadingPage: Identifiable {
     let id: Int
     let chapter: Int
     let range: NSRange
     let text: String
 }
-private enum ReadingLayout {
-    static let font = UIFont.systemFont(ofSize: 18)
-    static var attributes: [NSAttributedString.Key: Any] {
+enum ReadingLayout {
+    static var attributes: [NSAttributedString.Key: Any] { attributes(fontSize: 18) }
+    static func attributes(fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 7
-        paragraph.paragraphSpacing = 12
-        return [.font: font, .paragraphStyle: paragraph, .foregroundColor: UIColor.label]
+        paragraph.lineSpacing = 5
+        paragraph.paragraphSpacing = 4
+        return [.font: UIFont.systemFont(ofSize: fontSize), .paragraphStyle: paragraph, .foregroundColor: UIColor.label]
     }
     static func chapters(in source: String) -> [ReadingChapter] {
         let ns = source as NSString
@@ -213,26 +213,46 @@ private enum ReadingLayout {
                                   range: NSRange(location: start, length: end - start))
         }.filter { $0.range.length > 0 }
     }
-    static func pages(in source: String, width: CGFloat, height: CGFloat) -> (chapters: [ReadingChapter], pages: [ReadingPage]) {
+    static func pages(in source: String, width: CGFloat, height: CGFloat, fontSize: CGFloat = 18) -> (chapters: [ReadingChapter], pages: [ReadingPage]) {
         let chapters = chapters(in: source)
         let ns = source as NSString
         var pages: [ReadingPage] = []
         for (chapterIndex, chapter) in chapters.enumerated() {
-            let storage = NSTextStorage(string: ns.substring(with: chapter.range), attributes: attributes)
+            let storage = NSTextStorage(string: ns.substring(with: chapter.range), attributes: attributes(fontSize: fontSize))
             let manager = NSLayoutManager()
             storage.addLayoutManager(manager)
+            let container = NSTextContainer(size: CGSize(width: max(1, width), height: max(1, height)))
+            container.lineFragmentPadding = 0
+            manager.addTextContainer(container)
+            let measurement = UITextView(usingTextLayoutManager: false)
+            measurement.textContainerInset = .zero
+            measurement.textContainer.lineFragmentPadding = 0
+            measurement.frame = CGRect(x: 0, y: 0, width: width, height: height)
             var offset = 0
-            while offset < storage.length {
-                let container = NSTextContainer(size: CGSize(width: max(180, width), height: max(180, height)))
-                container.lineFragmentPadding = 0
-                manager.addTextContainer(container)
+            while storage.length > 0 {
+                // Each page is rendered by its own text view, so lay out a fresh first line too.
                 let glyphs = manager.glyphRange(for: container)
                 let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-                let end = min(storage.length, max(offset + 1, NSMaxRange(characters)))
-                let range = NSRange(location: chapter.range.location + offset, length: end - offset)
+                var length = min(storage.length, max(1, NSMaxRange(characters)))
+                // A standalone page can wrap differently at its final line. Verify with the renderer.
+                while length > 1 {
+                    measurement.attributedText = NSAttributedString(string: (storage.string as NSString).substring(to: length),
+                                                                   attributes: attributes(fontSize: fontSize))
+                    let layout = measurement.layoutManager
+                    layout.ensureLayout(for: measurement.textContainer)
+                    if layout.usedRect(for: measurement.textContainer).maxY <= height { break }
+                    var fittingEnd = 0
+                    layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { rect, _, _, glyphs, stop in
+                        if rect.maxY > height { stop.pointee = true; return }
+                        fittingEnd = NSMaxRange(layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+                    }
+                    length = max(1, min(length - 1, fittingEnd))
+                }
+                let range = NSRange(location: chapter.range.location + offset, length: length)
                 pages.append(ReadingPage(id: pages.count, chapter: chapterIndex,
                                          range: range, text: ns.substring(with: range)))
-                offset = end
+                storage.deleteCharacters(in: NSRange(location: 0, length: length))
+                offset += length
             }
         }
         return (chapters, pages)
@@ -254,66 +274,109 @@ struct ReaderView: View {
     @State private var progressSave: Task<Void, Never>?
     @State private var target: ReadingNoteTarget?
     @State private var draft = ""
+    @State private var showContents = false
+    @AppStorage("readingFontSize") private var fontSize = 18.0
     private var book: JSONValue { store.document("readingRoom").array.first { $0.id == bookID } ?? .null }
     private var chapterIndex: Int { pages.indices.contains(pageIndex) ? pages[pageIndex].chapter : 0 }
 
     var body: some View {
-        GeometryReader { geometry in
-            let textWidth = min(geometry.size.width - 100, 620)
-            let textHeight = max(180, geometry.size.height - 240)
-            VStack(spacing: 12) {
-                HStack(spacing: 12) {
-                    Text(book["title"].string.replacingOccurrences(of: "_", with: " "))
-                        .font(.system(size: 18, weight: .semibold, design: .serif)).lineLimit(1)
-                    Spacer(minLength: 0)
-                    Button { draft = ""; target = ReadingNoteTarget(range: nil, quote: "") } label: {
-                        Label("全文批注", systemImage: "square.and.pencil")
-                    }.font(.caption).labelStyle(.iconOnly).accessibilityLabel("Full book notes")
-                }
-                HStack(spacing: 12) {
-                    Button { switchChapter(-1) } label: { Image(systemName: "chevron.left") }
-                        .disabled(chapterIndex == 0)
-                    Text(chapters.indices.contains(chapterIndex) ? chapters[chapterIndex].title : "阅读中")
-                        .font(.subheadline).foregroundStyle(VesperTheme.muted)
-                        .lineLimit(1).frame(maxWidth: .infinity)
-                    Button { switchChapter(1) } label: { Image(systemName: "chevron.right") }
-                        .disabled(chapterIndex + 1 >= chapters.count)
-                }.buttonStyle(.plain).frame(height: 34)
-                if pages.isEmpty {
-                    ProgressView("正在排版…").frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    TabView(selection: $pageIndex) {
-                        ForEach(pages) { page in
-                            ReadingTextPage(page: page, source: book["text"].string, notes: book["notes"].array) { range, quote in
-                                draft = ""; target = ReadingNoteTarget(range: range, quote: quote)
+        VStack(spacing: 0) {
+            GeometryReader { viewport in
+                // Pagination and rendering share the exact same text rectangle.
+                let textWidth = floor(max(1, min(viewport.size.width, 720) - 48))
+                let textHeight = floor(max(1, viewport.size.height - 24))
+                ZStack {
+                    if pages.isEmpty { ProgressView("正在排版…") }
+                    else {
+                        TabView(selection: $pageIndex) {
+                            ForEach(pages) { page in
+                                ReadingTextPage(page: page, source: book["text"].string, notes: book["notes"].array, fontSize: fontSize) { range, quote in
+                                    draft = ""; target = ReadingNoteTarget(range: range, quote: quote)
+                                }
+                                .frame(width: textWidth, height: textHeight, alignment: .topLeading)
+                                .padding(.horizontal, 24).padding(.vertical, 12)
+                                .frame(width: viewport.size.width, height: viewport.size.height)
+                                .tag(page.id)
                             }
-                            .padding(18)
-                            .frame(maxWidth: 680, maxHeight: .infinity, alignment: .topLeading)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
-                            .padding(.horizontal, 8)
-                            .tag(page.id)
-                        }
-                    }.tabViewStyle(.page(indexDisplayMode: .never))
+                        }.tabViewStyle(.page(indexDisplayMode: .never))
+                    }
                 }
-                HStack {
-                    Button { turn(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                        .disabled(pageIndex == 0)
-                    Spacer()
-                    Text("\(pageIndex + 1) / \(max(1, pages.count))").font(.subheadline).monospacedDigit()
-                    Spacer()
-                    Button { turn(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
-                        .disabled(pageIndex + 1 >= pages.count)
-                }.buttonStyle(.plain)
-                Text("左右滑动翻页 · 长按选句后点「批注」")
-                    .font(.caption2).foregroundStyle(VesperTheme.muted)
+                .frame(width: viewport.size.width, height: viewport.size.height)
+                .task(id: "\(bookID)-\(Int(textWidth))-\(Int(textHeight))-\(fontSize)-\(book["text"].string.utf16.count)") {
+                    guard textWidth > 1, textHeight > 1 else { return }
+                    let currentLocation = pages.indices.contains(pageIndex) ? pages[pageIndex].range.location : nil
+                    let location: Int
+                    if let currentLocation { location = currentLocation }
+                    else if case .number(let saved) = book["location"] { location = max(0, Int(saved)) }
+                    else { location = max(0, Int(book["page"].number) * 1800) }
+                    let result = ReadingLayout.pages(in: book["text"].string, width: textWidth, height: textHeight, fontSize: fontSize)
+                    chapters = result.chapters; pages = result.pages
+                    pageIndex = result.pages.firstIndex { NSLocationInRange(location, $0.range) } ?? max(0, result.pages.count - 1)
+                }
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .task(id: "\(bookID)-\(Int(textWidth))-\(Int(textHeight))-\(book["text"].string.utf16.count)") {
-                let result = ReadingLayout.pages(in: book["text"].string, width: textWidth, height: textHeight)
-                chapters = result.chapters; pages = result.pages
-                let location = book["location"].number > 0 ? Int(book["location"].number) : Int(book["page"].number) * 1800
-                pageIndex = result.pages.firstIndex { NSLocationInRange(location, $0.range) } ?? max(0, result.pages.count - 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 8) {
+                Button { turn(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                    .disabled(pageIndex == 0).accessibilityLabel("上一页")
+                Button { showContents = true } label: {
+                    VStack(spacing: 3) {
+                        Text(chapters.indices.contains(chapterIndex) ? chapters[chapterIndex].title : "全文")
+                            .lineLimit(1)
+                        Text("\(pages.isEmpty ? 0 : pageIndex + 1) / \(pages.count)").monospacedDigit()
+                    }.font(.caption).frame(maxWidth: .infinity)
+                }.accessibilityLabel("目录与进度，第 \(pageIndex + 1) 页，共 \(pages.count) 页")
+                Button { turn(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+                    .disabled(pageIndex + 1 >= pages.count).accessibilityLabel("下一页")
+            }.buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 12)
+        }
+        .background(Color(uiColor: .systemBackground))
+        .navigationTitle(book["title"].string.replacingOccurrences(of: "_", with: " "))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Picker("字号", selection: $fontSize) {
+                        ForEach([16.0, 18, 20, 22, 24], id: \.self) { size in
+                            Text("\(Int(size)) 号").tag(size)
+                        }
+                    }
+                } label: { Image(systemName: "textformat.size") }
+                .accessibilityLabel("阅读字号")
+                Button { draft = ""; target = ReadingNoteTarget(range: nil, quote: "") } label: {
+                    Image(systemName: "text.bubble")
+                }.accessibilityLabel("我和 Rowan 的批注")
             }
+        }
+        .sheet(isPresented: $showContents) {
+            NavigationStack {
+                List {
+                    Section("目录") {
+                        ForEach(chapters.indices, id: \.self) { index in
+                            Button {
+                                if let first = pages.first(where: { $0.chapter == index }) { pageIndex = first.id }
+                                showContents = false
+                            } label: {
+                                HStack {
+                                    Text(chapters[index].title).foregroundStyle(.primary)
+                                    Spacer()
+                                    if index == chapterIndex { Image(systemName: "checkmark") }
+                                }
+                            }
+                        }
+                    }
+                    if pages.count > 1 {
+                        Section("阅读进度 · 第 \(pageIndex + 1) / \(pages.count) 页") {
+                            Slider(value: Binding(get: { Double(pageIndex) }, set: { pageIndex = Int($0) }),
+                                   in: 0...Double(pages.count - 1), step: 1)
+                                .accessibilityLabel("阅读进度")
+                        }
+                    }
+                }
+                .navigationTitle("目录与进度").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showContents = false } } }
+            }.presentationDetents([.medium, .large])
+        }
             .onChange(of: pageIndex) { _, next in
                 guard pages.indices.contains(next) else { return }
                 let location = pages[next].range.location
@@ -336,13 +399,8 @@ struct ReaderView: View {
                                  saving: store.saving) { saveNote(for: selection) }
                     .presentationDetents([.medium, .large])
             }
-        }
     }
     private func turn(_ direction: Int) { pageIndex = min(max(0, pageIndex + direction), max(0, pages.count - 1)) }
-    private func switchChapter(_ direction: Int) {
-        guard let first = pages.first(where: { $0.chapter == chapterIndex + direction }) else { return }
-        pageIndex = first.id
-    }
     private func notes(for selection: ReadingNoteTarget) -> [JSONValue] {
         book["notes"].array.filter { entry in
             guard let range = selection.range else { return true }
@@ -395,28 +453,27 @@ private struct ReadingNoteSheet: View {
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                         Button { bookmark = true } label: { Label("存到书签", systemImage: "bookmark") }
                     }
-                    ForEach(["Rowan", "Vera"], id: \.self) { author in
-                        Text(author).font(.headline)
-                        let authored = notes.filter { $0["author"].string == author }
-                        if authored.isEmpty {
-                            Text("还没有批注").font(.subheadline).foregroundStyle(.secondary)
-                        } else {
-                            ForEach(authored) { entry in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    if target.range == nil && !entry["quote"].string.isEmpty {
-                                        Text(entry["quote"].string).font(.caption).italic().foregroundStyle(.secondary)
-                                    }
-                                    Text(entry["text"].string).textSelection(.enabled)
-                                }
-                                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    if notes.isEmpty {
+                        Text("还没有批注，留下第一段共读心情吧。").foregroundStyle(.secondary)
+                    }
+                    ForEach(notes) { entry in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(entry["author"].string.isEmpty ? "批注" : entry["author"].string, systemImage: "pencil.line")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(entry["author"].string == "Rowan" ? Color.teal : Color.orange)
+                            if target.range == nil && !entry["quote"].string.isEmpty {
+                                Text(entry["quote"].string).font(.caption).foregroundStyle(.secondary)
                             }
-                        }
+                            Text(entry["text"].string).textSelection(.enabled)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
                     }
                     Text("我的批注").font(.headline)
                     TextEditor(text: $draft).frame(minHeight: 95)
                         .scrollContentBackground(.hidden)
                         .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    Text("橙色是你的批注，青色是 Rowan 的批注。选中同一段文字，可以接着写。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Button("保存批注", action: save).buttonStyle(.borderedProminent)
                         .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
                 }.padding(20)
@@ -429,10 +486,11 @@ private struct ReadingNoteSheet: View {
     }
 }
 
-private struct ReadingTextPage: UIViewRepresentable {
+struct ReadingTextPage: UIViewRepresentable {
     let page: ReadingPage
     let source: String
     let notes: [JSONValue]
+    var fontSize: CGFloat = 18
     let openNote: (NSRange, String) -> Void
 
     static func range(for entry: JSONValue, in source: String) -> NSRange? {
@@ -453,35 +511,43 @@ private struct ReadingTextPage: UIViewRepresentable {
         }()
     }
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        let view = UITextView(usingTextLayoutManager: false)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.textContainer.widthTracksTextView = true
         view.delegate = context.coordinator
         view.isEditable = false; view.isSelectable = true; view.isScrollEnabled = false
         view.backgroundColor = .clear; view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         view.dataDetectorTypes = []
-        view.linkTextAttributes = [.foregroundColor: UIColor.label,
-                                   .underlineStyle: NSUnderlineStyle.single.rawValue]
+        view.linkTextAttributes = [.foregroundColor: UIColor.label]
+        view.accessibilityHint = "左右滑动翻页；长按选择文字后可添加批注，点划线查看批注。"
         return view
     }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        return CGSize(width: width, height: height)
+    }
     func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.page = page
         context.coordinator.openNote = openNote
         context.coordinator.source = source
-        let styled = NSMutableAttributedString(string: page.text, attributes: ReadingLayout.attributes)
+        let styled = NSMutableAttributedString(string: page.text, attributes: ReadingLayout.attributes(fontSize: fontSize))
         for entry in notes {
             guard let span = Self.range(for: entry, in: source) else { continue }
             let intersection = NSIntersectionRange(span, page.range)
             guard intersection.length > 0 else { continue }
             let local = NSRange(location: intersection.location - page.range.location, length: intersection.length)
-            styled.addAttributes([.backgroundColor: UIColor.systemTeal.withAlphaComponent(0.19),
+            let color: UIColor = entry["author"].string == "Rowan" ? .systemTeal : .systemOrange
+            styled.addAttributes([.backgroundColor: color.withAlphaComponent(0.12),
                                   .underlineStyle: NSUnderlineStyle.single.rawValue,
-                                  .underlineColor: UIColor.systemTeal,
+                                  .underlineColor: color,
                                   .link: URL(string: "vesper-reading-note://note/\(span.location)")!], range: local)
         }
         if !view.attributedText.isEqual(to: styled) { view.attributedText = styled }
     }
     func makeCoordinator() -> Coordinator { Coordinator(page: page, source: source, openNote: openNote) }
     final class Coordinator: NSObject, UITextViewDelegate {
-        let page: ReadingPage
+        var page: ReadingPage
         var source: String
         var openNote: (NSRange, String) -> Void
         init(page: ReadingPage, source: String, openNote: @escaping (NSRange, String) -> Void) {

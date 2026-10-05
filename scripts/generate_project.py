@@ -17,7 +17,7 @@ shared_ref=ref('Shared/WidgetSnapshot.swift','sourcecode.swift')
 source_refs.append(shared_ref);source_build.append(put('shared-app-build',isa='PBXBuildFile',fileRef=shared_ref))
 call_activity_ref=ref('Shared/CallActivityAttributes.swift','sourcecode.swift')
 source_refs.append(call_activity_ref);source_build.append(put('call-activity-app-build',isa='PBXBuildFile',fileRef=call_activity_ref))
-for path,kind in [('Vesper/Resources/Assets.xcassets','folder.assetcatalog'),('Vesper/Resources/Ballet.ttf','file'),('Vesper/Resources/Ballet-OFL.txt','text')]:
+for path,kind in [('Vesper/Resources/Assets.xcassets','folder.assetcatalog'),('Vesper/Resources/Ballet.ttf','file'),('Vesper/Resources/Ballet-OFL.txt','text'),('Vesper/Resources/PhotoStack','folder')]:
  if (root/path).exists():
   f=ref(path,kind);resource_refs.append(f);resource_build.append(put('build:'+path,isa='PBXBuildFile',fileRef=f))
 info=ref('Vesper/Info.plist','text.plist.xml')

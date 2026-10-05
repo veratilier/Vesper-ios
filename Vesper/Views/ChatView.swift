@@ -10,6 +10,7 @@ private struct ChatScrollUpdate: Equatable {
     let lastMessageID: String?
     let lastContent: String
     let localMessageID: String?
+    let jumpMessageID: String?
     let viewportHeight: CGFloat
     let followsLatest: Bool
 }
@@ -20,112 +21,6 @@ private struct AttachmentRowAlignment: ViewModifier {
     func body(content: Content) -> some View {
         if single { content.containerRelativeFrame(.horizontal, alignment: user ? .trailing : .leading) }
         else { content }
-    }
-}
-
-private struct ChatPhotoStack: View {
-    let photos: [JSONValue]
-    @State private var front = 0
-    @State private var dragX: CGFloat = 0
-    @State private var advancing = false
-    @State private var showingPhoto = false
-    @State private var advanceGeneration = UUID()
-    private let cardWidth: CGFloat = 256
-    private let cardHeight: CGFloat = 330
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if photos.count > 1 {
-                Label("\(photos.count) Photos", systemImage: "square.grid.2x2.fill")
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(VesperTheme.accent)
-                ZStack(alignment: .topLeading) {
-                    ForEach((0..<min(photos.count, 4)).reversed(), id: \.self) { depth in
-                        card((front + depth) % photos.count)
-                            .offset(x: depth == 0 ? dragX : CGFloat(depth) * 8,
-                                    y: CGFloat(depth) * 3)
-                            .zIndex(Double(4 - depth))
-                            .allowsHitTesting(depth == 0)
-                    }
-                }
-                .frame(width: cardWidth + 24, height: cardHeight + 12, alignment: .topLeading)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 12)
-                    .onChanged { value in
-                        guard !advancing, abs(value.translation.width) > abs(value.translation.height) else { return }
-                        dragX = min(0, value.translation.width)
-                    }
-                    .onEnded { value in
-                        guard !advancing else { return }
-                        if abs(value.translation.width) > abs(value.translation.height),
-                           value.translation.width < -65 || value.predictedEndTranslation.width < -110 {
-                            advance()
-                        } else { withAnimation(.spring(response: 0.25)) { dragX = 0 } }
-                    })
-                .accessibilityHint("Swipe left to see the next photo")
-                .accessibilityAction(named: "Next photo") { advance() }
-            } else if !photos.isEmpty {
-                AsyncImage(url: URL(string: photos[0]["url"].string)) { image in
-                    image.resizable().scaledToFit().frame(maxWidth: 276, maxHeight: 320)
-                } placeholder: {
-                    ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
-                        .frame(width: 240, height: 240)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                .onTapGesture { showingPhoto = true }
-            }
-        }
-        .onChange(of: photos) { _, _ in
-            resetStack()
-            showingPhoto = false
-        }
-        .onDisappear { resetStack() }
-        .sheet(isPresented: $showingPhoto) {
-            NavigationStack {
-                ZStack {
-                    Color.black.ignoresSafeArea()
-                    if photos.indices.contains(front) {
-                        AsyncImage(url: URL(string: photos[front]["url"].string)) { image in
-                            image.resizable().scaledToFit()
-                        } placeholder: { ProgressView().tint(.white) }
-                    }
-                }
-                .toolbar { Button("Done") { showingPhoto = false } }
-            }
-        }
-    }
-
-    private func card(_ index: Int) -> some View {
-        AsyncImage(url: URL(string: photos[index]["url"].string)) { image in
-            image.resizable().scaledToFill().frame(width: cardWidth, height: cardHeight).clipped()
-        } placeholder: {
-            ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
-                .frame(width: cardWidth, height: cardHeight)
-        }
-        .frame(width: cardWidth, height: cardHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.12), radius: 7, y: 5)
-        .onTapGesture { if index == front && !advancing { showingPhoto = true } }
-        .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
-    }
-
-    private func advance() {
-        guard photos.count > 1, !advancing else { return }
-        advancing = true
-        let generation = UUID()
-        advanceGeneration = generation
-        withAnimation(.easeOut(duration: 0.2)) { dragX = -cardWidth - 30 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            guard advanceGeneration == generation else { return }
-            front = (front + 1) % photos.count
-            dragX = 0
-            advancing = false
-        }
-    }
-    private func resetStack() {
-        advanceGeneration = UUID()
-        front = 0
-        dragX = 0
-        advancing = false
     }
 }
 
@@ -232,63 +127,12 @@ struct ChatConnectionSheet: View {
     }
 }
 
-// Text edits must not invalidate the chat timeline. Only the field and its
-// send button observe this object; attachments still notify ChatView.
-final class ChatTypedDraft: ObservableObject {
-    @Published var text = ""
-}
-
-private struct ChatDraftField: View {
-    @ObservedObject var draft: ChatTypedDraft
-    @FocusState.Binding var focused: Bool
-    let listening: Bool
-
-    var body: some View {
-        TextField(listening ? "Listening…" : "Write to Rowan…", text: $draft.text, axis: .vertical)
-            .lineLimit(1...5).focused($focused).font(.system(size: 16))
-    }
-}
-
-private struct ChatSendButton: View {
-    @ObservedObject var draft: ChatTypedDraft
-    let hasAttachment: Bool
-    let blocked: Bool
-    let send: () -> Void
-
-    var body: some View {
-        Button(action: send) {
-            Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40)
-        }
-        .disabled((draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasAttachment) || blocked)
-        .accessibilityLabel("Send")
-    }
-}
-
-final class ChatComposer: ObservableObject {
-    let typedDraft = ChatTypedDraft()
-    var draft: String {
-        get { typedDraft.text }
-        set { typedDraft.text = newValue }
-    }
-    @Published var images: [Data] = []
-    @Published var files: [ChatFile] = []
-    @Published var pendingMusic: JSONValue?
-    private struct Draft { var text: String; var images: [Data]; var files: [ChatFile]; var music: JSONValue? }
-    private var saved: [String: Draft] = [:]
-    func switchConversation(from: String, to: String) {
-        guard from != to else { return }
-        saved[from] = Draft(text: draft, images: images, files: files, music: pendingMusic)
-        let next = saved[to]; draft = next?.text ?? ""; images = next?.images ?? []; files = next?.files ?? []; pendingMusic = next?.music
-    }
-}
-
 struct ChatView: View {
     var onMenu: () -> Void = {}
     var restoreLatest = true
     var native = false
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
-    @EnvironmentObject private var player: MusicPlayer
     @StateObject private var voiceRecorder = VoiceMessageRecorder()
     @StateObject private var speech = SpeechInput()
     @StateObject private var location = ChatLocation()
@@ -321,6 +165,7 @@ struct ChatView: View {
     @State private var nearBottom = true
     @State private var followsLatest = true
     @State private var positionedConversationID: String?
+    @State private var positionedJumpMessageID: String?
     @State private var observedLocalMessageID: String?
     @State private var draggingHistory = false
     @State private var viewportHeight: CGFloat = 0
@@ -341,7 +186,7 @@ struct ChatView: View {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if chat.hasOlderMessages { Button(chat.loadingOlder ? "Loading…" : "Load earlier messages") { followsLatest = false; Task { await chat.loadOlder() } }.disabled(chat.loadingOlder) }
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
-                        ForEach(ChatPresentation.displayRows(chat.messages)) { row in
+                        ForEach(chat.presentation.rows) { row in
                             if let message = row.messages.first {
                                 if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
                                 else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
@@ -361,14 +206,16 @@ struct ChatView: View {
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
                 .onPreferenceChange(ChatBottomPosition.self) { bottom in
                     guard let bottom, viewportHeight > 0 else { return }
-                    nearBottom = bottom <= viewportHeight + 2
-                    if draggingHistory || nearBottom { followsLatest = nearBottom }
+                    let isNearBottom = bottom <= viewportHeight + (nearBottom ? 60 : 24)
+                    if nearBottom != isNearBottom { nearBottom = isNearBottom }
+                    // Never re-enable auto-follow while the finger is scrolling history.
+                    if !draggingHistory && isNearBottom && !followsLatest { followsLatest = true }
                  }
                 .simultaneousGesture(DragGesture(minimumDistance: 3)
                     .onChanged { _ in
-                        draggingHistory = true
-                        followsLatest = false
-                        positionedConversationID = chat.conversationID
+                        if !draggingHistory { draggingHistory = true }
+                        if followsLatest { followsLatest = false }
+                        if positionedConversationID != chat.conversationID { positionedConversationID = chat.conversationID }
                     }
                     .onEnded { _ in
                         draggingHistory = false
@@ -382,6 +229,7 @@ struct ChatView: View {
                     .overlay(alignment: .top) {
                         if !nearBottom && !chat.messages.isEmpty {
                             Button {
+                                chat.jumpMessageID = nil
                                 followsLatest = true
                                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
                             } label: {
@@ -397,18 +245,16 @@ struct ChatView: View {
                         }
                     }
                 }
-                .onChange(of: chat.jumpMessageID) { _, id in
-                    guard let id else { return }; followsLatest = false
-                    Task { await Task.yield(); withAnimation { proxy.scrollTo(id, anchor: .center) } }
-                }
                 .task(id: scrollUpdate) { await positionLatest(using: proxy) }
                 .onAppear {
                     positionedConversationID = nil
+                    positionedJumpMessageID = nil
                     observedLocalMessageID = chat.latestLocalMessageID
                     followsLatest = true
                 }
                 .onChange(of: chat.conversationID) { _, _ in
                     positionedConversationID = nil
+                    positionedJumpMessageID = nil
                     observedLocalMessageID = chat.latestLocalMessageID
                     followsLatest = true
                     nearBottom = true
@@ -422,17 +268,29 @@ struct ChatView: View {
                          lastMessageID: chat.messages.last?.id,
                          lastContent: chat.messages.last?["content"].string ?? "",
                          localMessageID: chat.latestLocalMessageID,
+                         jumpMessageID: chat.jumpMessageID,
                          viewportHeight: viewportHeight,
                          followsLatest: followsLatest)
     }
     @MainActor private func positionLatest(using proxy: ScrollViewProxy) async {
         let conversationID = chat.conversationID
-        if let target = chat.jumpMessageID, chat.messages.contains(where: { $0.id == target }) {
-            followsLatest = false; positionedConversationID = conversationID
-            await Task.yield(); proxy.scrollTo(target, anchor: .center); return
-        }
-        let firstPosition = positionedConversationID != conversationID
         let sentLocally = observedLocalMessageID != chat.latestLocalMessageID
+        if sentLocally { chat.jumpMessageID = nil }
+        if let target = chat.jumpMessageID {
+            guard positionedJumpMessageID != target,
+                  chat.messages.contains(where: { $0.id == target }), viewportHeight > 0 else { return }
+            followsLatest = false
+            await Task.yield()
+            guard !Task.isCancelled, chat.conversationID == conversationID,
+                  chat.jumpMessageID == target else { return }
+            // Keep the highlight, but consume the scroll request only once.
+            proxy.scrollTo(target, anchor: .center)
+            positionedConversationID = conversationID
+            positionedJumpMessageID = target
+            return
+        }
+        positionedJumpMessageID = nil
+        let firstPosition = positionedConversationID != conversationID
         guard firstPosition || sentLocally || followsLatest else { return }
         guard !draggingHistory, !chat.messages.isEmpty, viewportHeight > 0 else { return }
         // History and thread/resume arrive asynchronously. Scroll after their
@@ -661,51 +519,15 @@ struct ChatView: View {
         }
     }
     private func messageRow(_ message: JSONValue, activities: [JSONValue]) -> some View {
-        let user = ChatPresentation.isUser(message)
-        let attachments = message["metadata"]["attachments"].array
-        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
-        let otherAttachments = attachments.filter { !$0["type"].string.hasPrefix("image/") }
-        return HStack(alignment: .top, spacing: 0) {
-            if user { Spacer(minLength: 42) }
-            VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: !chat.busy && message.id == chat.messages.last(where: { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) })?.id ? chat.events : []) }
-                if !photos.isEmpty {
-                    ChatPhotoStack(photos: photos)
-                    ForEach(photos.filter { !$0["sourceMessageId"].string.isEmpty }) { photo in
-                        Button("Original conversation") {
-                            Task { _ = await chat.openSearchResult(.object(["id": photo["sourceMessageId"], "conversationId": photo["sourceConversationId"]])) }
-                        }.font(.caption).disabled(chat.busy || chat.callActive)
-                    }
-                        .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
-                }
-                if !otherAttachments.isEmpty {
-                    ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
-                        if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) } }
-                    } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
-                }
-                if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(message["metadata"]["musicCard"])) }
-                else if message["status"].string != "streaming" {
-                    ForEach(ChatMusicShare.links(in: message["content"].string)) { track in ChatMusicLinkCard(track: track) }
-                }
-                if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
-                if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
-                if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
-                    ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
-                }
-                if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
-                if message["status"].string != "streaming" && !chat.replyIsStillRunning(message) {
-                    HStack(spacing: 12) {
-                        if user { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
-                        Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message")
-                        Button { Task { await favorite(message) } } label: { Image(systemName: isFavorite(message) ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(store.saving)
-                        Button { Task { await remember(message) } } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(chat.busy)
-                        Button { deleting = message } label: { Image(systemName: "trash") }.accessibilityLabel("Delete message").disabled(chat.busy)
-                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(.plain).padding(.vertical, 4)
-                }
-            }.padding(4).background(chat.jumpMessageID == message.id ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12)).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
-            if !user { Spacer(minLength: 20) }
-        }
+        ChatMessageRow(message: message, activities: activities,
+                       liveEvents: !chat.busy && message.id == chat.presentation.lastReplyID ? chat.events : [],
+                       replyIsRunning: chat.replyIsStillRunning(message),
+                       favorite: isFavorite(message), saving: store.saving, busy: chat.busy,
+                       highlighted: chat.jumpMessageID == message.id,
+                       onFavorite: { Task { await favorite(message) } },
+                       onRemember: { Task { await remember(message) } },
+                       onDelete: { deleting = message })
+            .equatable()
     }
     private var composer: some View {
         VStack(spacing: 4) {
@@ -728,18 +550,18 @@ struct ChatView: View {
                 } } }
             }
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
-            ChatDraftField(draft: draftStore.typedDraft, focused: $focused, listening: speech.listening)
+            ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; player.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
+                Button { focused = false; drawer = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
-                    ChatSendButton(draft: draftStore.typedDraft,
-                                   hasAttachment: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil,
+                    ChatSendButton(text: draftStore.text,
+                                   hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil,
                                    blocked: voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
-                                   send: send)
+                                   action: send)
                 }
             }
         }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
@@ -855,11 +677,84 @@ struct ChatView: View {
 }
 
 
+// Value inputs isolate old rows from token, composer and scroll-state updates.
+private struct ChatMessageRow: View, Equatable {
+    let message: JSONValue
+    let activities: [JSONValue]
+    let liveEvents: [String]
+    let replyIsRunning: Bool
+    let favorite: Bool
+    let saving: Bool
+    let busy: Bool
+    let highlighted: Bool
+    let onFavorite: () -> Void
+    let onRemember: () -> Void
+    let onDelete: () -> Void
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message && lhs.activities == rhs.activities && lhs.liveEvents == rhs.liveEvents &&
+        lhs.replyIsRunning == rhs.replyIsRunning && lhs.favorite == rhs.favorite &&
+        lhs.saving == rhs.saving && lhs.busy == rhs.busy && lhs.highlighted == rhs.highlighted
+    }
+    var body: some View {
+        let user = ChatPresentation.isUser(message)
+        let attachments = message["metadata"]["attachments"].array
+        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
+        let otherAttachments = attachments.filter { !$0["type"].string.hasPrefix("image/") }
+        return HStack(alignment: .top, spacing: 0) {
+            if user { Spacer(minLength: 42) }
+            VStack(alignment: user ? .trailing : .leading, spacing: 8) {
+                if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents) }
+                if !photos.isEmpty {
+                    ChatPhotoStack(photos: photos)
+                        .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+                }
+                if !otherAttachments.isEmpty {
+                    ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
+                        if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
+                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) } }
+                    } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
+                }
+                if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(message["metadata"]["musicCard"])) }
+                else if message["status"].string != "streaming" {
+                    ForEach(ChatMusicShare.links(in: message["content"].string)) { track in ChatMusicLinkCard(track: track) }
+                }
+                if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
+                if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
+                if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
+                    ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
+                }
+                if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
+                if message["status"].string != "streaming" && !replyIsRunning {
+                    HStack(spacing: 12) {
+                        if user { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
+                        Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message")
+                        Button { onFavorite() } label: { Image(systemName: favorite ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(saving)
+                        Button { onRemember() } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(busy)
+                        Button { onDelete() } label: { Image(systemName: "trash") }.accessibilityLabel("Delete message").disabled(busy)
+                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(.plain).padding(.vertical, 4)
+                }
+            }.padding(4).background(highlighted ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12)).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+            if !user { Spacer(minLength: 20) }
+        }
+    }
+}
+
 private struct ChatHeaderButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label.frame(width: 36, height: 44).opacity(configuration.isPressed ? 0.5 : 1) }
 }
 
 // Keep persisted records intact; classify only their presentation, never by message text.
+// Retained by ChatSession until the message array changes. Scroll geometry,
+// playback ticks and composer state must not re-sort/re-group the transcript.
+final class ChatPresentationSnapshot {
+    let rows: [ChatPresentation.Row]
+    let lastReplyID: String?
+    init(_ messages: [JSONValue]) {
+        rows = ChatPresentation.displayRows(messages)
+        lastReplyID = messages.last { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }?.id
+    }
+}
+
 enum ChatPresentation {
     struct Row: Identifiable {
         let id: String
@@ -898,19 +793,38 @@ enum ChatPresentation {
     }
     static func displayRows(_ input: [JSONValue]) -> [Row] {
         let messages = ChatTranscript.ordered(input).filter { !isWakeActivity($0) }
-        let replies = messages.indices.filter { !isUser(messages[$0]) && !isActivity(messages[$0]) }
+        // Index turn ownership once. Re-scanning the complete history for every
+        // tool row was quadratic, especially in chats with many tool calls.
+        var firstReplyByTurn: [String: Int] = [:]
+        var nextReply = Array<Int?>(repeating: nil, count: messages.count)
+        var nextLegacyReply = nextReply
+        var next: Int?, nextLegacy: Int?
+        for index in messages.indices.reversed() {
+            nextReply[index] = next; nextLegacyReply[index] = nextLegacy
+            if isUser(messages[index]) { next = nil; nextLegacy = nil }
+            else if !isActivity(messages[index]) {
+                next = index
+                let turn = messages[index]["metadata"]["turnId"].string
+                if turn.isEmpty { nextLegacy = index }
+                else { firstReplyByTurn[turn] = index }
+            }
+        }
         var attached: [Int: [JSONValue]] = [:]
-        var orphans: [Int] = []
-        for index in messages.indices where isActivity(messages[index]) {
-            let turn = messages[index]["metadata"]["turnId"].string
-            let exact = turn.isEmpty ? nil : replies.first { messages[$0]["metadata"]["turnId"].string == turn }
-            // For legacy records without turn IDs, stay within this user's turn.
-            let lower = messages.indices.last { $0 < index && isUser(messages[$0]) } ?? -1
-            let upper = messages.indices.first { $0 > index && isUser(messages[$0]) } ?? messages.count
-            let nearby = replies.filter { $0 > lower && $0 < upper && (turn.isEmpty || messages[$0]["metadata"]["turnId"].string.isEmpty) }
-            if let target = exact ?? nearby.first(where: { $0 > index }) ?? nearby.last {
-                attached[target, default: []].append(messages[index])
-            } else { orphans.append(index) }
+        var orphans: Set<Int> = []
+        var previous: Int?, previousLegacy: Int?
+        for index in messages.indices {
+            let message = messages[index]
+            if isUser(message) { previous = nil; previousLegacy = nil; continue }
+            let turn = message["metadata"]["turnId"].string
+            if !isActivity(message) {
+                previous = index
+                if turn.isEmpty { previousLegacy = index }
+                continue
+            }
+            let exact = turn.isEmpty ? nil : firstReplyByTurn[turn]
+            let nearby = turn.isEmpty ? (nextReply[index] ?? previous) : (nextLegacyReply[index] ?? previousLegacy)
+            if let target = exact ?? nearby { attached[target, default: []].append(message) }
+            else { orphans.insert(index) }
         }
         return messages.indices.compactMap { index in
             if isActivity(messages[index]) {
@@ -920,16 +834,21 @@ enum ChatPresentation {
             return Row(id: messages[index].id, activity: false, messages: [messages[index]], activities: attached[index] ?? [])
         }
     }
+    private static let timeLabels: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>(); cache.countLimit = 4096; return cache
+    }()
     static func time(_ raw: String, full: Bool = false) -> String {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = parser.date(from: raw)
-        if date == nil { parser.formatOptions = [.withInternetDateTime]; date = parser.date(from: raw) }
-        guard let date else { return "" }
+        guard let date = UserHistoryRecovery.parsedTime(raw) else { return "" }
+        let today = Calendar.current.isDateInToday(date)
+        let key = "\(raw)|\(full)|\(today)|\(TimeZone.current.identifier)|\(Locale.current.identifier)" as NSString
+        if let cached = timeLabels.object(forKey: key) { return cached as String }
         let formatter = DateFormatter()
-        formatter.dateFormat = full ? "M/d HH:mm:ss" : (Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm")
-        return formatter.string(from: date)
+        formatter.dateFormat = full ? "M/d HH:mm:ss" : (today ? "HH:mm" : "MMM d, HH:mm")
+        let label = formatter.string(from: date)
+        timeLabels.setObject(label as NSString, forKey: key)
+        return label
     }
+
 }
 
 enum ChatTerminalRecords {

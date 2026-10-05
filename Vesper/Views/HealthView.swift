@@ -118,6 +118,7 @@ private struct HealthMetric {
             q("blood_oxygen", "Blood oxygen", "Respiratory", .oxygenSaturation, percent, "%"),
             q("respiratory_rate", "Respiratory rate", "Respiratory", .respiratoryRate, bpm, "breaths/min"),
             c("sleep", "Sleep · past 24 hours", "Sleep", .sleepAnalysis, 1),
+            c("sleep_details", "Latest sleep · stages and times", "Sleep", .sleepAnalysis, 3),
             q("blood_glucose", "Blood glucose", "Vitals", .bloodGlucose, mg.unitDivided(by: .literUnit(with: .deci)), "mg/dL"),
             q("body_temperature", "Body temperature", "Vitals", .bodyTemperature, .degreeCelsius(), "°C"),
             q("wrist_temperature", "Sleeping wrist temperature", "Vitals", .appleSleepingWristTemperature, .degreeCelsius(), "°C", 1, 7)
@@ -132,6 +133,127 @@ private struct HealthMetric {
     static let defaultIDs = ["heart_rate", "steps", "sleep", "wrist_temperature"]
 }
 
+/// Summarizes one recorded sleep episode, without combining competing writers.
+/// Kept independent of HealthKit queries so interval handling can be verified
+/// with synthetic records instead of accessing anyone's health data.
+enum SleepDetails {
+    enum Stage: String { case core, deep, rem, unspecified, awake, inBed
+        var asleep: Bool { self != .awake && self != .inBed }
+        var detailed: Bool { self == .core || self == .deep || self == .rem }
+    }
+    struct Sample {
+        let start: Date
+        let end: Date
+        let stage: Stage
+        let sourceID: String
+        let sourceName: String
+    }
+    static let lookback: TimeInterval = 3 * 86400
+    static let episodeGap: TimeInterval = 90 * 60
+
+    static func summarize(_ input: [Sample], now: Date, timeZone: TimeZone = .current) -> JSONValue {
+        let since = now.addingTimeInterval(-lookback)
+        let samples = input.filter { $0.start < $0.end && $0.end > since && $0.start < now }.map {
+            Sample(start: max($0.start, since), end: min($0.end, now), stage: $0.stage,
+                   sourceID: $0.sourceID, sourceName: $0.sourceName)
+        }
+        // For each writer, find its latest sleep episode. In-bed records cannot
+        // connect naps or turn a time in bed into a measured time asleep.
+        let episodes = Dictionary(grouping: samples, by: \.sourceID).values.compactMap { records -> [Sample]? in
+            let sleep = records.filter { $0.stage.asleep }.sorted { $0.start < $1.start }
+            guard let first = sleep.first else { return nil }
+            var start = first.start, end = first.end
+            for sample in sleep.dropFirst() {
+                if sample.start.timeIntervalSince(end) > episodeGap { start = sample.start; end = sample.end }
+                else { end = max(end, sample.end) }
+            }
+            return records.filter { $0.end > start && $0.start < end }.map {
+                Sample(start: max(start, $0.start), end: min(end, $0.end), stage: $0.stage,
+                       sourceID: $0.sourceID, sourceName: $0.sourceName)
+            }
+        }
+        guard let latestEnd = episodes.compactMap({ $0.map(\.end).max() }).max() else {
+            return .object(["status": .string("no_readable_data"), "note": .string("No readable sleep samples; this does not distinguish missing data from missing read permission.")])
+        }
+        // Prefer stage-bearing data near the latest recorded sleep, never an
+        // older night's detailed records over a more recent separate nap.
+        let eligible = episodes.filter { latestEnd.timeIntervalSince($0.map(\.end).max()!) <= episodeGap }
+        func detailedSeconds(_ records: [Sample]) -> Double {
+            var end = since, seconds = 0.0
+            for sample in records.filter({ $0.stage.detailed }).sorted(by: { $0.start < $1.start }) {
+                seconds += max(0, sample.end.timeIntervalSince(max(end, sample.start)))
+                end = max(end, sample.end)
+            }
+            return seconds
+        }
+        let selected = eligible.sorted {
+            let a = detailedSeconds($0), b = detailedSeconds($1)
+            if a != b { return a > b }
+            let aEnd = $0.map(\.end).max()!, bEnd = $1.map(\.end).max()!
+            if aEnd != bEnd { return aEnd > bEnd }
+            return $0[0].sourceID < $1[0].sourceID
+        }[0]
+        let boundaries = Array(Set(selected.flatMap { [$0.start, $0.end] })).sorted()
+        var seconds: [Stage: Double] = [:], conflicts = 0.0
+        var awake: [(Date, Date)] = []
+        for (a, b) in zip(boundaries, boundaries.dropFirst()) {
+            var active = Set(selected.filter { $0.start < b && $0.end > a }.map(\.stage))
+            // An explicit awake stage is more specific than a broad legacy
+            // unspecified-asleep interval from the same writer.
+            if active.contains(.awake) && !active.contains(where: \.detailed) { active.remove(.unspecified) }
+            let asleep = active.filter(\.asleep)
+            if !asleep.isEmpty {
+                active = Set(asleep)
+                if active.contains(where: \.detailed) { active.remove(.unspecified) }
+                let stage = active.count == 1 ? active.first! : .unspecified
+                if active.count > 1 { conflicts += b.timeIntervalSince(a) }
+                seconds[stage, default: 0] += b.timeIntervalSince(a)
+            } else if active.contains(.awake) {
+                seconds[.awake, default: 0] += b.timeIntervalSince(a)
+                if let last = awake.last, last.1 == a { awake[awake.count - 1].1 = b }
+                else { awake.append((a, b)) }
+            }
+        }
+        let formatter = ISO8601DateFormatter()
+        let sleepStart = selected.filter { $0.stage.asleep }.map(\.start).min()!
+        let sleepEnd = selected.filter { $0.stage.asleep }.map(\.end).max()!
+        func minutes(_ stage: Stage) -> JSONValue {
+            // Missing stages are unknown, rather than silently reported as zero.
+            guard selected.contains(where: { $0.stage == stage }) || seconds[stage] != nil else { return .null }
+            return .number((seconds[stage] ?? 0) / 60)
+        }
+        return .object([
+            "status": .string("recorded"), "timeZone": .string(timeZone.identifier),
+            "sleepStart": .string(formatter.string(from: sleepStart)),
+            "lastRecordedSleepEnd": .string(formatter.string(from: sleepEnd)),
+            "totalSleepMinutes": .number(seconds.filter { $0.key.asleep }.values.reduce(0, +) / 60),
+            "stageMinutes": .object(["rem": minutes(.rem), "core": minutes(.core), "deep": minutes(.deep),
+                                     "unspecified": minutes(.unspecified), "awake": minutes(.awake)]),
+            "awakeIntervals": .array(awake.prefix(20).map { .object(["start": .string(formatter.string(from: $0.0)), "end": .string(formatter.string(from: $0.1))]) }),
+            "recordedAwakeIntervalCount": awake.isEmpty ? .null : .number(Double(awake.count)),
+            "awakeIntervalsTruncated": .bool(awake.count > 20),
+            "source": .string(selected[0].sourceName),
+            "conflictingStageMinutes": .number(conflicts / 60),
+            "windowClipped": .bool(sleepStart == since || sleepEnd == now),
+            "note": .string("Latest recorded episode within 72 hours, grouped by sleep gaps of at most 90 minutes. One data source is used, preferring stage records near the latest sleep; other sources are not added together. Null means no recorded stage, not zero. Last recorded sleep end is only a wake-time reference, not a verified wake time. Awake intervals cover the recorded sleep episode only; unrecorded gaps are not assumed awake. Conflicting stages are counted as unspecified. HealthKit stages are estimates, not diagnoses.")
+        ])
+    }
+
+    static func display(_ details: JSONValue) -> String {
+        guard details["status"].string == "recorded" else { return "No readable data" }
+        func duration(_ value: JSONValue) -> String {
+            guard case .number(let minutes) = value else { return "No recorded data" }
+            return "\(Int(minutes) / 60) h \(Int(minutes) % 60) min"
+        }
+        let dateFormatter = ISO8601DateFormatter()
+        func time(_ key: String) -> String {
+            dateFormatter.date(from: details[key].string)?.formatted(date: .abbreviated, time: .shortened) ?? "Unknown"
+        }
+        let stages = details["stageMinutes"]
+        return "Sleep: \(duration(details["totalSleepMinutes"]))\nRecorded start: \(time("sleepStart"))\nLast sleep end: \(time("lastRecordedSleepEnd")) (wake-time reference)\nREM: \(duration(stages["rem"])) · Core: \(duration(stages["core"]))\nDeep: \(duration(stages["deep"])) · Awake: \(duration(stages["awake"]))\nSource: \(details["source"].string)"
+    }
+}
+
 @MainActor final class HealthReader: ObservableObject {
     private let health = HKHealthStore()
     @Published var rows: [(String, String)] = []
@@ -139,6 +261,7 @@ private struct HealthMetric {
     @Published var error = ""
     @Published var updated: Date?
     private(set) var requestedIDs: [String] = []
+    private(set) var sleepDetails: JSONValue = .null
     var available: Bool { HKHealthStore.isHealthDataAvailable() }
     private var accessError: String? {
         guard available else { return "Health data is unavailable on this device." }
@@ -148,6 +271,14 @@ private struct HealthMetric {
     }
     static var catalog: JSONValue {
         .array(HealthMetric.catalog.map { .object(["id": .string($0.id), "name": .string($0.title), "group": .string($0.group)]) } + HealthMetric.characteristicNames.map { .object(["id": .string($0.0), "name": .string($0.1), "group": .string("Me")]) })
+    }
+    static func resolvedMetricIDs(for ids: [String]) -> [String] {
+        // An exact metric ID wins over a same-named group: requesting the
+        // compact 'sleep' total must not implicitly request private details.
+        let groups = ids.filter { id in !HealthMetric.catalog.contains { $0.id == id } }
+        return HealthMetric.catalog.filter {
+            ids.contains("all") || ids.contains($0.id) || groups.contains($0.group.lowercased().replacingOccurrences(of: " ", with: "_"))
+        }.map(\.id)
     }
     private var types: Set<HKObjectType> {
         // Blood pressure authorization is represented by its systolic and
@@ -176,11 +307,13 @@ private struct HealthMetric {
         await read(requestedIDs: requestedIDs)
     }
     var snapshot: JSONValue {
-        .object(["available": .bool(available), "readAt": .string(updated.map { ISO8601DateFormatter().string(from: $0) } ?? ""),
+        var result: JSONValue = .object(["available": .bool(available), "readAt": .string(updated.map { ISO8601DateFormatter().string(from: $0) } ?? ""),
                  "requested": .array(requestedIDs.map { .string($0) }),
                  "readings": .array(rows.map { .object(["metric": .string($0.0), "value": .string($0.1)]) }),
                  "error": .string(error),
                  "note": .string("No readable data can mean no samples or no read access. These are HealthKit summaries, not diagnoses; an authorization request does not prove read access was granted.")])
+        if sleepDetails != .null { result["sleepDetails"] = sleepDetails }
+        return result
     }
     private func samples(_ type: HKSampleType, since: Date, limit: Int = 1) async throws -> [HKSample] {
         try await withCheckedThrowingContinuation { continuation in
@@ -197,7 +330,9 @@ private struct HealthMetric {
     }
     private func read(requestedIDs ids: [String]) async {
         let all = ids.contains("all")
-        let chosen = HealthMetric.catalog.filter { all || ids.contains($0.id) || ids.contains($0.group.lowercased().replacingOccurrences(of: " ", with: "_")) }
+        let selectedIDs = Self.resolvedMetricIDs(for: ids)
+        let chosen = HealthMetric.catalog.filter { selectedIDs.contains($0.id) }
+        sleepDetails = .null
         let characteristics = HealthMetric.characteristicNames.filter { all || ids.contains($0.0) || ids.contains("me") }
         requestedIDs = ids
         let unknown = ids.filter { id in
@@ -226,6 +361,7 @@ private struct HealthMetric {
         let now = Date()
         if metric.id == "steps" { return await stepsToday() }
         if metric.id == "sleep" { return await sleepPastDay() }
+        if metric.id == "sleep_details" { return await latestSleepDetails() }
         let sample = await safeSamples(metric.type, since: now.addingTimeInterval(-Double(metric.days) * 86400)).first
         guard let sample else { return "No readable data" }
         let when = sample.endDate.formatted(date: .abbreviated, time: .shortened)
@@ -247,7 +383,7 @@ private struct HealthMetric {
                 let result: String
                 switch category.value {
                 case HKCategoryValueOvulationTestResult.negative.rawValue: result = "Negative"
-                case HKCategoryValueOvulationTestResult.positive.rawValue: result = "Positive"
+                case HKCategoryValueOvulationTestResult.luteinizingHormoneSurge.rawValue: result = "Positive"
                 default: result = "Recorded"
                 }
                 return "\(result) · \(when)"
@@ -280,6 +416,29 @@ private struct HealthMetric {
         for (a, b) in intervals { seconds += max(0, b.timeIntervalSince(max(a, end))); end = max(end, b) }
         return sleep.isEmpty ? "No readable data" : "\(Int(seconds) / 3600) h \(Int(seconds) % 3600 / 60) min"
     }
+    private func latestSleepDetails() async -> String {
+        guard let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return "No readable data" }
+        let now = Date()
+        let samples = await safeSamples(type, since: now.addingTimeInterval(-SleepDetails.lookback), limit: HKObjectQueryNoLimit)
+        let records = samples.compactMap { sample -> SleepDetails.Sample? in
+            guard let sample = sample as? HKCategorySample else { return nil }
+            let stage: SleepDetails.Stage
+            switch sample.value {
+            case HKCategoryValueSleepAnalysis.asleepREM.rawValue: stage = .rem
+            case HKCategoryValueSleepAnalysis.asleepCore.rawValue: stage = .core
+            case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: stage = .deep
+            case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue: stage = .unspecified
+            case HKCategoryValueSleepAnalysis.awake.rawValue: stage = .awake
+            case HKCategoryValueSleepAnalysis.inBed.rawValue: stage = .inBed
+            default: return nil
+            }
+            let source = sample.sourceRevision.source
+            return SleepDetails.Sample(start: sample.startDate, end: sample.endDate, stage: stage,
+                                       sourceID: source.bundleIdentifier + "|" + (sample.device?.localIdentifier ?? ""), sourceName: source.name)
+        }
+        sleepDetails = SleepDetails.summarize(records, now: now)
+        return SleepDetails.display(sleepDetails)
+    }
     private func characteristic(_ id: String) -> String {
         switch id {
         case "blood_type":
@@ -311,6 +470,7 @@ struct HealthView: View {
                 Text("Choose which Health data Vesper may read. Rowan can request authorized summaries through the native Health tool in chat. Only requested summaries are sent to the Vesper chat service and become part of the conversation.").font(.subheadline)
                 Button { Task { await reader.connect() } } label: { Text("Choose Health permissions").foregroundStyle(.white).padding(14).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(reader.busy || !reader.available)
                 Button("Read all Health categories on this iPhone") { Task { await reader.refresh(requestedIDs: ["all"]) } }.disabled(reader.busy || !reader.available)
+                Button("Read latest sleep details") { Task { await reader.refresh(requestedIDs: ["sleep_details"]) } }.disabled(reader.busy || !reader.available)
                 if !reader.available { Text("HealthKit is not available on this device.") }
                 Text("No readable data can mean no recorded samples or no read permission. Vesper cannot tell which; change access in the Health app.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if reader.busy { ProgressView() }

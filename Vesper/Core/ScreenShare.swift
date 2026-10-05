@@ -42,7 +42,7 @@ private final class ScreenFrames {
         }, completionHandler: { [weak self] error in
             Task { @MainActor in
                 guard let self else { return }
-                guard self.generation == request else { if error == nil { recorder.stopCapture { _ in } }; return }
+                guard self.generation == request else { if error == nil { RPScreenRecorder.shared().stopCapture { _ in } }; return }
                 self.starting = false; self.active = error == nil; self.error = error?.localizedDescription
             }
         })

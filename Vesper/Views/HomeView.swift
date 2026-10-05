@@ -1,271 +1,369 @@
 import SwiftUI
 import MusicKit
 
+/// Select genuine shared content for the desktop; placeholder copy never becomes saved data.
+enum HomeDesktopContent {
+    static func timestamp(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+    static func latestRowanNote(_ notes: [JSONValue]) -> JSONValue? {
+        notes.enumerated().filter {
+            $0.element["kind"].string == "agent" && !$0.element["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.max { left, right in
+            func date(_ note: JSONValue) -> Date {
+                timestamp(note["createdAt"].string) ?? timestamp(note["updatedAt"].string) ?? .distantPast
+            }
+            let lhs = date(left.element), rhs = date(right.element)
+            return lhs == rhs ? left.offset > right.offset : lhs < rhs
+        }?.element
+    }
+    static func nextDate(_ items: [JSONValue], now: Date = .now) -> JSONValue? {
+        let valid = items.compactMap { item -> (JSONValue, Int)? in
+            guard let days = DateCounter.days(item, now: now) else { return nil }
+            return (item, days)
+        }
+        return valid.filter { $0.1 >= 0 }.min { $0.1 < $1.1 }?.0
+            ?? valid.max { $0.1 < $1.1 }?.0
+    }
+    static func countdown(_ days: Int) -> String {
+        days == 0 ? "Today" : days > 0 ? "In \(days) \(days == 1 ? "day" : "days")" : "\(abs(days)) \(days == -1 ? "day" : "days") ago"
+    }
+}
+
 struct HomeView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var chat: ChatSession
     @Environment(\.scenePhase) private var phase
     @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var desire: JSONValue = .null
-    @State private var desireError = false
+    @AppStorage("vesperPalette") private var paletteName = "blue"
     @State private var refreshingUsage = false
-    @StateObject private var weatherLocation = ChatLocation()
-    @State private var weather: JSONValue = .null
-    @State private var weatherLoading = false
-    @State private var weatherError = false
+    @ObservedObject private var weather = WeatherController.shared
     let navigate: (Destination) -> Void
-    private let fields = ["longing", "tenderness", "playfulness", "intensity", "attachment", "possessiveness"]
+    private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
+
     var body: some View {
         GeometryReader { geometry in
+            let width = max(240, min(geometry.size.width, 600) - 36)
+            let photoHeight = min(265, max(214, (width - 14) * 0.55 + 22))
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day())).font(.system(size: 13)).foregroundStyle(VesperTheme.muted)
-                        Text(greeting + ", Vera").font(VesperTheme.title(32)).minimumScaleFactor(0.65).lineLimit(1)
-                        Text("A place for today, too.").font(.system(size: 14)).foregroundStyle(VesperTheme.muted)
-                    }.padding(.top, 10).padding(.bottom, 4)
-                    weatherRow
-                    if !store.connected {
-                        Button("Connect Vesper in Settings") { navigate(.settings) }.font(.footnote)
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        header
+                        usageLine
                     }
-                    let width = max(240, min(geometry.size.width, 650) - 32)
-                    let height: CGFloat = typeSize.isAccessibilitySize ? 300 : min(250, max(200, (width - 12) * 0.60 + 12))
-                    if typeSize.isAccessibilitySize {
-                        desireCard(height: height)
-                        usageCard
-                        notesCard(height: 150)
-                        remindersCard(height: height)
-                        musicCard(height: height)
+                    rowanLetter
+                    if typeSize.isAccessibilitySize || geometry.size.width < 350 {
+                        desireCard(height: photoHeight)
+                        dateLeaf
+                        remindersSlip
                     } else {
-                        HStack(alignment: .top, spacing: 12) {
-                            desireCard(height: height).frame(width: (width - 12) * 0.60)
-                            VStack(spacing: 12) { usageCard.frame(height: 80); notesCard(height: height - 92) }
-                        }
-                        HStack(alignment: .top, spacing: 12) {
-                            remindersCard(height: height).frame(width: (width - 12) * 0.40)
-                            musicCard(height: height)
+                        HStack(alignment: .top, spacing: 14) {
+                            desireCard(height: photoHeight).frame(width: (width - 14) * 0.60)
+                            VStack(spacing: 12) {
+                                dateLeaf.frame(maxHeight: .infinity)
+                                remindersSlip.frame(maxHeight: .infinity)
+                            }.frame(maxWidth: .infinity).frame(height: photoHeight)
                         }
                     }
-                }.padding(.horizontal, 16).padding(.bottom, 20).frame(maxWidth: 650).frame(maxWidth: .infinity)
-            }.refreshable { await store.refresh(); await loadDesire(); await loadUsage(); await refreshWeather() }
-        }.buttonStyle(.plain)
-        .task { await store.refresh(); player.updateLibrary(store.document("music").array); await loadDesire() }
+                    musicRow
+                    if !store.connected {
+                        Button("Connect Vesper in Settings") { navigate(.settings) }
+                            .font(.footnote).foregroundStyle(palette.muted)
+                    }
+                }
+                .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 24)
+                .frame(maxWidth: 600).frame(maxWidth: .infinity)
+            }
+            .refreshable { await store.refresh(); await loadUsage(); weather.refresh(force: true) }
+        }
+        .foregroundStyle(palette.ink)
+        .buttonStyle(.plain)
+        .task {
+            await store.refresh()
+            player.updateLibrary(store.document("music").array)
+            await loadUsage()
+        }
         .task(id: phase) {
             guard phase == .active else { return }
-            // This task ends when Home disappears or the app leaves the foreground.
             while !Task.isCancelled {
-                weatherLocation.locate()
-                await refreshWeather()
-                do { try await Task.sleep(for: .seconds(15 * 60)) }
-                catch { return }
+                weather.refresh()
+                do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
         }
-        .onChange(of: weatherCoordinateKey) { _, _ in Task { await refreshWeather() } }
         .onChange(of: store.document("music")) { _, tracks in player.updateLibrary(tracks.array) }
-        .onChange(of: store.token) { _, _ in Task { await loadDesire() } }
-        .onChange(of: phase) { _, value in if value == .active { Task { await loadDesire() } } }
+        .onChange(of: store.token) { _, _ in Task { await loadUsage() } }
     }
-    private var weatherCoordinateKey: String {
-        if let coordinate = weatherLocation.coordinate { return "\(coordinate.latitude),\(coordinate.longitude)" }
-        let environment = store.document("environment")
-        guard case .number(let latitude) = environment["latitude"], case .number(let longitude) = environment["longitude"] else { return "" }
-        return "\(latitude),\(longitude)"
-    }
-    private var weatherRow: some View {
-        Button {
-            if !weatherCoordinateKey.isEmpty { weatherLocation.locateIfAuthorized(); Task { await refreshWeather() } }
-            else { weatherLocation.locate() }
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: weatherIcon)
-                if case .number(let temperature) = weather["temperature"] {
-                    Text("\(Int(temperature.rounded()))° · " + weatherDescription)
-                    Text(ChatPresentation.time(weather["updatedAt"].string)).font(.system(size: 10)).opacity(0.7)
-                } else {
-                    Text(weatherLoading || weatherLocation.loading ? "Updating weather…" : weatherError || weatherLocation.error != nil ? "Weather unavailable · Retry" : "Local weather · Tap to enable")
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    dateLabel
+                    Spacer(minLength: 8)
+                    weatherRow
                 }
-                Spacer()
-                Image(systemName: weatherError ? "exclamationmark.arrow.triangle.2.circlepath" : "arrow.clockwise").font(.system(size: 10))
-            }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
-        }.disabled(weatherLoading).padding(.vertical, 2)
-    }
-    private var weatherDescription: String {
-        switch Int(weather["code"].number) {
-        case 0: return "Clear"
-        case 1...3: return "Cloudy"
-        case 45, 48: return "Fog"
-        case 51...67, 80...82: return "Rain"
-        case 71...77, 85, 86: return "Snow"
-        case 95...99: return "Thunderstorms"
-        default: return "Weather"
+                VStack(alignment: .leading, spacing: 6) { dateLabel; weatherRow }
+            }
+            Text(greeting + ", " + userName)
+                .font(VesperTheme.title(34)).minimumScaleFactor(0.65).lineLimit(1)
+                .frame(height: typeSize.isAccessibilitySize ? nil : 46, alignment: .leading)
         }
     }
-    private var weatherIcon: String {
-        switch weatherDescription {
-        case "Clear": return "sun.max"
-        case "Rain": return "cloud.rain"
-        case "Snow": return "cloud.snow"
-        case "Thunderstorms": return "cloud.bolt.rain"
-        case "Fog": return "cloud.fog"
-        default: return "cloud.sun"
-        }
+    private var dateLabel: some View {
+        Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+            .font(.system(.caption, design: .serif)).foregroundStyle(palette.muted)
+            .fixedSize()
     }
-    private func refreshWeather() async {
-        guard !weatherLoading else { return }
-        let environment = store.document("environment")
-        let latitude: Double, longitude: Double
-        if let coordinate = weatherLocation.coordinate { latitude = coordinate.latitude; longitude = coordinate.longitude }
-        else if case .number(let lat) = environment["latitude"], case .number(let lon) = environment["longitude"] { latitude = lat; longitude = lon }
-        else { return }
-        guard (-90...90).contains(latitude), (-180...180).contains(longitude) else { return }
-        weatherLoading = true; defer { weatherLoading = false }
-        do {
-            guard let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(latitude)&longitude=\(longitude)&current=temperature_2m,weather_code&timezone=auto") else { return }
-            var request = URLRequest(url: url); request.timeoutInterval = 15; request.cachePolicy = .reloadIgnoringLocalCacheData
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw ServiceError(message: "Weather unavailable") }
-            let result = try JSONDecoder().decode(JSONValue.self, from: data)
-            guard case .number = result["current"]["temperature_2m"] else { throw ServiceError(message: "Weather unavailable") }
-            weather = .object(["temperature": result["current"]["temperature_2m"], "code": result["current"]["weather_code"], "updatedAt": .string(isoNow())]); weatherError = false
-        } catch { if !Task.isCancelled { weatherError = true } }
+    private var userName: String {
+        let name = store.document("profile")["userName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Vera" : name
+    }
+    private var usageLine: some View {
+        NavigationLink { UsageView() } label: {
+            HStack(spacing: 12) {
+                Text("Weekly").font(.system(.caption, design: .serif))
+                ProgressView(value: Double(remainingUsage ?? 0), total: 100)
+                    .tint(palette.accent.opacity(0.75))
+                    .opacity(remainingUsage == nil ? 0.35 : 1)
+                Text(remainingUsage.map { "\($0)%" } ?? "—")
+                    .font(.system(.caption, design: .serif)).monospacedDigit()
+            }
+            .foregroundStyle(palette.muted).frame(minHeight: 30)
+        }
+        .accessibilityLabel("Weekly usage")
+        .accessibilityValue(remainingUsage.map { "\($0) percent remaining" } ?? "Unavailable")
+        .accessibilityIdentifier("home-weekly-usage")
+    }
+    private var latestNote: JSONValue? { HomeDesktopContent.latestRowanNote(store.document("notes").array) }
+    private var rowanLetter: some View {
+        Button { navigate(.notes) } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("from Rowan").font(VesperTheme.title(21)).foregroundStyle(palette.muted)
+                    .frame(height: typeSize.isAccessibilitySize ? nil : 24, alignment: .leading)
+                Text("哥哥留下的")
+                    .font(.system(.subheadline, design: .default).weight(.light))
+                    .foregroundStyle(palette.ink.opacity(0.78))
+                Text(latestNote?["text"].string ?? "这里留给哥哥下一张小纸条。")
+                    .font(.system(.subheadline, design: .default).weight(.light)).lineSpacing(4)
+                    .foregroundStyle(palette.ink.opacity(0.78))
+                    .lineLimit(typeSize.isAccessibilitySize ? 8 : 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let note = latestNote,
+                   let date = HomeDesktopContent.timestamp(note["createdAt"].string)
+                    ?? HomeDesktopContent.timestamp(note["updatedAt"].string) {
+                    Text(date.formatted(.dateTime.month(.abbreviated).day()))
+                        .font(.system(.caption2, design: .serif)).italic()
+                        .foregroundStyle(palette.muted).frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background { DesktopPaper(seed: 9) }
+        }
+        .accessibilityHint("Open Notes to read the full letter")
+        .accessibilityIdentifier("home-rowan-letter")
     }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {
             GeometryReader { geometry in
-                Image("DesireCoast")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
+                Image(palette == .black ? "DesireDarkCoast" : "DesireCoast").resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                     .overlay(alignment: .top) {
-                        LinearGradient(colors: [VesperTheme.palette == .black ? .black.opacity(0.5) : .white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+                        LinearGradient(colors: [palette == .black ? .black.opacity(0.5) : .white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
                             .frame(height: 88)
                     }
                     .overlay(alignment: .topLeading) {
-                        cardTitle("Desire").padding(12)
+                        HStack {
+                            Text("Desire").font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1)
+                            Spacer(minLength: 1)
+                            Image(systemName: "chevron.right").font(.system(size: 10))
+                        }.foregroundStyle(palette.ink).padding(12)
                     }
             }
             .frame(height: height)
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay { RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.85), lineWidth: 1.3) }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Desire")
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.85), lineWidth: 1.3))
+        }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-print")
     }
-    private var usageCard: some View {
-        HomeCard {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    NavigationLink { UsageView() } label: {
-                        HStack(spacing: 4) {
-                            Text("Usage").font(VesperTheme.title(21)).lineLimit(1)
-                            Image(systemName: "chevron.right").font(.system(size: 9))
-                        }
-                    }.accessibilityLabel("Usage and balances")
-                    Spacer(minLength: 0)
-                    Button { Task { await loadUsage() } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 12)).frame(width: 28, height: 28) }.accessibilityLabel("Refresh usage").disabled(refreshingUsage || store.token.isEmpty)
+    private var upcomingDate: JSONValue? { HomeDesktopContent.nextDate(store.document("anniversaries").array) }
+    private var dateLeaf: some View {
+        Button { navigate(.dates) } label: {
+            VStack(spacing: 3) {
+                if let item = upcomingDate, let target = DateCounter.target(item), let days = DateCounter.days(item) {
+                    Text(target.formatted(.dateTime.month(.abbreviated)))
+                        .font(.system(.caption, design: .serif)).italic()
+                    Text(target.formatted(.dateTime.day()))
+                        .font(.system(size: 38, weight: .regular, design: .serif)).italic()
+                        .minimumScaleFactor(0.7).lineLimit(1)
+                    Rectangle().fill(palette.muted.opacity(0.30)).frame(width: 52, height: 0.5)
+                    Text(item["title"].string).font(.system(size: 10, design: .serif)).lineLimit(1)
+                    Text(HomeDesktopContent.countdown(days))
+                        .font(.system(.caption2, design: .serif)).lineLimit(1)
+                } else {
+                    Text("Dates").font(VesperTheme.title(25))
+                    Text("留一个期待的日子").font(.system(.caption2, design: .serif))
+                        .multilineTextAlignment(.center).padding(.top, 8)
                 }
-                HStack { Text("Weekly limit"); Spacer(minLength: 2); Text(remainingUsage.map { "\($0)%" } ?? "—") }.font(.system(size: 10))
-                if let remaining = remainingUsage { ProgressView(value: Double(remaining), total: 100).tint(VesperTheme.accent) }
-                else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError == nil ? "Tap refresh" : "Unable to refresh · Retry")).font(.system(size: 9)).foregroundStyle(VesperTheme.muted) }
             }
+            .foregroundStyle(palette.muted).padding(.horizontal, 8).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
         }
+        .accessibilityLabel(upcomingDate.map { $0["title"].string + ", " + (DateCounter.days($0).map(HomeDesktopContent.countdown) ?? "") } ?? "Dates, add a date")
+        .accessibilityIdentifier("home-date-leaf")
     }
-    private var latestNote: JSONValue? {
-        let formatter = ISO8601DateFormatter()
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        func timestamp(_ note: JSONValue) -> Date {
-            for key in ["createdAt", "updatedAt"] {
-                let text = note[key].string
-                if let date = fractional.date(from: text) ?? formatter.date(from: text) { return date }
-            }
-            return .distantPast
-        }
-        return store.document("notes").array.enumerated().sorted { left, right in
-            let lhs = timestamp(left.element), rhs = timestamp(right.element)
-            return lhs == rhs ? left.offset < right.offset : lhs > rhs
-        }.first?.element
-    }
-    private func notesCard(height: CGFloat) -> some View {
-        HomeCard {
-            VStack(alignment: .leading, spacing: 7) {
-                Button { navigate(.notes) } label: { cardTitle("Notes") }
-                    .accessibilityLabel("Open Notes")
-                ScrollView(.vertical) {
-                    Text(latestNote?["text"].string ?? "A little space for your thoughts.")
-                        .font(.system(size: 10.5)).lineSpacing(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+    private var remindersSlip: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button { navigate(.reminders) } label: {
+                Text("Reminders").font(VesperTheme.title(22)).foregroundStyle(palette.muted)
+                    .minimumScaleFactor(0.65).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading).frame(height: 26, alignment: .leading)
+            }.accessibilityLabel("Open Reminders")
+            Rectangle().fill(palette.muted.opacity(0.20)).frame(height: 0.5)
+            let todos = store.document("todos").array.filter { !$0["done"].bool }
+            if todos.isEmpty {
+                Button { navigate(.reminders) } label: {
+                    Text("今天，慢慢来。")
+                        .font(.system(.caption, design: .serif)).foregroundStyle(palette.muted)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
-                .frame(maxHeight: .infinity)
-                .scrollIndicators(.visible)
-            }
-        }.frame(height: height)
-    }
-    private func remindersCard(height: CGFloat) -> some View {
-        HomeCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Button { navigate(.reminders) } label: { cardTitle("Reminders") }
-                let todos = store.document("todos").array.filter { !$0["done"].bool }
-                if todos.isEmpty { Text("Something you want to do today? Leave yourself a reminder.").font(.system(size: 12)).lineSpacing(3).foregroundStyle(VesperTheme.muted) }
+            } else {
                 ForEach(Array(todos.prefix(2))) { item in
-                    Button { Task { var changed = item; changed["done"] = .bool(true); _ = await store.upsert("todos", item: changed) } } label: { Label(item["title"].string, systemImage: "circle").font(.system(size: 12)).lineLimit(3).multilineTextAlignment(.leading).frame(minHeight: 44) }.disabled(store.saving)
+                    Button {
+                        Task {
+                            var changed = item; changed["done"] = .bool(true)
+                            _ = await store.upsert("todos", item: changed)
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "circle").font(.system(size: 13)).foregroundStyle(palette.muted)
+                            Text(item["title"].string).font(.system(.caption, design: .serif))
+                                .lineLimit(2).multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                        }.frame(minHeight: 30)
+                    }.disabled(store.saving).accessibilityLabel("Complete reminder: " + item["title"].string)
                 }
-                Spacer(minLength: 0)
             }
-        }.frame(height: height)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
+        .accessibilityIdentifier("home-reminders-slip")
     }
-    private func musicCard(height: CGFloat) -> some View {
-        HomeCard {
-            VStack(spacing: 5) {
-                Button { navigate(.music) } label: { cardTitle("Music") }
+    private var musicRow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { musicIdentity; musicControls }
+            VStack(alignment: .leading, spacing: 10) { musicIdentity; musicControls.frame(maxWidth: .infinity) }
+        }.padding(.horizontal, 6).padding(.vertical, 4).accessibilityIdentifier("home-music")
+    }
+    private var musicIdentity: some View {
+        Button { navigate(.music) } label: {
+            HStack(spacing: 12) {
                 Group {
                     if let artwork = player.currentArtwork ?? player.artwork(for: player.track) {
-                        MusicKit.ArtworkImage(artwork, width: 76, height: 76)
-                    } else {
-                        Artwork(url: player.track["cover"].string)
+                        MusicKit.ArtworkImage(artwork, width: 62, height: 62)
+                    } else { Artwork(url: player.track["cover"].string) }
+                }
+                .frame(width: 62, height: 62).clipShape(RoundedRectangle(cornerRadius: 9))
+                .task(id: player.track["appleMusicId"].string) { await player.ensureArtwork(for: player.track) }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string)
+                        .font(.system(.subheadline, design: .serif)).lineLimit(2)
+                    if !player.track["artist"].string.isEmpty {
+                        Text(player.track["artist"].string).font(.system(.caption, design: .serif))
+                            .foregroundStyle(palette.muted).lineLimit(1)
                     }
-                }
-                .frame(width: 76, height: 76)
-                .clipShape(Circle())
-                .task(id: player.track["appleMusicId"].string) {
-                    await player.ensureArtwork(for: player.track)
-                }
-                Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string).font(.system(size: 11)).lineLimit(1)
-                Text(player.track["artist"].string).font(.system(size: 10)).foregroundStyle(VesperTheme.muted).lineLimit(1)
-                PlaybackControls().font(.system(size: 18)).frame(height: 36)
-                Spacer(minLength: 0)
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
-        }.frame(height: height)
+        }.accessibilityLabel("Open Music, " + (player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string))
     }
-    private func loadDesire() async {
-        guard !store.token.isEmpty else { desire = .null; return }
-        do { let response = try await store.api.request("/api/desire"); desire = response["data"]; desireError = false }
-        catch { desireError = true }
+    private var musicControls: some View {
+        HStack(spacing: 0) {
+            Button { player.next(-1) } label: { Image(systemName: "backward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44) }
+                .accessibilityLabel("Previous song")
+            Button { player.toggle() } label: {
+                Image(systemName: player.playing ? "pause.fill" : "play.fill").font(.system(size: 18))
+                    .frame(width: 44, height: 44).background(palette.accent.opacity(0.16), in: Circle())
+            }.accessibilityLabel(player.playing ? "Pause" : "Play")
+            Button { player.next(1) } label: { Image(systemName: "forward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44) }
+                .accessibilityLabel("Next song")
+        }.foregroundStyle(palette.muted).disabled(player.tracks.isEmpty)
     }
     private func loadUsage() async {
         guard !refreshingUsage, !store.token.isEmpty else { return }
         refreshingUsage = true; defer { refreshingUsage = false }
         chat.configure(store); await chat.loadUsage()
     }
-    private var remainingUsage: Int? {
-        chat.weeklyRemaining
-    }
+    private var remainingUsage: Int? { chat.weeklyRemaining }
     private var greeting: String { let h = Calendar.current.component(.hour, from: .now); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening" }
-    private func cardTitle(_ value: String) -> some View {
-        HStack { Text(value).font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1); Spacer(minLength: 1); Image(systemName: "chevron.right").font(.system(size: 10)) }
+    private var weatherRow: some View {
+        Button { navigate(.weather) } label: {
+            HStack(spacing: 5) {
+                Image(systemName: weather.snapshot?.icon ?? "cloud.sun")
+                if let snapshot = weather.snapshot {
+                    Text("\(Int(snapshot.temperature.rounded()))° · " + snapshot.condition)
+                } else {
+                    Text(weather.loading ? "Updating…" : weather.enabled ? "Local weather" : "Enable weather")
+                }
+            }.font(.system(.caption, design: .serif)).foregroundStyle(palette.muted).fixedSize()
+        }.accessibilityLabel("Open Weather")
     }
+
 }
-private struct HomeCard<Content: View>: View {
-    @ViewBuilder var content: Content
+
+/// A quiet material under native text, with a stable, lightly irregular paper edge.
+private struct DesktopPaper: View {
+    @AppStorage("vesperPalette") private var paletteName = "blue"
+    let seed: Int
+    var rounded = false
+    private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
     var body: some View {
-        content.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(VesperTheme.palette == .blue ? Color(red: 0.91, green: 0.94, blue: 0.97).opacity(0.80) : VesperTheme.surface, in: RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.90), lineWidth: 1.3))
+        GeometryReader { geometry in
+            ZStack {
+                Color(red: 0.98, green: 0.97, blue: 0.94)
+                Image("LetterPaper").resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height).opacity(0.70)
+                if palette == .black { Color.black.opacity(0.84) }
+            }
+            .clipShape(PaperEdge(seed: seed, rounded: rounded))
+            // Blend the textured backing, keeping native text at full opacity.
+            .opacity(palette == .black ? 0.82 : 0.86)
+        }
+        .shadow(color: .black.opacity(palette == .black ? 0.20 : 0.10), radius: 5, y: 3)
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
+private struct PaperEdge: Shape {
+    let seed: Int
+    var rounded = false
+    func path(in rect: CGRect) -> Path {
+        if rounded { return RoundedRectangle(cornerRadius: 15).path(in: rect) }
+        var path = Path()
+        let inset: CGFloat = 2
+        let box = rect.insetBy(dx: inset, dy: inset)
+        path.move(to: CGPoint(x: box.minX, y: box.minY))
+        let corners = [CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.minY),
+                       CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY)]
+        for edge in 0..<4 {
+            let a = corners[edge], b = corners[(edge + 1) % 4]
+            let length = hypot(b.x - a.x, b.y - a.y)
+            let steps = max(1, Int(length / 4))
+            for step in 1...steps {
+                let t = CGFloat(step) / CGFloat(steps)
+                let wave = sin(Double(step * 17 + edge * 31 + seed)) * 0.8
+                let x = a.x + (b.x - a.x) * t + (edge % 2 == 1 ? wave : 0)
+                let y = a.y + (b.y - a.y) * t + (edge % 2 == 0 ? wave : 0)
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
 struct DesireTide: View {
     let values: [Double?]
     var compact = false

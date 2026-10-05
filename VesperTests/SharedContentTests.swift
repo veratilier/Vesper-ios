@@ -215,7 +215,7 @@ extension SharedContentTests {
         XCTAssertEqual(moved.first, .movieRoom)
         XCTAssertEqual(VesperGridOrder.restore(VesperGridOrder.encode(moved)), moved)
         XCTAssertEqual(Set(moved), Set(VesperGridOrder.defaults))
-        XCTAssertEqual(moved.count, 11)
+        XCTAssertEqual(moved.count, VesperGridOrder.defaults.count)
         XCTAssertTrue(moved.contains(.journal))
         let back = VesperGridOrder.move(.movieRoom, to: .bookmarks, in: moved)
         XCTAssertEqual(back, VesperGridOrder.defaults)
@@ -228,6 +228,9 @@ extension SharedContentTests {
         XCTAssertEqual(Set(restored), Set(VesperGridOrder.defaults))
         XCTAssertEqual(VesperGridOrder.restore("broken"), VesperGridOrder.defaults)
         XCTAssertEqual(VesperGridOrder.restore(""), VesperGridOrder.defaults)
+        let legacySketch = VesperGridOrder.restore("[\"随写\",\"Music\",\"Sketch\"]")
+        XCTAssertEqual(Array(legacySketch.prefix(2)), [.jottings, .music])
+        XCTAssertEqual(legacySketch.filter { $0 == .jottings }.count, 1)
     }
     func testAppGridInvalidOrSameDestinationDoesNotChangeOrder() {
         let pages = VesperGridOrder.defaults

@@ -7,14 +7,18 @@ enum VesperPalette: String, CaseIterable, Identifiable {
     var background: String { self == .white ? "WhiteScene" : self == .black ? "BlackScene" : "Marble" }
     var emblem: String { self == .white ? "WhiteEmblem" : self == .black ? "BlackEmblem" : "OpeningScene" }
     var swatch: Color { self == .white ? .white : self == .black ? .black : Color(red: 0.55, green: 0.74, blue: 0.84) }
+    var ink: Color { self == .black ? Color(white: 0.94) : self == .white ? Color(white: 0.09) : Color(red: 0.17, green: 0.23, blue: 0.27) }
+    var muted: Color { self == .black ? Color(white: 0.73) : Color(red: 0.34, green: 0.42, blue: 0.46) }
+    var accent: Color { self == .black ? Color(white: 0.82) : Color(red: 0.38, green: 0.55, blue: 0.64) }
+    var surface: Color { self == .black ? Color(white: 0.12).opacity(0.85) : .white.opacity(0.72) }
 }
 enum NavigationStyle: String, CaseIterable { case native, vesper }
 enum VesperTheme {
     static var palette: VesperPalette { VesperPalette(rawValue: UserDefaults.standard.string(forKey: "vesperPalette") ?? "blue") ?? .blue }
-    static var ink: Color { palette == .black ? Color(white: 0.94) : palette == .white ? Color(white: 0.09) : Color(red: 0.17, green: 0.23, blue: 0.27) }
-    static var muted: Color { palette == .black ? Color(white: 0.73) : Color(red: 0.34, green: 0.42, blue: 0.46) }
-    static var accent: Color { palette == .black ? Color(white: 0.82) : Color(red: 0.38, green: 0.55, blue: 0.64) }
-    static var surface: Color { palette == .black ? Color(white: 0.12).opacity(0.85) : .white.opacity(0.72) }
+    static var ink: Color { palette.ink }
+    static var muted: Color { palette.muted }
+    static var accent: Color { palette.accent }
+    static var surface: Color { palette.surface }
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
 struct AppearancePicker: View {
@@ -129,6 +133,8 @@ struct EditorSheet<Content: View>: View {
 
 @MainActor enum ThemeIcons {
     static func apply(_ value: String) {
+        // Palette fixtures must not send real icon-change requests to LaunchServices.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         guard UIApplication.shared.supportsAlternateIcons else { return }
         let name: String? = value == "white" ? "AppIconWhite" : value == "black" ? "AppIconBlack" : nil
         guard UIApplication.shared.alternateIconName != name else { return }

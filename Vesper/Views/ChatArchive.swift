@@ -4,6 +4,9 @@ struct NativeChatHome: View {
     var onMenu: (() -> Void)? = nil
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var phase
+    @State private var welcomeLine = "A place for today, too."
+    @State private var contactsVisible = false
     @State private var open = false
     @State private var loadingChat = false
     @State private var openingTask: Task<Void, Never>?
@@ -27,6 +30,7 @@ struct NativeChatHome: View {
     private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
         NavigationStack {
+            GeometryReader { geometry in
             List {
                 Button { searching = true } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
@@ -74,8 +78,24 @@ struct NativeChatHome: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
+                Text(welcomeLine)
+                    .font(.system(.title3, design: .serif)).italic()
+                    .foregroundStyle(VesperTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: max(140, geometry.size.height - CGFloat(otherConversations.count + 1) * 92 - 80))
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .accessibilityIdentifier("chat-contact-greeting")
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
             .listStyle(.plain)
+            .onAppear { contactsVisible = true; updateWelcomeLine() }
+            .onDisappear { contactsVisible = false }
+            .onChange(of: phase) { _, value in
+                if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
+            }
             .refreshable { await chat.loadConversations() }
             .disabled(rowDisabled)
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
@@ -159,7 +179,12 @@ struct NativeChatHome: View {
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
             } message: { Text(chat.error ?? "") }
+            }
         }
+    }
+
+    private func updateWelcomeLine() {
+        welcomeLine = ChatWelcomeLines.next(after: welcomeLine)
     }
 
     private func enterChat(_ item: JSONValue? = nil) {
@@ -211,6 +236,31 @@ struct NativeChatHome: View {
                     .font(.subheadline).foregroundStyle(VesperTheme.muted).lineLimit(1)
             }
         }
+    }
+}
+
+/// Local decorative greetings rotate on entry; they do not create chat messages.
+enum ChatWelcomeLines {
+    static let all = [
+        "A place for today, too.",
+        "Come as you are.",
+        "A little room for us.",
+        "There’s room for your whole day.",
+        "Hello again, lovely you.",
+        "Leave a little of today here.",
+        "One thought, or a thousand.",
+        "A quiet place to begin.",
+        "We can take our time.",
+        "For all the little things.",
+        "A little closer, a little softer.",
+        "No perfect words needed.",
+        "Something to tell, something to keep.",
+        "The day can wait a moment.",
+        "Let’s make a little space.",
+        "Here, with you."
+    ]
+    static func next(after previous: String) -> String {
+        all.filter { $0 != previous }.randomElement() ?? all[0]
     }
 }
 

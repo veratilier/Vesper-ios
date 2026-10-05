@@ -17,7 +17,7 @@ import UserNotifications
 }
 enum Destination: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters", notes = "Notes"
-    case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", settings = "Settings"
+    case workflow = "Workflow", jottings = "Sketch", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -27,6 +27,9 @@ enum Destination: String, CaseIterable, Identifiable {
         case .journal: return "book.closed"
         case .letters: return "envelope"
         case .notes: return "note.text"
+        case .workflow: return "point.3.connected.trianglepath.dotted"
+        case .jottings: return "pencil.line"
+        case .alarms: return "alarm"
         case .reminders: return "checklist"
         case .dates: return "calendar"
         case .music: return "music.note"
@@ -35,17 +38,18 @@ enum Destination: String, CaseIterable, Identifiable {
         case .readingRoom: return "book.pages"
         case .bookmarks: return "bookmark"
         case .movieRoom: return "film"
+        case .weather: return "cloud.sun"
         case .settings: return "slider.horizontal.3"
         }
     }
 }
 /// Discard obsolete/duplicate destinations and append newly added features.
 enum VesperGridOrder {
-    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom]
+    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom, .alarms, .jottings, .workflow, .weather]
     static func restore(_ saved: String) -> [Destination] {
         let names = (try? JSONDecoder().decode([String].self, from: Data(saved.utf8))) ?? []
         var seen = Set<String>()
-        return (names.compactMap(Destination.init(rawValue:)) + defaults).filter {
+        return (names.compactMap { name -> Destination? in name == "随写" ? .jottings : Destination(rawValue: name) } + defaults).filter {
             defaults.contains($0) && seen.insert($0.id).inserted
         }
     }
@@ -254,8 +258,9 @@ struct RootView: View {
     }
     private var scene: some View {
         ZStack(alignment: .leading) {
-        navigationSurface
-        .accessibilityHidden(sidebar || opening)
+        if !opening {
+            navigationSurface.accessibilityHidden(sidebar)
+        }
         if sidebar {
             Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { withAnimation { sidebar = false } }.accessibilityLabel("Close sidebar").accessibilityAddTraits(.isButton)
             sidebarPanel
@@ -349,8 +354,8 @@ struct RootView: View {
             default: break
             }
         }
-        .task(id: phase) {
-            guard phase == .active else { return }
+        .task(id: phase == .active && !opening) {
+            guard phase == .active, !opening else { return }
             player.configure(store); player.synchronize()
             while !Task.isCancelled {
                 if !store.token.isEmpty {
@@ -417,7 +422,12 @@ struct RootView: View {
                         Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
                     }
                 }
-                if page != .letters { ToolbarItem(placement: .principal) { Text(page == .home ? "Vesper" : page.rawValue).font(.headline) } }
+                if page != .letters {
+                    ToolbarItem(placement: .principal) {
+                        if page == .home { homeWordmark }
+                        else { Text(page.rawValue).font(.headline) }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) { AppearancePicker() }
             }
         }
@@ -433,6 +443,9 @@ struct RootView: View {
         case .journal: JournalView()
         case .letters: LettersView()
         case .notes: NotesBoard()
+        case .workflow: WakeWorkflowView()
+        case .jottings: JottingsView()
+        case .alarms: AlarmsView()
         case .reminders: CollectionView(kind: .reminders)
         case .dates: CollectionView(kind: .dates)
         case .music: MusicView()
@@ -441,14 +454,18 @@ struct RootView: View {
         case .readingRoom: ReadingRoomView()
         case .bookmarks: BookmarksView()
         case .movieRoom: MovieRoomView()
+        case .weather: WeatherView()
         case .settings: SettingsView()
         }
+    }
+    private var homeWordmark: some View {
+        Text("Vesper").font(VesperTheme.title(26)).foregroundStyle(VesperTheme.ink.opacity(0.72))
     }
     private var homeHeader: some View {
         HStack {
             Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal").font(.system(size: 20)).frame(width: 44, height: 44) }.accessibilityLabel("Open sidebar")
             Spacer()
-            HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); Text("Vesper").font(VesperTheme.title(27)) }
+            HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); homeWordmark }
             Spacer()
             AppearancePicker().frame(width: 44, height: 44)
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
@@ -461,6 +478,7 @@ struct RootView: View {
 
 struct OpeningView: View {
     let enter: () -> Void
+    @Environment(\.scenePhase) private var phase
     @EnvironmentObject private var store: AppStore
     @State private var showingConnection = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -480,7 +498,7 @@ struct OpeningView: View {
                 }.foregroundStyle(VesperTheme.ink).shadow(color: .black.opacity(0.08), radius: 8)
                     .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready ? 1 : 0)
                 VStack(spacing: 14) { Spacer()
-                    if store.connected && !store.loading {
+                    if store.connected {
                     Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
@@ -501,6 +519,10 @@ struct OpeningView: View {
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: store.connected)
             }
         }.ignoresSafeArea()
+        .task(id: phase) {
+            guard phase == .active else { return }
+            await store.refresh(retryTransientFailures: true)
+        }
         .sheet(isPresented: $showingConnection) {
             NavigationStack {
                 ConnectionView()

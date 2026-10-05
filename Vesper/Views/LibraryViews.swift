@@ -62,42 +62,291 @@ struct DesireView: View {
         } catch { status = error.localizedDescription }
     }
 }
-struct AlbumView: View {
-    @EnvironmentObject private var store: AppStore
-    @EnvironmentObject private var chat: ChatSession
-    @State private var photos: [JSONValue] = []
-    @State private var selected: JSONValue?
-    @State private var category = "All"
-    @State private var status = ""
+enum AlbumPresentation {
+    static func date(_ value: String) -> Date? {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = parser.date(from: value) { return date }
+        parser.formatOptions = [.withInternetDateTime]
+        return parser.date(from: value)
+    }
+    static func isChatScreenshot(_ photo: JSONValue) -> Bool {
+        photo["kind"].string == "chat_screenshot" ||
+        (photo["name"].string.hasPrefix("chat-") && !photo["sourceMessageId"].string.isEmpty)
+    }
+    static func eventDate(_ photo: JSONValue) -> Date? { date(photo["createdAt"].string) }
+    static func sorted(_ photos: [JSONValue], recent: Bool = false) -> [JSONValue] {
+        photos.sorted { a, b in
+            let left = recent ? date(a["savedAt"].string) : eventDate(a)
+            let right = recent ? date(b["savedAt"].string) : eventDate(b)
+            if left != right { return (left ?? .distantPast) > (right ?? .distantPast) }
+            return a.id < b.id
+        }
+    }
+    static func dateText(_ photo: JSONValue, recent: Bool = false) -> String {
+        guard let date = recent ? date(photo["savedAt"].string) : eventDate(photo) else {
+            return recent ? "收藏日期未知" : "日期未知"
+        }
+        return date.formatted(.dateTime.year().month().day())
+    }
+    static func inCollection(_ photo: JSONValue, collection: JSONValue) -> Bool {
+        collection["photoIDs"].array.contains(.string(photo.id))
+    }
+    static func renameCollection(_ profile: JSONValue, id: String, name: String) throws -> JSONValue {
+        var profile = profile
+        var albums = profile["photoCollections"].array
+        guard let index = albums.firstIndex(where: { $0.id == id }) else { throw ServiceError(message: "相册已不存在，请刷新。") }
+        albums[index]["name"] = .string(name)
+        profile["photoCollections"] = .array(albums)
+        return profile
+    }
+    static func setMembership(_ profile: JSONValue, collectionID: String, photoID: String, included: Bool) -> JSONValue {
+        var profile = profile
+        var collections = profile["photoCollections"].array
+        guard let index = collections.firstIndex(where: { $0.id == collectionID }) else { return profile }
+        var ids = collections[index]["photoIDs"].array.filter { $0 != .string(photoID) }
+        if included { ids.append(.string(photoID)) }
+        collections[index]["photoIDs"] = .array(ids)
+        profile["photoCollections"] = .array(collections)
+        return profile
+    }
+}
+
+struct AlbumPhotoGrid: View {
+    let photos: [JSONValue]
+    let columns: Int
+    let open: (JSONValue) -> Void
     var body: some View {
-        Page(title: "Album", subtitle: "Little pieces of our days.") {
-            Picker("Album", selection: $category) { Text("All").tag("All"); ForEach(Array(Set(photos.map { $0["category"].string })).sorted(), id: \.self) { Text($0.isEmpty ? "Unsorted" : $0).tag($0) } }.pickerStyle(.menu)
-            if !status.isEmpty { Text(status).font(.caption) }
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(photos.filter { category == "All" || $0["category"].string == category }) { photo in
-                    Button { selected = photo } label: {
-                        VStack(alignment: .leading) { Artwork(url: photo["url"].string).frame(height: 170).clipShape(RoundedRectangle(cornerRadius: 18)); Text(photo["caption"].string).font(.caption).lineLimit(2) }
-                    }.buttonStyle(.plain)
-                }
-            }
-        }.task { await load() }.refreshable { await load() }
-        .sheet(item: $selected) { item in
-            NavigationStack {
-                ZStack { Background(); ScrollView { VStack(spacing: 18) {
-                    AsyncImage(url: URL(string: item["url"].string)) { image in image.resizable().scaledToFit() } placeholder: { ProgressView() }
-                    Text(item["caption"].string).textSelection(.enabled).padding()
-                    if !item["sourceMessageId"].string.isEmpty {
-                        NavigationLink("Original conversation") {
-                            ChatView(restoreLatest: false).task { _ = await chat.openSearchResult(.object(["id": item["sourceMessageId"], "conversationId": item["sourceConversationId"]])) }
-                        }.disabled(chat.busy || chat.callActive)
-                    }
-                    if let url = URL(string: item["url"].string) { ShareLink("Share photo", item: url) }
-                }.padding() } }.navigationTitle(item["category"].string).navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selected = nil } } }
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: columns == 5 ? 5 : 3), spacing: 2) {
+            ForEach(photos) { photo in
+                Button { open(photo) } label: {
+                    Color.clear.aspectRatio(1, contentMode: .fit)
+                        .overlay {
+                            GeometryReader { geometry in
+                                AsyncImage(url: URL(string: photo["url"].string)) { phase in
+                                    if let image = phase.image {
+                                        image.resizable().scaledToFill()
+                                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+                                    } else {
+                                        ZStack {
+                                            Color.white.opacity(0.6)
+                                            Image(systemName: phase.error == nil ? "photo" : "photo.badge.exclamationmark")
+                                                .foregroundStyle(VesperTheme.muted)
+                                        }.frame(width: geometry.size.width, height: geometry.size.height)
+                                    }
+                                }.clipped()
+                            }
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            if AlbumPresentation.isChatScreenshot(photo) {
+                                Image(systemName: "text.bubble.fill").font(.system(size: 10))
+                                    .foregroundStyle(.white).padding(4).background(.black.opacity(0.4), in: Circle()).padding(4)
+                            }
+                        }
+                        .clipped().contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel((AlbumPresentation.isChatScreenshot(photo) ? "聊天截图，" : "照片，") + AlbumPresentation.dateText(photo) + "，" + photo["caption"].string)
             }
         }
     }
+}
+
+struct AlbumView: View {
+    @EnvironmentObject private var store: AppStore
+    @AppStorage("album-grid-columns") private var columnCount = 3
+    @State private var photos: [JSONValue] = []
+    @State private var selected: JSONValue?
+    @State private var viewingPhotos: [JSONValue] = []
+    @State private var browsing = "date"
+    @State private var kind = "all"
+    @State private var collection = "all"
+    @State private var recent = false
+    @State private var loading = false
+    @State private var status = ""
+    @State private var newCollection = false
+    @State private var collectionName = ""
+    @State private var manageCollections = false
+    @State private var renaming = false
+    @State private var renameID = ""
+    @State private var renameText = ""
+    @State private var savingCategory = false
+    private var collections: [JSONValue] { store.document("profile")["photoCollections"].array }
+    private var categories: [String] {
+        Array(Set(photos.map { $0["category"].string }.filter { !$0.isEmpty && !["未分类", "Unsorted"].contains($0) })).sorted()
+    }
+    private var visible: [JSONValue] {
+        AlbumPresentation.sorted(photos.filter { photo in
+            let typeMatches = browsing != "type" || kind == "all" ||
+                (kind == "chat") == AlbumPresentation.isChatScreenshot(photo)
+            let albumMatches: Bool
+            if collection.hasPrefix("custom:") {
+                albumMatches = collections.first(where: { "custom:" + $0.id == collection }).map { AlbumPresentation.inCollection(photo, collection: $0) } ?? false
+            } else { albumMatches = collection == "all" || "category:" + photo["category"].string == collection }
+            return typeMatches && albumMatches
+        }, recent: recent)
+    }
+    private var days: [String] {
+        var seen = Set<String>()
+        return visible.map { AlbumPresentation.dateText($0, recent: recent) }.filter { seen.insert($0).inserted }
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("相册").font(VesperTheme.title(32))
+                    Spacer()
+                    if loading { ProgressView().accessibilityLabel("正在加载相册") }
+                    Button { columnCount = columnCount == 5 ? 3 : 5 } label: { Image(systemName: columnCount == 5 ? "square.grid.4x3.fill" : "square.grid.3x3.fill").frame(width: 44, height: 44) }
+                        .accessibilityLabel("图片排列，每行 \(columnCount == 5 ? 5 : 3) 张")
+                        .accessibilityHint("点击切换为每行 \(columnCount == 5 ? 3 : 5) 张")
+                }
+                Picker("浏览方式", selection: $browsing) {
+                    Text("按日期").tag("date"); Text("按类型").tag("type")
+                }.pickerStyle(.segmented)
+                if browsing == "type" {
+                    Picker("图片类型", selection: $kind) {
+                        Text("全部").tag("all"); Text("照片").tag("photo"); Text("聊天截图").tag("chat")
+                    }.pickerStyle(.segmented)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        albumChip("全部", id: "all")
+                        ForEach(categories, id: \.self) { name in albumChip(name, id: "category:" + name) }
+                        ForEach(collections) { album in albumChip(album["name"].string, id: "custom:" + album.id) }
+                        Button { collectionName = ""; newCollection = true } label: { Image(systemName: "plus").padding(10) }
+                            .accessibilityLabel("新建相册").disabled(store.saving || savingCategory)
+                        Button("管理") { status = ""; manageCollections = true }.font(.caption).padding(10)
+                    }
+                }
+                Button { recent.toggle() } label: {
+                    HStack {
+                        Image(systemName: recent ? "checkmark.circle.fill" : "clock")
+                        Text("Rowan 最近收下的").font(.subheadline)
+                        Spacer()
+                        Text(recent ? "按收藏时间" : "查看").font(.caption)
+                    }
+                }.buttonStyle(.plain)
+                if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
+                if visible.isEmpty && !loading { Text("这里还没有照片。").foregroundStyle(VesperTheme.muted).padding(.vertical, 35) }
+                ForEach(days, id: \.self) { day in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(day).font(.subheadline.weight(.semibold))
+                        AlbumPhotoGrid(photos: visible.filter { AlbumPresentation.dateText($0, recent: recent) == day }, columns: columnCount) { viewingPhotos = visible; selected = $0 }
+                    }
+                }
+            }.padding(.horizontal, 12).padding(.vertical, 16)
+                .frame(maxWidth: 780).frame(maxWidth: .infinity)
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            .task { await load() }.refreshable { await load() }
+            .alert("新建相册", isPresented: $newCollection) {
+                TextField("相册名称", text: $collectionName)
+                Button("取消", role: .cancel) {}
+                Button("创建") { Task { await createCollection() } }
+                    .disabled(collectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .sheet(isPresented: $manageCollections) { collectionManager }
+            .sheet(item: $selected) { photo in
+                AlbumPhotoViewer(photos: viewingPhotos, initialID: photo.id, categories: categories,
+                                 moveCategory: { photo, category in Task { await movePhoto(photo, category: category) } }) { album, photo, included in
+                    Task {
+                        let saved = await store.mutate("profile") { AlbumPresentation.setMembership($0, collectionID: album.id, photoID: photo.id, included: included) }
+                        if !saved { status = store.error ?? "相册保存失败。" }
+                    }
+                }
+            }
+    }
+    private var collectionManager: some View {
+        NavigationStack {
+            List {
+                if !status.isEmpty { Section { Text(status).font(.caption) } }
+                if savingCategory { ProgressView("正在保存分类…") }
+                Section("已有分类") {
+                    ForEach(categories, id: \.self) { name in
+                        Button { beginRename(id: "category:" + name, name: name) } label: {
+                            HStack { Text(name); Spacer(); Image(systemName: "pencil") }
+                        }
+                    }
+                }
+                Section("自定义相册") {
+                    ForEach(collections) { album in
+                        Button { beginRename(id: "custom:" + album.id, name: album["name"].string) } label: {
+                            HStack { Text(album["name"].string); Spacer(); Image(systemName: "pencil") }
+                        }
+                    }
+                }
+                Section { Text("点名称可修改。打开照片后，可在右上角调整分类或加入多个相册。").font(.caption).foregroundStyle(.secondary) }
+            }.disabled(store.saving || savingCategory)
+                .navigationTitle("管理分类").navigationBarTitleDisplayMode(.inline)
+                .toolbar { Button("完成") { manageCollections = false }.disabled(savingCategory) }
+                .alert("修改名称", isPresented: $renaming) {
+                    TextField("名称", text: $renameText)
+                    Button("取消", role: .cancel) {}
+                    Button("保存") { Task { await renameCollection() } }
+                        .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+    }
+    private func beginRename(id: String, name: String) {
+        renameID = id; renameText = name; renaming = true
+    }
+    private func renameCollection() async {
+        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 60 else { status = "名称请保持在 1–60 个字符内。"; return }
+        if renameID.hasPrefix("custom:") {
+            let id = String(renameID.dropFirst(7))
+            let saved = await store.mutate("profile") { current in
+                try AlbumPresentation.renameCollection(current, id: id, name: name)
+            }
+            status = saved ? "名称已保存。" : (store.error ?? "名称保存失败。")
+        } else {
+            let old = String(renameID.dropFirst(9))
+            guard old != name else { return }
+            let targets = photos.filter { $0["category"].string == old }
+            guard !savingCategory else { return }; savingCategory = true; defer { savingCategory = false }
+            var changed = 0
+            do {
+                for photo in targets { try await savePhotoCategory(photo, category: name); changed += 1 }
+                if collection == renameID { collection = "category:" + name }
+                status = "名称已保存。"
+            } catch { status = "已更新 \(changed)/\(targets.count) 张；剩余未保存：" + error.localizedDescription }
+        }
+    }
+    private func savePhotoCategory(_ photo: JSONValue, category: String) async throws {
+        let response = try await store.api.request("/api/photos", method: "POST", body: .object([
+            "key": photo["key"], "category": .string(category)
+        ]))
+        let updated = response["photo"]
+        guard updated.id == photo.id else { throw ServiceError(message: "服务没有确认这张照片的分类，保存结果待核对。") }
+        if let index = photos.firstIndex(where: { $0.id == photo.id }) { photos[index] = updated }
+        if let index = viewingPhotos.firstIndex(where: { $0.id == photo.id }) { viewingPhotos[index] = updated }
+    }
+    private func movePhoto(_ photo: JSONValue, category: String) async {
+        guard !savingCategory else { return }; savingCategory = true; defer { savingCategory = false }
+        do { try await savePhotoCategory(photo, category: category); status = "分类已保存。" }
+        catch { store.error = error.localizedDescription }
+    }
+    private func albumChip(_ name: String, id: String) -> some View {
+        Button { collection = id } label: {
+            Text(name).font(.caption.weight(.medium)).padding(.horizontal, 12).padding(.vertical, 9)
+                .background(collection == id ? VesperTheme.muted.opacity(0.23) : .white.opacity(0.6), in: Capsule())
+        }.buttonStyle(.plain)
+    }
+    private func createCollection() async {
+        let name = String(collectionName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        guard !name.isEmpty else { return }
+        let id = UUID().uuidString
+        let saved = await store.mutate("profile") { current in
+            var profile = current
+            var albums = profile["photoCollections"].array
+            albums.append(.object(["id": .string(id), "name": .string(name), "photoIDs": .array([])]))
+            profile["photoCollections"] = .array(albums)
+            return profile
+        }
+        if saved { collection = "all"; status = "相册已创建，打开照片即可加入。" }
+        else { status = store.error ?? "相册创建失败。" }
+    }
     private func load() async {
+        guard !loading else { return }; loading = true; defer { loading = false }
         do {
             var all: [JSONValue] = []
             var offset = 0
@@ -109,11 +358,85 @@ struct AlbumView: View {
                 guard next > offset else { throw ServiceError(message: "Invalid album cursor") }
                 offset = next
             } while !Task.isCancelled
-            if !Task.isCancelled { photos = all; status = photos.isEmpty ? "No photos in your album yet." : "" }
-        }
-        catch { status = error.localizedDescription }
+            try Task.checkCancellation()
+            var seen = Set<String>()
+            photos = all.filter { seen.insert($0.id).inserted }
+            status = ""
+        } catch is CancellationError {} catch { status = error.localizedDescription }
     }
 }
+
+struct AlbumPhotoViewer: View {
+    let photos: [JSONValue]
+    let initialID: String
+    var categories: [String] = []
+    var moveCategory: (JSONValue, String) -> Void = { _, _ in }
+    let membership: (JSONValue, JSONValue, Bool) -> Void
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var currentID = ""
+    private var collections: [JSONValue] { store.document("profile")["photoCollections"].array }
+    private var current: JSONValue? { photos.first(where: { $0.id == currentID }) }
+    var body: some View {
+        NavigationStack {
+            TabView(selection: $currentID) {
+                ForEach(photos) { photo in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            AsyncImage(url: URL(string: photo["url"].string)) { phase in
+                                if let image = phase.image { image.resizable().scaledToFit() }
+                                else if phase.error != nil { ContentUnavailableView("照片加载失败", systemImage: "photo.badge.exclamationmark", description: Text("请返回相册刷新后重试。")) }
+                                else { ProgressView().frame(maxWidth: .infinity, minHeight: 240) }
+                            }.frame(maxWidth: .infinity)
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text(AlbumPresentation.dateText(photo)).font(.headline)
+                                if let uploaded = AlbumPresentation.eventDate(photo) {
+                                    Text("上传于 " + uploaded.formatted(.dateTime.hour().minute())).font(.caption).foregroundStyle(VesperTheme.muted)
+                                }
+                                if !photo["caption"].string.isEmpty { Text(photo["caption"].string).font(.system(size: 17, design: .serif)).lineSpacing(5).textSelection(.enabled) }
+                                if let saved = AlbumPresentation.date(photo["savedAt"].string) {
+                                    Text("收藏于 " + saved.formatted(.dateTime.year().month().day().hour().minute())).font(.caption).foregroundStyle(VesperTheme.muted)
+                                }
+                                if !photo["category"].string.isEmpty { Text(photo["category"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
+                            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+                        }.padding(12)
+                    }.tag(photo.id)
+                }
+            }.tabViewStyle(.page(indexDisplayMode: .never))
+                .background { Background() }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+                .navigationTitle("\((photos.firstIndex(where: { $0.id == currentID }) ?? 0) + 1) / \(photos.count)")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        if let photo = current {
+                            Menu {
+                                ForEach(categories, id: \.self) { name in
+                                    Button { moveCategory(photo, name) } label: {
+                                        Label(name, systemImage: photo["category"].string == name ? "checkmark" : "folder")
+                                    }
+                                }
+                                Button("未分类") { moveCategory(photo, "未分类") }
+                            } label: { Image(systemName: "folder") }.accessibilityLabel("调整分类")
+                            if !collections.isEmpty {
+                                Menu {
+                                    ForEach(collections) { album in
+                                        let included = AlbumPresentation.inCollection(photo, collection: album)
+                                        Button { membership(album, photo, !included) } label: {
+                                            Label(album["name"].string, systemImage: included ? "checkmark.circle.fill" : "circle")
+                                        }
+                                    }
+                                } label: { Image(systemName: "folder.badge.plus") }.accessibilityLabel("加入相册").disabled(store.saving)
+                            }
+                            if let url = URL(string: photo["url"].string) { ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("分享照片") }
+                        }
+                    }
+                }
+                .onAppear { currentID = initialID }
+        }
+    }
+}
+
 private struct MovieCue {
     let start: Double
     let end: Double

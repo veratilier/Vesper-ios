@@ -92,15 +92,15 @@ struct LettersView: View {
                 }
             }
             HStack { Text(archiveLabel).font(.custom("Georgia", size: 14)); Spacer(); Text("\(visible.count) / \(filed.count)").font(.custom("Georgia", size: 12)).opacity(0.6) }
-            if filed.isEmpty { Text(model.loading ? "Opening the letter box…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
-            UprightLetters(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors)
+            if filed.isEmpty { Text(model.loading ? "Opening your letters…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
+            else { LetterStack(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors) }
             if let selected {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(selected.displayTitle).font(.custom("Georgia", size: 18))
                     Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 12)).opacity(0.65)
                     action("Open letter") { open(selected) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            } else { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
+            } else if !filed.isEmpty { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
             if filed.count > 5 {
                 HStack {
                     Button("Previous") { page -= 1; selectedID = nil; hoverID = nil }.disabled(page == 0)

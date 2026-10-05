@@ -22,7 +22,7 @@ private final class LettersLayoutProtocol: URLProtocol {
 }
 
 @MainActor final class LettersTests: XCTestCase {
-    func testLettersArchiveWithSingleAndFullBoxesOnAllPalettes() async throws {
+    func testLettersArchiveWithSingleAndFullStacksOnAllPalettes() async throws {
         URLProtocol.registerClass(LettersLayoutProtocol.self)
         defer { URLProtocol.unregisterClass(LettersLayoutProtocol.self) }
         let suite = "letters-layout-" + UUID().uuidString
@@ -46,12 +46,12 @@ private final class LettersLayoutProtocol: URLProtocol {
             window.isHidden = true; window.rootViewController = nil
         }
     }
-    func testLetterBoxStaysWithinPhoneMarginsWhenBrowsingAndSelecting() throws {
+    func testLetterStackStaysWithinPhoneMarginsWhenBrowsingAndSelecting() throws {
         for width in [320, 393, 430] {
             for count in [1, 5] {
                 let letters = (0..<count).map { VesperLetter(id: "layout-\($0)", title: "我们的第\($0 + 1)封信", author: "Vera", createdAt: "2026-10-05T06:00:00Z") }
                 for selected in [false, true] {
-                    let content = UprightLetters(letters: letters, hoverID: .constant(nil), selectedID: .constant(selected ? letters.last?.id : nil), colors: LetterColors(palette: .white))
+                    let content = LetterStack(letters: letters, hoverID: .constant(nil), selectedID: .constant(selected ? letters.last?.id : nil), colors: LetterColors(palette: .white))
                         .padding(.horizontal, 22).padding(.top, 12)
                         .frame(width: CGFloat(width), height: 420, alignment: .topLeading).background(Color.white)
                     let renderer = ImageRenderer(content: content); renderer.scale = 1
@@ -72,7 +72,7 @@ private final class LettersLayoutProtocol: URLProtocol {
                     XCTAssertGreaterThanOrEqual(marked.map { $0 % width }.min() ?? 0, 18, "Letter artwork must leave the left phone margin visible")
                     XCTAssertLessThanOrEqual(marked.map { $0 % width }.max() ?? width, width - 18, "Letter artwork must not run off the right edge")
                     XCTAssertGreaterThanOrEqual(marked.map { $0 / width }.min() ?? 0, 12, "A lifted envelope and date tab must remain inside the top of the canvas")
-                    XCTAssertLessThan(marked.map { $0 / width }.max() ?? 420, 342, "The box must stay above the instructions below it")
+                    XCTAssertLessThan(marked.map { $0 / width }.max() ?? 420, 392, "The envelopes must stay above the instructions below them")
                 }
             }
         }

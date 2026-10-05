@@ -133,6 +133,8 @@ struct EditorSheet<Content: View>: View {
 
 @MainActor enum ThemeIcons {
     static func apply(_ value: String) {
+        // Palette fixtures must not send real icon-change requests to LaunchServices.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         guard UIApplication.shared.supportsAlternateIcons else { return }
         let name: String? = value == "white" ? "AppIconWhite" : value == "black" ? "AppIconBlack" : nil
         guard UIApplication.shared.alternateIconName != name else { return }

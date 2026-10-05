@@ -746,6 +746,58 @@ final class ContractTests: XCTestCase {
         while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
     }
+    func testSendPublishesLocalEchoBeforeConnectingAndConsumesComposerOnce() async throws {
+        let socket = RecoverySocket(); socket.hangMethod = "initialize"
+        let chat = session([socket], timeout: 0.05)
+        defer { chat.disconnect() }
+        chat.composer.draft = "A slow connection must not delay my message"
+        var accepted = 0
+        let draft = chat.composer.draft
+        let task = Task {
+            await chat.send(draft, onAccepted: {
+                accepted += 1
+                XCTAssertEqual(chat.messages.last?["content"].string, draft)
+                XCTAssertEqual(chat.messages.last?["status"].string, "pending")
+                XCTAssertEqual(chat.latestLocalMessageID, chat.messages.last?.id)
+                XCTAssertTrue(chat.preparingSend)
+                chat.composer.draft = ""
+            })
+        }
+        await eventually { accepted == 1 }
+        XCTAssertTrue(chat.composer.draft.isEmpty)
+        let duplicate = await chat.send("duplicate", onAccepted: { accepted += 1 })
+        XCTAssertFalse(duplicate)
+        chat.composer.draft = "Next draft"
+        _ = await task.value
+        XCTAssertEqual(accepted, 1)
+        XCTAssertEqual(chat.composer.draft, "Next draft")
+        XCTAssertEqual(chat.messages.filter { $0["content"].string == draft }.count, 1)
+    }
+
+    func testAcceptedUserMessageKeepsItsTimestampWhileReplyRuns() async throws {
+        let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
+        try await chat.connect()
+        try socket.emit(.object(["method": .string("turn/started"), "params": .object(["turn": .object(["id": .string("active")])])]))
+        await eventually { chat.busy }
+        let user: JSONValue = .object(["role": .string("user"), "metadata": .object(["turnId": .string("active")])])
+        var reply = user; reply["role"] = .string("agent")
+        XCTAssertFalse(chat.replyIsStillRunning(user))
+        XCTAssertTrue(chat.replyIsStillRunning(reply))
+    }
+
+    func testLiveHeadingUsesCurrentTurnAndMovesFromToolToReply() {
+        func message(_ id: String, role: String = "agent", turn: String) -> JSONValue {
+            .object(["id": .string(id), "role": .string(role), "createdAt": .string("2026-10-05T08:00:00Z"), "metadata": .object(["turnId": .string(turn)])])
+        }
+        let old = message("old", turn: "previous")
+        let user = message("user", role: "user", turn: "current")
+        let tool = message("tool", role: "tool", turn: "current")
+        XCTAssertNil(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([old, user]), turnID: "current"))
+        XCTAssertEqual(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([old, user, tool]), turnID: "current"), "tool")
+        let reply = message("reply", turn: "current")
+        XCTAssertEqual(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([old, user, tool, reply]), turnID: "current"), "reply")
+    }
+
     func testStreamingBurstPublishesInBatchesWithoutLosingText() async throws {
         let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
         try await chat.connect()

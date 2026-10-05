@@ -202,11 +202,13 @@ struct ChatView: View {
                                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                                     }.buttonStyle(.plain).id(message.id)
                                 } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
-                                else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
+                                else if row.activity { AssistantMessageHeading(message: message, activities: row.activities, liveEvents: message.id == chat.liveHeadingID ? chat.events : [], isLive: message.id == chat.liveHeadingID) }
                                 else { messageRow(message, activities: row.activities).id(message.id) }
                             }
                         }
-                        if chat.busy {
+                        if chat.preparingSend {
+                            Text("Sending…").font(.system(size: 12)).foregroundStyle(VesperTheme.muted).frame(height: 44)
+                        } else if chat.waitingForReply && chat.liveHeadingID == nil {
                             AssistantMessageHeading(message: .object(["status": .string(chat.busy ? "streaming" : "delivered"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events)
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -547,7 +549,8 @@ struct ChatView: View {
     }
     private func messageRow(_ message: JSONValue, activities: [JSONValue]) -> some View {
         ChatMessageRow(message: message, activities: activities,
-                       liveEvents: !chat.busy && message.id == chat.presentation.lastReplyID ? chat.events : [],
+                       liveEvents: message.id == chat.liveHeadingID || (!chat.busy && message.id == chat.presentation.lastReplyID) ? chat.events : [],
+                       isLive: message.id == chat.liveHeadingID,
                        replyIsRunning: chat.replyIsStillRunning(message),
                        favorite: isFavorite(message), saving: store.saving, busy: chat.busy,
                        highlighted: chat.jumpMessageID == message.id,
@@ -698,7 +701,18 @@ struct ChatView: View {
     private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; NativeCallPresentation.shared.open(initiator: "user") }
     private func send() {
         speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; drawer = false
-        Task { if await chat.send(sending, images: outgoing, files: outgoingFiles, music: music) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = []; pendingMusic = nil; voiceRecorder.cancel() } }
+        let conversation = chat.conversationID
+        Task {
+            var accepted = false
+            let sent = await chat.send(sending, images: outgoing, files: outgoingFiles, music: music, onAccepted: {
+                accepted = true
+                draft = ""; images = []; files = []; selectedPhotos = []; pendingMusic = nil; voiceRecorder.cancel()
+            })
+            // An ambiguous send remains in the transcript for reconciliation, never auto-resend it.
+            if accepted && !sent && !chat.unconfirmedSend && chat.conversationID == conversation && draft.isEmpty && images.isEmpty && files.isEmpty && pendingMusic == nil {
+                draft = sending; images = outgoing; files = outgoingFiles; pendingMusic = music
+            }
+        }
     }
 
 }
@@ -709,6 +723,7 @@ private struct ChatMessageRow: View, Equatable {
     let message: JSONValue
     let activities: [JSONValue]
     let liveEvents: [String]
+    let isLive: Bool
     let replyIsRunning: Bool
     let favorite: Bool
     let saving: Bool
@@ -718,7 +733,7 @@ private struct ChatMessageRow: View, Equatable {
     let onRemember: () -> Void
     let onDelete: () -> Void
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message && lhs.activities == rhs.activities && lhs.liveEvents == rhs.liveEvents &&
+        lhs.isLive == rhs.isLive && lhs.message == rhs.message && lhs.activities == rhs.activities && lhs.liveEvents == rhs.liveEvents &&
         lhs.replyIsRunning == rhs.replyIsRunning && lhs.favorite == rhs.favorite &&
         lhs.saving == rhs.saving && lhs.busy == rhs.busy && lhs.highlighted == rhs.highlighted
     }
@@ -730,7 +745,7 @@ private struct ChatMessageRow: View, Equatable {
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents) }
+                if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents, isLive: isLive) }
                 if !photos.isEmpty {
                     ChatPhotoStack(photos: photos)
                         .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
@@ -788,6 +803,12 @@ enum ChatPresentation {
         let activity: Bool
         var messages: [JSONValue]
         var activities: [JSONValue] = []
+    }
+    static func liveHeadingID(_ rows: [Row], turnID: String) -> String? {
+        rows.last { row in
+            guard let message = row.messages.first, !isUser(message), !isLetterReminder(message) else { return false }
+            return message["metadata"]["turnId"].string == turnID && message["metadata"]["showTurnStatus"] != .bool(false)
+        }?.id
     }
     static func isUser(_ message: JSONValue) -> Bool {
         let role = message["role"].string.lowercased()
@@ -1107,6 +1128,7 @@ private struct AssistantMessageHeading: View {
     let message: JSONValue
     var activities: [JSONValue] = []
     var liveEvents: [String] = []
+    var isLive = false
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1115,8 +1137,8 @@ private struct AssistantMessageHeading: View {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
                     let time = ChatPresentation.time(ChatTranscript.timestamp(message), full: true)
-                    if !time.isEmpty { Text(time) } else if message["status"].string != "streaming" { Text("Thinking") }
-                    if message["status"].string == "streaming" { Text("Thinking…") }
+                    if isLive || message["status"].string == "streaming" { Text("Thinking…") }
+                    else if !time.isEmpty { Text(time) } else { Text("Thinking") }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

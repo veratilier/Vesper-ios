@@ -295,9 +295,9 @@ enum ChatUserInput {
     private var unresolvedSends: [String: JSONValue] = [:]
     private var connectionSuppressed = false
     private var pendingDraftID: String?
-    private var sending = false
+    @Published private var sending = false
     func replyIsStillRunning(_ message: JSONValue) -> Bool {
-        guard busy, let turnID, !turnID.isEmpty else { return false }
+        guard !ChatPresentation.isUser(message), busy, let turnID, !turnID.isEmpty else { return false }
         return message["metadata"]["turnId"].string == turnID
     }
     private let makeSocket: (URL) -> any ChatSocket
@@ -1032,22 +1032,35 @@ enum ChatUserInput {
             if models.isEmpty { modelError = "The server returned no available models." }
         } catch { modelError = error.localizedDescription; if !initialized { scheduleRecovery() } }
     }
-    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil) async -> Bool {
+    var liveHeadingID: String? {
+        guard busy, let turnID, !turnID.isEmpty else { return nil }
+        return ChatPresentation.liveHeadingID(presentation.rows, turnID: turnID)
+    }
+    var waitingForReply: Bool { busy && (sending || turnID != nil) }
+    var preparingSend: Bool { sending && turnID == nil }
+
+    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil, onAccepted: () -> Void = {}) async -> Bool {
         guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
         let sendIntent = intent
         sending = true
         defer { if sendIntent == intent { sending = false } }
-        let stickerInput: String?
-        do {
-            if let sticker { stickerInput = try await api.stickerInputURL(assetID: sticker["assetId"].string) }
-            else { stickerInput = nil }
-        } catch { if sendIntent == intent { self.error = error.localizedDescription }; return false }
-        guard sendIntent == intent else { return false }
         connectionSuppressed = false
-        busy = true; status = "Connecting…"; thinkingSummary = ""; events = []; error = nil
+        busy = true; status = "Sending…"; thinkingSummary = ""; events = []; error = nil
         let messageID = pendingDraftID ?? UUID().uuidString
         pendingDraftID = messageID
+        let createdAt = isoNow()
+        var preview: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(createdAt), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
+        if let music { preview["metadata"]["musicCard"] = music }
+        if let sticker { preview["type"] = .string("sticker"); preview["metadata"]["sticker"] = sticker }
+        if text.isEmpty && music == nil && sticker == nil { preview["content"] = .string("Sending attachments…") }
+        messages.removeAll { $0.id == messageID }; messages.append(preview)
+        latestLocalMessageID = messageID
+        // Publish the local echo and consume the composer before the first suspension.
+        onAccepted()
         do {
+            let stickerInput: String?
+            if let sticker { stickerInput = try await api.stickerInputURL(assetID: sticker["assetId"].string) }
+            else { stickerInput = nil }
             var attachments: [JSONValue] = []
             // Call frames are sent inline below; they do not need permanent chat uploads.
             if voiceCallContext == nil {
@@ -1080,7 +1093,7 @@ enum ChatUserInput {
                     messages = ChatTranscript.merge(messages, incoming: history["messages"].array, tombstones: tombstones)
                 }
                 do {
-                    let recent = messages.filter { ["user", "agent", "assistant"].contains($0["role"].string) && !ChatPresentation.isActivity($0) && !ChatTranscript.isWake($0) && !["failed", "cancelled", "streaming"].contains($0["status"].string) }.suffix(6).map { message in
+                    let recent = messages.filter { ["user", "agent", "assistant"].contains($0["role"].string) && !ChatPresentation.isActivity($0) && !ChatTranscript.isWake($0) && $0.id != messageID && !["pending", "error", "failed", "cancelled", "streaming"].contains($0["status"].string) }.suffix(6).map { message in
                         JSONValue.object(["role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": .string(String(message["content"].string.prefix(2000)))])
                     }
                     let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID), "recent": .array(recent)]))
@@ -1133,7 +1146,7 @@ enum ChatUserInput {
             _ = try await api.request("/conversations/\(conversationID)", method: "POST", body: .object(["codexThreadId": .string(threadID), "title": .string(conversations.first(where: { $0.id == conversationID })?["title"].string ?? String(text.prefix(50))), "source": .string("codex")]), history: true)
             }
             guard sendIntent == intent else { throw CancellationError() }
-            var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
+            var user: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(createdAt), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
             var musicContext = ""
             if let music {
                 let title = music["title"].string
@@ -1160,8 +1173,8 @@ enum ChatUserInput {
             }
             if let sticker { user["type"] = .string("sticker"); user["metadata"]["sticker"] = sticker }
             if let music { user["metadata"]["musicCard"] = music; user["metadata"]["musicOnly"] = .bool(text.isEmpty); if text.isEmpty { user["content"] = .string("Shared music: " + music["title"].string) } }
-            messages.removeAll { $0.id == messageID }; messages.append(user)
-            latestLocalMessageID = messageID
+            if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index] = user }
+            else { messages.append(user) }
             try await persist(user)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]

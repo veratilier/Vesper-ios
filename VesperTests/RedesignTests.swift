@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 import UIKit
 import WebKit
+import CoreLocation
 @testable import Vesper
 
 private struct DesktopPalettePreview: View {
@@ -424,7 +425,7 @@ private final class DesktopContactProtocol: URLProtocol {
         let catalog = NativeDeviceTools.addToCatalog(.object(["connections": .array([remote])]))
         XCTAssertEqual(catalog["connections"].array.first, remote)
         XCTAssertEqual(NativeDeviceTools.addToCatalog(catalog), catalog)
-        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 4)
+        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 5)
         let args: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_calendar"), "arguments": .object([:])])
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: args), "read_native_calendar")
         var invalid = args; invalid["toolName"] = .string("delete_event")
@@ -436,6 +437,26 @@ private final class DesktopContactProtocol: URLProtocol {
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "read_native_health", arguments: .object([:])), "read_native_health")
         XCTAssertEqual(try NativeToolCatalog.normalize([NativeDeviceTools.calendarTool, NativeDeviceTools.healthTool]).count, 2)
     }
+    func testCurrentLocationKeepsCoordinatesAccuracyAndFreshness() throws {
+        let now = Date(timeIntervalSince1970: 1791187200)
+        let location = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 31.275123, longitude: 120.742456), altitude: 0, horizontalAccuracy: 12, verticalAccuracy: -1, timestamp: now.addingTimeInterval(-2))
+        let result = try NativeChatLocation.snapshot(location, precise: true, now: now)
+        XCTAssertEqual(result["latitude"].number, 31.275123, accuracy: 0.0000001)
+        XCTAssertEqual(result["longitude"].number, 120.742456, accuracy: 0.0000001)
+        XCTAssertEqual(result["horizontalAccuracyMeters"].number, 12)
+        XCTAssertEqual(result["ageSeconds"].number, 2)
+        XCTAssertEqual(result["precisePermission"], .bool(true))
+        XCTAssertThrowsError(try NativeChatLocation.snapshot(location, precise: true, now: now.addingTimeInterval(60)))
+        let approximate = try NativeChatLocation.snapshot(location, precise: false, now: now)
+        XCTAssertEqual(approximate["precisePermission"], .bool(false))
+        let invalid = CLLocation(coordinate: location.coordinate, altitude: 0, horizontalAccuracy: -1, verticalAccuracy: -1, timestamp: now)
+        XCTAssertThrowsError(try NativeChatLocation.snapshot(invalid, precise: true, now: now))
+        let wrapped: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_location"), "arguments": .object([:])])
+        XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: wrapped), "read_native_location")
+        var unexpected = wrapped; unexpected["arguments"] = .object(["backgroundTracking": .bool(true)])
+        XCTAssertThrowsError(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: unexpected))
+    }
+
     func testNativePlannerWriteValidatesDatesAndOldThreadDiscovery() throws {
         let event: JSONValue = .object(["kind": .string("event"), "title": .string("Study"), "start": .string("2026-10-06T09:00:00+08:00"), "end": .string("2026-10-06T10:00:00+08:00"), "requestId": .string("fixture-event")])
         let parsed = try SystemPlanner.writeRequest(event)

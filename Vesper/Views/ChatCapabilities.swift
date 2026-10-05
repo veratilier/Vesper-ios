@@ -70,7 +70,7 @@ struct ChatFile: Identifiable {
     @Published var error: String?
     @Published var loading = false
     private let manager = CLLocationManager()
-    override init() { super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyHundredMeters }
+    override init() { super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyBest }
     func locateIfAuthorized() {
         guard !loading else { return }
         if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse { locate() }
@@ -95,6 +95,87 @@ struct ChatFile: Identifiable {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         let detail = error.localizedDescription
         Task { @MainActor in self.error = detail; self.loading = false }
+    }
+}
+
+/// A fresh foreground fix for a chat request, independent of the weather cache.
+@MainActor final class NativeChatLocation: NSObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    private var pending: CheckedContinuation<JSONValue, Error>?
+    private var timeout: Task<Void, Never>?
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
+    func read() async throws -> JSONValue {
+        guard UIApplication.shared.applicationState == .active else { throw ServiceError(message: "Open Vesper on your iPhone to read a fresh location.") }
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                pending = continuation
+                timeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(25)) } catch { return }
+                    self?.finish(.failure(ServiceError(message: "A fresh location could not be obtained. Try again with a clearer GPS signal.")))
+                }
+                start()
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) }
+        }
+    }
+    private func start() {
+        guard pending != nil else { return }
+        switch manager.authorizationStatus {
+        case .notDetermined: manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse: manager.requestLocation()
+        default: finish(.failure(ServiceError(message: "Allow Location access in iPhone Settings → Apps → Vesper. Enable Precise Location for a more accurate fix.")))
+        }
+    }
+    private func finish(_ result: Result<JSONValue, Error>) {
+        guard let continuation = pending else { return }
+        pending = nil; timeout?.cancel(); timeout = nil
+        manager.stopUpdatingLocation()
+        continuation.resume(with: result)
+    }
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor [weak self] in self?.start() }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        let latest = locations.last
+        Task { @MainActor [weak self] in
+            guard let self, self.pending != nil, let latest else { return }
+            guard UIApplication.shared.applicationState == .active else {
+                self.finish(.failure(ServiceError(message: "Keep Vesper open while reading your current location."))); return
+            }
+            do {
+                let value = try Self.snapshot(latest, precise: self.manager.accuracyAuthorization == .fullAccuracy)
+                self.finish(.success(value))
+            } catch {
+                // Ignore cached/invalid fixes; request a new one within the bounded timeout.
+                self.manager.requestLocation()
+            }
+        }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let denied = (error as? CLError)?.code == .denied
+        Task { @MainActor [weak self] in
+            self?.finish(.failure(ServiceError(message: denied ? "Location access is off. Enable it in iPhone Settings." : "Current location is unavailable. Try again.")))
+        }
+    }
+    static func snapshot(_ location: CLLocation, precise: Bool, now: Date = .now) throws -> JSONValue {
+        let age = now.timeIntervalSince(location.timestamp)
+        guard CLLocationCoordinate2DIsValid(location.coordinate), location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy.isFinite, age >= -5, age <= 30 else {
+            throw ServiceError(message: "The location fix is stale or invalid.")
+        }
+        return .object(["source": .string("iPhone Core Location"),
+            "latitude": .number(location.coordinate.latitude), "longitude": .number(location.coordinate.longitude),
+            "horizontalAccuracyMeters": .number(location.horizontalAccuracy), "precisePermission": .bool(precise),
+            "locatedAt": .string(ISO8601DateFormatter().string(from: location.timestamp)),
+            "readAt": .string(ISO8601DateFormatter().string(from: now)), "ageSeconds": .number(max(0, age)),
+            "mapsURL": .string("https://maps.apple.com/?ll=\(location.coordinate.latitude),\(location.coordinate.longitude)"),
+            "note": .string("A single fresh fix, not continuous tracking. Accuracy is an uncertainty radius in meters; coordinates do not prove a building, room or street address.")])
     }
 }
 

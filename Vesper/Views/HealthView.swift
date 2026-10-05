@@ -479,7 +479,7 @@ struct HealthView: View {
             PermissionPanel {
                 Label("Health access", systemImage: "heart.fill").font(.headline)
                 Text("Choose the categories Vesper may read. Rowan can use the summaries you request in chat.").foregroundStyle(VesperTheme.muted)
-                Button(reader.needsAuthorizationRequest ? "Request Health access" : "How to change access") {
+                Button("Change access") {
                     Task {
                         await reader.checkAuthorizationRequest()
                         if reader.needsAuthorizationRequest { await reader.connect() }

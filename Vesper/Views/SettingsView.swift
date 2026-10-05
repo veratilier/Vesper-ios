@@ -82,7 +82,7 @@ struct DevicePermissionsView: View {
         PermissionPage(title: "Permissions") {
             Text("Choose what Vesper can access on this iPhone.").font(.subheadline).foregroundStyle(VesperTheme.muted)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
-                card("Location", icon: "location.fill", status: weather.authorized ? "Allowed" : "Not allowed", detail: "Use your location for local weather.") { WeatherPermissionsView() }
+                card("Location", icon: "location.fill", status: weather.authorized ? "Allowed" : "Not allowed", detail: "Read your current location in chat and show local weather.") { WeatherPermissionsView() }
                 card("Health", icon: "heart.fill", status: HKHealthStore.isHealthDataAvailable() ? "Manage access" : "Unavailable", detail: "Choose which health summaries Rowan may read.") { HealthView() }
                 card("Calendar", icon: "calendar", status: calendar, detail: "Read upcoming events and add plans from chat.") { SystemPlannerView(reminderOnly: false) }
                 card("Reminders", icon: "checklist", status: reminders, detail: "Let Rowan add tasks to Apple Reminders.") { SystemPlannerView(reminderOnly: true) }

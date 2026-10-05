@@ -424,7 +424,7 @@ private final class DesktopContactProtocol: URLProtocol {
         let catalog = NativeDeviceTools.addToCatalog(.object(["connections": .array([remote])]))
         XCTAssertEqual(catalog["connections"].array.first, remote)
         XCTAssertEqual(NativeDeviceTools.addToCatalog(catalog), catalog)
-        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 3)
+        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 4)
         let args: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_calendar"), "arguments": .object([:])])
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: args), "read_native_calendar")
         var invalid = args; invalid["toolName"] = .string("delete_event")
@@ -436,6 +436,27 @@ private final class DesktopContactProtocol: URLProtocol {
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "read_native_health", arguments: .object([:])), "read_native_health")
         XCTAssertEqual(try NativeToolCatalog.normalize([NativeDeviceTools.calendarTool, NativeDeviceTools.healthTool]).count, 2)
     }
+    func testNativePlannerWriteValidatesDatesAndOldThreadDiscovery() throws {
+        let event: JSONValue = .object(["kind": .string("event"), "title": .string("Study"), "start": .string("2026-10-06T09:00:00+08:00"), "end": .string("2026-10-06T10:00:00+08:00"), "requestId": .string("fixture-event")])
+        let parsed = try SystemPlanner.writeRequest(event)
+        XCTAssertEqual(parsed.end!.timeIntervalSince(parsed.start!), 3600)
+        let wrapped: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("create_native_planner_item"), "arguments": event])
+        XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: wrapped), "create_native_planner_item")
+        XCTAssertEqual(try NativeToolCatalog.normalize([NativeDeviceTools.plannerWriteTool]).count, 1)
+        var invalid = event; invalid["end"] = event["start"]
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(invalid))
+        invalid = event; invalid["start"] = .string("tomorrow morning")
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(invalid))
+        invalid = event; invalid["requestId"] = .string("")
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(invalid))
+        let reminder: JSONValue = .object(["kind": .string("reminder"), "title": .string("Bring notebook"), "requestId": .string("fixture-reminder")])
+        XCTAssertNil(try SystemPlanner.writeRequest(reminder).start)
+        var timed = reminder; timed["start"] = event["start"]
+        XCTAssertNotNil(try SystemPlanner.writeRequest(timed).start)
+        timed["end"] = event["end"]
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(timed))
+    }
+
     func testExistingChatDiscoversHealthArgumentsAndVesperAlarms() throws {
         var args: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_health"), "arguments": .object(["metrics": .array([.string("catalog")])])])
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: args), "read_native_health")

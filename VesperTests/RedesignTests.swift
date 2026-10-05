@@ -61,6 +61,7 @@ private struct SurfacePalettePreview: View {
                 if page == "MyMusic" { MusicLibraryView(catalog: catalog, preview: true) }
                 else if page == "Contacts" { NativeChatHome() }
                 else if page == "Notes" { CollectionView(kind: .notes) }
+                else if page == "Alarms" { AlarmsView() }
                 else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
             }
         }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
@@ -98,7 +99,7 @@ private final class DesktopContactProtocol: URLProtocol {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         for palette in ["white", "blue", "black"] {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
-            for page in ["MyMusic", "Contacts", "Notes", "Panels"] {
+            for page in ["MyMusic", "Contacts", "Notes", "Panels", "Alarms"] {
                 store.token = page == "Contacts" ? "preview-contact-token" : ""
                 store.error = nil; chat.error = nil
                 if page == "Contacts" { chat.configure(store) }

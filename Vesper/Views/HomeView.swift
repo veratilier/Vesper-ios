@@ -161,7 +161,7 @@ struct HomeView: View {
             }
             .padding(.horizontal, 20).padding(.vertical, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background { DesktopPaper(seed: 9) }
+            .vesperGlass(in: PaperEdge(seed: 9))
         }
         .accessibilityHint("Open Notes to read the full letter")
         .accessibilityIdentifier("home-rowan-letter")
@@ -314,28 +314,6 @@ struct HomeView: View {
 
 }
 
-/// A quiet material under native text, with a stable, lightly irregular paper edge.
-private struct DesktopPaper: View {
-    @AppStorage("vesperPalette") private var paletteName = "blue"
-    let seed: Int
-    var rounded = false
-    private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color(red: 0.98, green: 0.97, blue: 0.94)
-                Image("LetterPaper").resizable().scaledToFill()
-                    .frame(width: geometry.size.width, height: geometry.size.height).opacity(0.70)
-                if palette == .black { Color.black.opacity(0.84) }
-            }
-            .clipShape(PaperEdge(seed: seed, rounded: rounded))
-            // Blend the textured backing, keeping native text at full opacity.
-            .opacity(palette == .black ? 0.65 : 0.64)
-        }
-        .shadow(color: .black.opacity(palette == .black ? 0.12 : 0.05), radius: 5, y: 3)
-        .allowsHitTesting(false).accessibilityHidden(true)
-    }
-}
 private struct PaperEdge: Shape {
     let seed: Int
     var rounded = false

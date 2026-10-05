@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import SwiftUI
 import UserNotifications
 import AVFoundation
@@ -2046,5 +2047,52 @@ enum NativeDeviceTools {
             "transport": .string("native-device"), "tools": .array([healthTool, calendarTool, alarmTool])
         ])])
         return result
+    }
+}
+
+
+struct ChatInboxCover: Decodable, Equatable {
+    let conversationId: String
+    let messageId: String
+    let itemId: String?
+}
+@MainActor final class ChatInbox: ObservableObject {
+    static let shared = ChatInbox()
+    @Published private(set) var hasUpdates = false
+    @Published private(set) var incoming: [ChatInboxCover] = []
+    private let preferences: UserDefaults
+    private var account = "", seen = Set<String>()
+    private var syncing = false
+    init(preferences: UserDefaults = .standard) { self.preferences = preferences }
+    static func scope(_ api: APIClient) -> String {
+        SHA256.hash(data: Data((api.historyURL + "\n" + api.token).utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+    private func key(_ chat: String, _ message: String) -> String { chat + "\n" + message }
+    func update(_ covers: [ChatInboxCover], scope: String) {
+        if account != scope { account = scope; seen = Set(preferences.stringArray(forKey: "vesperChatSeen-" + account) ?? []) }
+        incoming = covers
+        hasUpdates = incoming.contains { !seen.contains(key($0.conversationId,$0.messageId)) }
+    }
+    func markDisplayed(conversation: String, messageIDs: Set<String>) {
+        guard !account.isEmpty else { return }
+        for id in messageIDs { seen.insert(key(conversation,id)) }
+        for cover in incoming where cover.conversationId == conversation {
+            if messageIDs.contains(cover.messageId) || cover.itemId.map(messageIDs.contains) == true {
+                seen.insert(key(conversation,cover.messageId))
+            }
+        }
+        preferences.set(Array(seen), forKey: "vesperChatSeen-" + account)
+        hasUpdates = incoming.contains { !seen.contains(key($0.conversationId,$0.messageId)) }
+    }
+    func clear() { account = ""; seen = []; incoming = []; hasUpdates = false }
+    func sync(_ api: APIClient) async {
+        guard !syncing else { return }; syncing = true; defer { syncing = false }
+        guard !api.token.isEmpty else { clear(); return }
+        do {
+            let response = try await api.request("/inbox", history: true)
+            guard !Task.isCancelled else { return }
+            let covers = try JSONDecoder().decode([ChatInboxCover].self, from: JSONEncoder().encode(response["incoming"]))
+            update(covers, scope: Self.scope(api))
+        } catch { /* Preserve the current indicator until the history service recovers. */ }
     }
 }

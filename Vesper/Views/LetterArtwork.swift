@@ -64,8 +64,8 @@ struct LetterStack: View {
     @State private var lastPoint: CGPoint?
     @State private var touching = false
     private var visible: [VesperLetter] { Array(letters.prefix(5)) }
-    private var canvasHeight: CGFloat { visible.isEmpty ? 0 : visible.count == 1 ? 300 : 380 }
-    private var frontTop: CGFloat { 88 + CGFloat(max(0, visible.count - 1)) * 22 }
+    private var canvasHeight: CGFloat { visible.isEmpty ? 0 : visible.count == 1 ? 250 : 320 }
+    private var frontTop: CGFloat { 40 + CGFloat(max(0, visible.count - 1)) * 18 }
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .topLeading) {
@@ -84,8 +84,8 @@ struct LetterStack: View {
     private func envelope(_ letter: VesperLetter, slot: Int, width: CGFloat) -> some View {
         let front = hoverID == letter.id || selectedID == letter.id
         let cardWidth = min(width * 0.84, 320)
-        let base = frontTop - CGFloat(slot) * 22
-        let lift: CGFloat = selectedID == letter.id ? 64 : hoverID == letter.id ? 42 : 0
+        let base = frontTop - CGFloat(slot) * 18
+        let lift: CGFloat = selectedID == letter.id ? 24 : hoverID == letter.id ? 18 : 0
         let restingAngle = [1.5, -1.0, 1.2, -1.6, -2.0][slot]
         return Button { selectedID = letter.id; hoverID = letter.id } label: {
             LetterEnvelope(colors: colors, title: letter.displayTitle, author: letter.author, showTitle: front || slot == 0,
@@ -105,7 +105,7 @@ struct LetterStack: View {
     }
     private func sweep(_ point: CGPoint) {
         guard !visible.isEmpty else { return }
-        let slot = min(visible.count - 1, max(0, Int(((frontTop - point.y) / 22).rounded())))
+        let slot = min(visible.count - 1, max(0, Int(((frontTop - point.y) / 18).rounded())))
         let candidate = visible[slot].id
         let moved = lastPoint.map { hypot($0.x - point.x, $0.y - point.y) > 7 } ?? true
         let changed = candidate != hoverID

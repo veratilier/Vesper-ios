@@ -179,6 +179,7 @@ struct RootView: View {
     @EnvironmentObject private var chat: ChatSession
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     @ObservedObject private var letterInbox = LetterInbox.shared
+    @ObservedObject private var chatInbox = ChatInbox.shared
     @State private var nativeTab = 0
     @State private var libraryPath: [Destination] = []
     @State private var libraryEditing = false
@@ -201,7 +202,7 @@ struct RootView: View {
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
-                    NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+                    NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.badge(chatInbox.hasUpdates ? " " : nil as String?).tag(1)
                     appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
                     shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.badge(letterInbox.hasUpdates ? " " : nil as String?).tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
@@ -349,12 +350,19 @@ struct RootView: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
+        .task(id: store.historyURL + "\n" + store.token) {
+            while !Task.isCancelled {
+                if phase == .active { await chatInbox.sync(store.api) }
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            }
+        }
+        .onChange(of: store.historyURL) { _, _ in chatInbox.clear() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in letterInbox.tick() }
         .onReceive(LetterNotificationRoute.shared.$letterID) { id in
             if id != nil { navigate(.letters) }
         }
         .task(id: store.token) { await refreshUsage() }
-        .onChange(of: store.token) { _, _ in WidgetSync.clear(); letterInbox.clear() }
+        .onChange(of: store.token) { _, _ in WidgetSync.clear(); letterInbox.clear(); chatInbox.clear() }
         .onChange(of: store.baseURL) { _, _ in letterInbox.clear() }
         .onOpenURL { url in
             guard url.scheme == "vesper" else { return }

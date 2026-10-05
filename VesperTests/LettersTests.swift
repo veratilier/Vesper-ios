@@ -39,7 +39,7 @@ private final class LettersLayoutProtocol: URLProtocol {
             XCTAssertEqual(model.status, "", "Restoring or automatically saving a draft must not add a status row to the archive")
             let host = UIHostingController(rootView: TabView(selection: .constant(3)) {
                 Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
-                Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+                Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }.badge(" ").tag(1)
                 Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2") }.tag(2)
                 NavigationStack { ZStack { Background(); LettersView(initialSelection: "layout-0") } }
                     .tabItem { Label("Letters", systemImage: "envelope") }.badge(" ").tag(3)
@@ -84,6 +84,20 @@ private final class LettersLayoutProtocol: URLProtocol {
                 }
             }
         }
+    }
+    func testChatBadgeClearsOnlyDisplayedIncomingMessagesAndKeepsOtherChatsUnread() throws {
+        let suite = "chat-badge-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { preferences.removePersistentDomain(forName: suite) }
+        let inbox = ChatInbox(preferences: preferences)
+        let one = ChatInboxCover(conversationId: "one", messageId: "reply-one", itemId: nil)
+        let two = ChatInboxCover(conversationId: "two", messageId: "reply-two", itemId: "item-two")
+        inbox.update([one,two], scope: "a"); XCTAssertTrue(inbox.hasUpdates)
+        inbox.markDisplayed(conversation: "one", messageIDs: ["own-message"]); XCTAssertTrue(inbox.hasUpdates)
+        inbox.markDisplayed(conversation: "one", messageIDs: [one.messageId]); XCTAssertTrue(inbox.hasUpdates, "Other chats remain unread")
+        inbox.markDisplayed(conversation: "two", messageIDs: ["item-two"]); XCTAssertFalse(inbox.hasUpdates)
+        let restored = ChatInbox(preferences: preferences);restored.update([one,two],scope:"a");XCTAssertFalse(restored.hasUpdates)
+        restored.update([one,two],scope:"b");XCTAssertTrue(restored.hasUpdates, "Read marks cannot leak between accounts")
+        restored.clear();XCTAssertFalse(restored.hasUpdates)
     }
     func testLetterBadgeDistinguishesArrivalUnlockAndReading() throws {
         let suite = "letter-badge-" + UUID().uuidString

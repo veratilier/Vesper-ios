@@ -29,7 +29,7 @@ struct LettersView: View {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US"); formatter.dateFormat = "MMMM yyyy"
         return formatter.string(from: date)
     }
-    var body: some View {
+    private var pageContent: some View {
         ScrollView {
             VStack(spacing: 18) {
                 HStack {
@@ -47,22 +47,11 @@ struct LettersView: View {
                 }
             }.padding(.horizontal, 22).padding(.bottom, 24).foregroundStyle(colors.ink)
         }.refreshable { await model.load() }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if screen == "archive", let selected {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(selected.displayTitle).font(.custom("Georgia", size: 16)).lineLimit(1)
-                            Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        Button { open(selected) } label: {
-                            Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
-                                .foregroundStyle(colors.paper).background(colors.ink, in: Capsule())
-                        }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
-                    }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-                        .padding(.horizontal, 22).padding(.bottom, 8)
-                }
-            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
             .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.custom("Georgia", size: 24)) } }
+    }
+    private var observedContent: some View {
+        pageContent
             .task(id: app.baseURL + "\n" + app.token) {
                 model.configure(app.api); screen = "archive"; opened = nil; sealed = nil; selectedID = nil; hoverID = nil; page = 0
                 await model.load()
@@ -83,6 +72,9 @@ struct LettersView: View {
             .onChange(of: screen) { _, _ in markArrivalsSeen() }
             .onChange(of: filter) { _, _ in resetSelection() }
             .onChange(of: filed.map(\.id)) { _, _ in if page * 5 >= filed.count { resetSelection() } }
+    }
+    var body: some View {
+        observedContent
             .sheet(item: $sealed) { letter in
                 VStack(spacing: 24) {
                     LetterEnvelope(colors: colors, author: letter.author).frame(width: 245, height: 150)
@@ -92,6 +84,21 @@ struct LettersView: View {
                     Button("Back to Letters") { sealed = nil }
                 }.padding(30).foregroundStyle(colors.ink).presentationDetents([.medium]).presentationBackground(colors.paper)
             }
+    }
+    @ViewBuilder private var selectionBar: some View {
+        if screen == "archive", let selected {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(selected.displayTitle).font(.custom("Georgia", size: 16)).lineLimit(1)
+                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Button { open(selected) } label: {
+                    Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
+                        .foregroundStyle(colors.paper).background(colors.ink, in: Capsule())
+                }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
+            }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .padding(.horizontal, 22).padding(.bottom, 8)
+        }
     }
     private var archive: some View {
         VStack(spacing: 16) {

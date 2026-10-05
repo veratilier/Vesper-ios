@@ -128,6 +128,10 @@ struct ChatConnectionSheet: View {
 }
 
 struct ChatView: View {
+    @Environment(\.scenePhase) private var phase
+    @ObservedObject private var inbox = ChatInbox.shared
+    @State private var chatVisible = false
+
     var onMenu: () -> Void = {}
     var restoreLatest = true
     var native = false
@@ -315,8 +319,19 @@ struct ChatView: View {
         observedLocalMessageID = chat.latestLocalMessageID
         followsLatest = true
     }
+    private func markDisplayedMessages() {
+        guard chatVisible, phase == .active else { return }
+        let messages = chat.messages.filter { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }
+        let ids = Set(messages.flatMap { [$0.id,$0["metadata"]["itemId"].string] }.filter { !$0.isEmpty })
+        inbox.markDisplayed(conversation: chat.conversationID, messageIDs: ids)
+    }
     private var photoContent: some View {
         chatContent
+        .onAppear { chatVisible = true; markDisplayedMessages() }
+        .onDisappear { chatVisible = false }
+        .onChange(of: chat.messages) { _, _ in markDisplayedMessages() }
+        .onChange(of: inbox.incoming) { _, _ in markDisplayedMessages() }
+        .onChange(of: phase) { _, _ in markDisplayedMessages() }
         .task { chat.configure(store); if restoreLatest { await chat.loadConversations(); if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() } } }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }

@@ -122,6 +122,7 @@ enum LetterDraftCache {
     func post() async -> VesperLetter? {
         guard let api, !saving else { return nil }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, draft.text.utf16.count <= 12000, draft.title.utf16.count <= 120 else { status = "Write a letter under 12,000 characters and a title under 120 characters."; return nil }
+        guard !draft.scheduled || draft.unlockAt.timeIntervalSince1970.isFinite && draft.unlockAt.timeIntervalSinceNow <= 10 * 366 * 86400 else { status = "Choose an opening date within ten years."; return nil }
         let request = generation; saving = true; defer { if request == generation { saving = false } }
         do {
             // Persist the immutable retry payload before delivery. An uncertain

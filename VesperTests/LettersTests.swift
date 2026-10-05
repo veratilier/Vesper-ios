@@ -33,4 +33,13 @@ import XCTest
         XCTAssertFalse(VesperGridOrder.defaults.contains(.letters))
         XCTAssertEqual(Destination.letters.icon, "envelope")
     }
+    func testInvalidOpeningDateLeavesTheDraftEditableWithoutAttemptingDelivery() async {
+        let model = LettersStore()
+        model.configure(APIClient(baseURL: "https://letters.example", historyURL: "https://letters.example", token: UUID().uuidString))
+        model.draft.text = "A future thought"; model.draft.scheduled = true
+        model.draft.unlockAt = Date().addingTimeInterval(11 * 366 * 86400)
+        let result = await model.post()
+        XCTAssertNil(result); XCTAssertFalse(model.draft.deliveryAttempted)
+        XCTAssertEqual(model.status, "Choose an opening date within ten years.")
+    }
 }

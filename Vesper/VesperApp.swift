@@ -16,7 +16,7 @@ import UserNotifications
     }
 }
 enum Destination: String, CaseIterable, Identifiable {
-    case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", notes = "Notes"
+    case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters", notes = "Notes"
     case reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
@@ -25,6 +25,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .chat: return "bubble.left"
         case .desire: return "heart"
         case .journal: return "book.closed"
+        case .letters: return "envelope"
         case .notes: return "note.text"
         case .reminders: return "checklist"
         case .dates: return "calendar"
@@ -40,7 +41,7 @@ enum Destination: String, CaseIterable, Identifiable {
 }
 /// Discard obsolete/duplicate destinations and append newly added features.
 enum VesperGridOrder {
-    static let defaults: [Destination] = [.desire, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom]
+    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom]
     static func restore(_ saved: String) -> [Destination] {
         let names = (try? JSONDecoder().decode([String].self, from: Data(saved.utf8))) ?? []
         var seen = Set<String>()
@@ -196,15 +197,15 @@ struct RootView: View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
                     NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
-                    appLibrary.tabItem { Label("Vesper", systemImage: "square.grid.2x2.fill") }.tag(2)
-                    shell(.journal).tabItem { Label("Journal", systemImage: "book.closed") }.tag(3)
+                    appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
+                    shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
                 }.onChange(of: nativeTab) { _, tab in
                     switch tab {
                     case 0: destination = .home
                     case 1: destination = .chat
                     case 2: destination = nativeVesperDestination
-                    case 3: destination = .journal
+                    case 3: destination = .letters
                     default: destination = .settings
                     }
                 }
@@ -217,7 +218,7 @@ struct RootView: View {
                     VesperAppGrid(editing: $libraryEditing) { page in libraryPath.append(page) }
                         .padding(18)
                 }
-            }.transparentNavigationTop().navigationTitle("Vesper")
+            }.transparentNavigationTop().navigationTitle("Collection")
                 .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -390,12 +391,12 @@ struct RootView: View {
     private var nativeVesperDestination: Destination { vesperPage }
     private func navigate(_ page: Destination) {
         destination = page
-        if ![.home, .chat, .journal, .settings].contains(page) { libraryPath = [page] }
+        if ![.home, .chat, .letters, .settings].contains(page) { libraryPath = [page] }
         if [.desire, .journal, .notes, .dates, .music, .album].contains(page) { vesperPage = page }
         switch page {
         case .home: nativeTab = 0
         case .chat: nativeTab = 1
-        case .journal: nativeTab = 3
+        case .letters: nativeTab = 3
         case .settings: nativeTab = 4
         default: nativeTab = 2
         }
@@ -416,7 +417,7 @@ struct RootView: View {
                         Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
                     }
                 }
-                ToolbarItem(placement: .principal) { Text(page == .home ? "Vesper" : page.rawValue).font(.headline) }
+                if page != .letters { ToolbarItem(placement: .principal) { Text(page == .home ? "Vesper" : page.rawValue).font(.headline) } }
                 ToolbarItem(placement: .topBarTrailing) { AppearancePicker() }
             }
         }
@@ -430,6 +431,7 @@ struct RootView: View {
         case .chat: ChatView(onMenu: { withAnimation { sidebar = true } }, native: navigationStyle == "native")
         case .desire: DesireView()
         case .journal: JournalView()
+        case .letters: LettersView()
         case .notes: NotesBoard()
         case .reminders: CollectionView(kind: .reminders)
         case .dates: CollectionView(kind: .dates)

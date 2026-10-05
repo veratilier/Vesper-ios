@@ -651,13 +651,16 @@ private final class DesktopContactProtocol: URLProtocol {
         let draft = ChatComposer()
         draft.draft = "unfinished main-room thought"
         draft.pendingMusic = .object(["id": .string("song")])
+        draft.pendingSticker = .object(["assetId": .string("sticker")])
         draft.switchConversation(from: "main", to: "other")
         XCTAssertEqual(draft.draft, "")
         XCTAssertNil(draft.pendingMusic)
+        XCTAssertNil(draft.pendingSticker)
         draft.draft = "another draft"
         draft.switchConversation(from: "other", to: "main")
         XCTAssertEqual(draft.draft, "unfinished main-room thought")
         XCTAssertEqual(draft.pendingMusic?["id"].string, "song")
+        XCTAssertEqual(draft.pendingSticker?["assetId"].string, "sticker")
         draft.switchConversation(from: "main", to: "main")
         XCTAssertEqual(draft.draft, "unfinished main-room thought")
     }

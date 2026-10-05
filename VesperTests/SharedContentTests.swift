@@ -258,3 +258,15 @@ extension SharedContentTests {
         XCTAssertEqual(ChatMusicShare.coverURL(.object(["cover": .string("https://user:secret@example.com/a")])), "")
     }
 }
+
+
+extension SharedContentTests {
+    func testStickerCaptionReachesTheModelWithItsImageDescription() {
+        let sticker: JSONValue = .object(["assetId": .string("asset"), "name": .string("Smile"), "description": .string("A happy smile")])
+        let combined = ChatStickerInput.context(text: "今天好开心😌", sticker: sticker)
+        XCTAssertTrue(combined.hasPrefix("今天好开心😌\n"))
+        XCTAssertTrue(combined.contains("A happy smile"))
+        XCTAssertTrue(combined.contains("assetId: asset"))
+        XCTAssertTrue(ChatStickerInput.context(text: "", sticker: sticker).hasPrefix("Shared sticker:"))
+    }
+}

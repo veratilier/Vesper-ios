@@ -165,6 +165,7 @@ struct ChatView: View {
     @State private var musicPicker = false
     @State private var stickerPicker = false
     private var pendingMusic: JSONValue? { get { draftStore.pendingMusic } nonmutating set { draftStore.pendingMusic = newValue } }
+    private var pendingSticker: JSONValue? { get { draftStore.pendingSticker } nonmutating set { draftStore.pendingSticker = newValue } }
     @State private var nearBottom = true
     @State private var followsLatest = true
     @State private var positionedConversationID: String?
@@ -397,7 +398,8 @@ struct ChatView: View {
         .sheet(isPresented: $locationPicker) { locationSheet }
         .sheet(isPresented: $musicPicker) { musicSheet }
         .sheet(isPresented: $stickerPicker) { NavigationStack { StickerLibraryView { sticker in
-            Task { _ = await chat.send("", sticker: sticker, onAccepted: { stickerPicker = false; drawer = false }) }
+            pendingSticker = sticker
+            stickerPicker = false; drawer = false
         } } }
         .sheet(isPresented: $history) { historySheet }
         .confirmationDialog("Start a new chat and clear this draft?", isPresented: $confirmNew) { Button("New chat", role: .destructive) { newChat() } }
@@ -563,6 +565,15 @@ struct ChatView: View {
             if let track = pendingMusic {
                 HStack { ChatMusicCard(track: track); Button { pendingMusic = nil } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Remove music") }
             }
+            if let sticker = pendingSticker {
+                HStack(spacing: 12) {
+                    StickerArtwork(sticker: sticker).frame(width: 64, height: 64).allowsHitTesting(false)
+                    Text("Add a message, then send").font(.caption).foregroundStyle(VesperTheme.muted)
+                    Spacer()
+                    Button { pendingSticker = nil } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Remove sticker")
+                }.padding(.horizontal, 4)
+            }
             if voiceRecorder.recording {
                 HStack { Image(systemName: "waveform"); Text("Recording"); if let start = voiceRecorder.startedAt { Text(start, style: .timer).monospacedDigit() }; Spacer(); Button("Cancel") { voiceRecorder.cancel() } }.font(.caption)
             }
@@ -588,7 +599,7 @@ struct ChatView: View {
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,
-                                   hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil,
+                                   hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
                                    blocked: voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
                                    action: send)
                 }
@@ -685,20 +696,20 @@ struct ChatView: View {
         let title = chat.conversations.first(where: { $0.id == chat.conversationID })?["title"].string ?? "Chat"
         _ = await ChatFavorites.save(message, conversationID: chat.conversationID, title: title, in: store)
     }
-    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil } } }
+    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil; pendingSticker = nil } } }
     private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; NativeCallPresentation.shared.open(initiator: "user") }
     private func send() {
-        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; drawer = false
+        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; let sticker = pendingSticker; drawer = false
         let conversation = chat.conversationID
         Task {
             var accepted = false
-            let sent = await chat.send(sending, images: outgoing, files: outgoingFiles, music: music, onAccepted: {
+            let sent = await chat.send(sending, images: outgoing, files: outgoingFiles, music: music, sticker: sticker, onAccepted: {
                 accepted = true
-                draft = ""; images = []; files = []; selectedPhotos = []; pendingMusic = nil; voiceRecorder.cancel()
+                draft = ""; images = []; files = []; selectedPhotos = []; pendingMusic = nil; pendingSticker = nil; voiceRecorder.cancel()
             })
             // An ambiguous send remains in the transcript for reconciliation, never auto-resend it.
-            if accepted && !sent && !chat.unconfirmedSend && chat.conversationID == conversation && draft.isEmpty && images.isEmpty && files.isEmpty && pendingMusic == nil {
-                draft = sending; images = outgoing; files = outgoingFiles; pendingMusic = music
+            if accepted && !sent && !chat.unconfirmedSend && chat.conversationID == conversation && draft.isEmpty && images.isEmpty && files.isEmpty && pendingMusic == nil && pendingSticker == nil {
+                draft = sending; images = outgoing; files = outgoingFiles; pendingMusic = music; pendingSticker = sticker
             }
         }
     }

@@ -1156,7 +1156,7 @@ enum ChatUserInput {
                 let songID = music["appleMusicId"].string.isEmpty ? music["neteaseId"].string : music["appleMusicId"].string
                 musicContext = "\nShared music: \(title) — \(artist) (song ID: \(songID))"
             }
-            let stickerContext = sticker.map { "Shared sticker: " + $0["name"].string + " " + $0["description"].string + " (assetId: " + $0["assetId"].string + ")" }
+            let stickerContext = sticker.map { ChatStickerInput.context(text: text, sticker: $0) }
             var playbackSnapshot: JSONValue?
             if let player = appStore?.musicPlayer {
                 player.synchronize()

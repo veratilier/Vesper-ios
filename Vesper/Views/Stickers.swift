@@ -7,7 +7,11 @@ struct StickerLibraryView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @Environment(\.dismiss) private var dismiss
+    var compact = false
+    var onBack: (() -> Void)? = nil
+    var editingInitially = false
     var onSelect: ((JSONValue) -> Void)? = nil
+    @State private var managing = false
     @State private var editing = false
     @State private var loading = false
     @State private var selected: StickerSelection?
@@ -24,47 +28,32 @@ struct StickerLibraryView: View {
     @State private var status = ""
     @State private var importDescription = ""
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if editing {
-                    Text("Add stickers or tap one to edit its name, description or delete it.").font(.caption).foregroundStyle(VesperTheme.muted)
-                    TextField("Description for new stickers (optional)", text: $importDescription, axis: .vertical)
-                        .textFieldStyle(.roundedBorder).disabled(busy)
-                    HStack {
-                        PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Add photos", systemImage: "photo.badge.plus") }
-                        Button { importing = true } label: { Label("Add files", systemImage: "folder.badge.plus") }
-                    }.buttonStyle(.bordered).disabled(busy)
+        Group {
+            if compact {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Button { onBack?() } label: { Image(systemName: "chevron.left").frame(width: 36, height: 32) }
+                            .accessibilityLabel("Back to attachments")
+                        Text("Stickers").font(.system(size: 13, weight: .medium))
+                        Spacer()
+                    }.buttonStyle(.plain).padding(.horizontal, 14)
+                    libraryContents
                 }
-                if busy || loading { ProgressView(busy ? "Importing…" : "Loading…") }
-                if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 20) {
-                    if !editing {
-                        Button { editing = true } label: {
-                            Image(systemName: "square.and.pencil").font(.system(size: 27, weight: .light))
-                                .frame(maxWidth: .infinity).frame(height: 76)
-                                .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(VesperTheme.muted.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5])))
-                        }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
+            } else {
+                libraryContents
+                    .navigationTitle(editing ? "Edit stickers" : "Stickers").navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { if editing && !editingInitially { editing = false } else { dismiss() } }.disabled(busy)
+                        }
                     }
-                    ForEach(stickers, id: \.selfID) { sticker in
-                        StickerTile(sticker: sticker) {
-                            if editing { selected = StickerSelection(sticker: sticker); editName = sticker["name"].string; editDescription = sticker["description"].string; editError = "" }
-                            else { onSelect?(sticker) }
-                        }.disabled((!editing && (onSelect == nil || chat.busy)) || busy)
-                    }
-                }
-                if stickers.isEmpty && !loading && !busy {
-                    Text("No stickers yet. Tap Edit to add your favorites.").font(.subheadline).foregroundStyle(VesperTheme.muted)
-                }
-            }.padding(18)
-        }.background { Background() }.foregroundStyle(VesperTheme.ink)
-        .navigationTitle(editing ? "Edit stickers" : "Stickers").navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") { if editing { editing = false } else { dismiss() } }.disabled(busy)
             }
+        }.foregroundStyle(VesperTheme.ink)
+        .background { if !compact { Background() } }
+        .task { if editingInitially { editing = true }; await load() }
+        .sheet(isPresented: $managing, onDismiss: { Task { await load() } }) {
+            NavigationStack { StickerLibraryView(editingInitially: true) }
         }
-        .task { await load() }.refreshable { await load() }
         .sheet(item: $selected) { selection in editor(selection.sticker) }
         .onChange(of: photos) { _, picks in
             guard !picks.isEmpty else { return }
@@ -103,6 +92,42 @@ struct StickerLibraryView: View {
                 busy = false; await load()
             }
         }
+    }
+    private var libraryContents: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if editing {
+                    Text("Add stickers or tap one to edit its name, description or delete it.").font(.caption).foregroundStyle(VesperTheme.muted)
+                    TextField("Description for new stickers (optional)", text: $importDescription, axis: .vertical)
+                        .textFieldStyle(.roundedBorder).disabled(busy)
+                    HStack {
+                        PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Add photos", systemImage: "photo.badge.plus") }
+                        Button { importing = true } label: { Label("Add files", systemImage: "folder.badge.plus") }
+                    }.buttonStyle(.bordered).disabled(busy)
+                }
+                if busy || loading { ProgressView(busy ? "Importing…" : "Loading…") }
+                if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: compact ? 12 : 20) {
+                    if !editing {
+                        Button { if compact { managing = true } else { editing = true } } label: {
+                            Image(systemName: "square.and.pencil").font(.system(size: 27, weight: .light))
+                                .frame(maxWidth: .infinity).frame(height: 76)
+                                .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(VesperTheme.muted.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5])))
+                        }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
+                    }
+                    ForEach(stickers, id: \.selfID) { sticker in
+                        StickerTile(sticker: sticker) {
+                            if editing { selected = StickerSelection(sticker: sticker); editName = sticker["name"].string; editDescription = sticker["description"].string; editError = "" }
+                            else { onSelect?(sticker) }
+                        }.disabled((!editing && (onSelect == nil || chat.busy)) || busy)
+                    }
+                }
+                if stickers.isEmpty && !loading && !busy {
+                    Text("No stickers yet. Tap Edit to add your favorites.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+                }
+            }.padding(.horizontal, compact ? 20 : 18).padding(.vertical, compact ? 10 : 18)
+        }.refreshable { await load() }
     }
     private func editor(_ sticker: JSONValue) -> some View {
         NavigationStack {

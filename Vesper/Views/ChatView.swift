@@ -164,6 +164,7 @@ struct ChatView: View {
     @State private var filePicker = false
     @State private var musicPicker = false
     @State private var stickerPicker = false
+    @State private var attachmentPanelHeight: CGFloat = 220
     private var pendingMusic: JSONValue? { get { draftStore.pendingMusic } nonmutating set { draftStore.pendingMusic = newValue } }
     private var pendingSticker: JSONValue? { get { draftStore.pendingSticker } nonmutating set { draftStore.pendingSticker = newValue } }
     @State private var nearBottom = true
@@ -239,7 +240,17 @@ struct ChatView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         composer
-                        if drawer { attachmentDrawer.transition(.move(edge: .bottom).combined(with: .opacity)) }
+                        if stickerPicker {
+                            StickerLibraryView(compact: true, onBack: { stickerPicker = false; drawer = true }) { sticker in
+                                pendingSticker = sticker
+                                stickerPicker = false; drawer = false
+                            }
+                            .frame(height: attachmentPanelHeight).background(.regularMaterial)
+                        } else if drawer {
+                            attachmentDrawer
+                                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { attachmentPanelHeight = $0 }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
                     }
                     .overlay(alignment: .top) {
                         if !nearBottom && !chat.messages.isEmpty {
@@ -338,7 +349,7 @@ struct ChatView: View {
     private var photoContent: some View {
         observedChatContent
         .task { chat.configure(store); if restoreLatest { await chat.loadConversations(); if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() } } }
-        .onChange(of: focused) { _, value in if value { drawer = false } }
+        .onChange(of: focused) { _, value in if value { drawer = false; stickerPicker = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
         .onChange(of: voiceRecorder.error) { _, error in if let error { chat.error = error } }
         .onChange(of: speech.error) { _, error in if let error { chat.error = error } }
@@ -397,10 +408,6 @@ struct ChatView: View {
         }
         .sheet(isPresented: $locationPicker) { locationSheet }
         .sheet(isPresented: $musicPicker) { musicSheet }
-        .sheet(isPresented: $stickerPicker) { NavigationStack { StickerLibraryView { sticker in
-            pendingSticker = sticker
-            stickerPicker = false; drawer = false
-        } } }
         .sheet(isPresented: $history) { historySheet }
         .confirmationDialog("Start a new chat and clear this draft?", isPresented: $confirmNew) { Button("New chat", role: .destructive) { newChat() } }
         .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
@@ -593,10 +600,10 @@ struct ChatView: View {
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
             ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
-                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
+                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
+                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,
@@ -698,9 +705,9 @@ struct ChatView: View {
         _ = await ChatFavorites.save(message, conversationID: chat.conversationID, title: title, in: store)
     }
     private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil; pendingSticker = nil } } }
-    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; NativeCallPresentation.shared.open(initiator: "user") }
+    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; stickerPicker = false; NativeCallPresentation.shared.open(initiator: "user") }
     private func send() {
-        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; let sticker = pendingSticker; drawer = false
+        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; let sticker = pendingSticker; drawer = false; stickerPicker = false
         let conversation = chat.conversationID
         Task {
             var accepted = false

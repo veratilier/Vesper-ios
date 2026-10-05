@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import UIKit
+import UserNotifications
 @testable import Vesper
 
 private final class LettersLayoutProtocol: URLProtocol {
@@ -36,7 +37,14 @@ private final class LettersLayoutProtocol: URLProtocol {
             XCTAssertEqual(model.letters.count, count + 1, "The fixture transport must provide filed and upcoming letters")
             model.saveDraft(showStatus: false)
             XCTAssertEqual(model.status, "", "Restoring or automatically saving a draft must not add a status row to the archive")
-            let host = UIHostingController(rootView: NavigationStack { ZStack { Background(); LettersView() } }
+            let host = UIHostingController(rootView: TabView(selection: .constant(3)) {
+                Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+                Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+                Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2") }.tag(2)
+                NavigationStack { ZStack { Background(); LettersView(initialSelection: "layout-0") } }
+                    .tabItem { Label("Letters", systemImage: "envelope") }.badge(" ").tag(3)
+                Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
+            }
                 .environmentObject(store).defaultAppStorage(preferences).preferredColorScheme(palette == "black" ? .dark : .light))
             let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 844)
             window.rootViewController = host; window.makeKeyAndVisible()
@@ -76,6 +84,42 @@ private final class LettersLayoutProtocol: URLProtocol {
                 }
             }
         }
+    }
+    func testLetterBadgeDistinguishesArrivalUnlockAndReading() throws {
+        let suite = "letter-badge-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { preferences.removePersistentDomain(forName: suite) }
+        let inbox = LetterInbox(preferences: preferences), now = Date()
+        let future = LetterInboxCover(id: "future", unlockAt: ISO8601DateFormatter().string(from: now.addingTimeInterval(120)))
+        inbox.update([future], scope: "a", serverTime: now)
+        XCTAssertTrue(inbox.hasUpdates, "A new sealed arrival lights the dot")
+        inbox.markArrivalSeen([future.id]); XCTAssertFalse(inbox.hasUpdates, "Seeing a future cover clears the arrival dot")
+        inbox.tick(now: now.addingTimeInterval(121)); XCTAssertTrue(inbox.hasUpdates, "Unlocking a seen sealed cover lights the dot again")
+        inbox.markRead(future.id); XCTAssertFalse(inbox.hasUpdates, "Reading clears the ready letter")
+        let ready = LetterInboxCover(id: "ready", unlockAt: nil)
+        inbox.update([ready], scope: "a", serverTime: now); inbox.markArrivalSeen([ready.id])
+        XCTAssertTrue(inbox.hasUpdates, "Visiting the list does not mark an available letter as read")
+        inbox.markRead(ready.id); XCTAssertFalse(inbox.hasUpdates)
+        inbox.update([future], scope: "b", serverTime: now); XCTAssertTrue(inbox.hasUpdates, "Seen arrivals are scoped to the connected account")
+        inbox.clear(); XCTAssertFalse(inbox.hasUpdates)
+    }
+    func testLetterNotificationUsesServerTimeAndOnlyCoverData() throws {
+        let server = Date(timeIntervalSince1970: 1800000000)
+        let cover = LetterReminderCover(id: "scheduled", title: "For tomorrow", author: "Rowan", unlockAt: ISO8601DateFormatter().string(from: server.addingTimeInterval(91)), due: false)
+        let request = try XCTUnwrap(LetterNotifications.request(cover, scope: "account", serverTime: server))
+        XCTAssertEqual((request.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval, 91)
+        XCTAssertEqual(request.content.userInfo["letterId"] as? String, cover.id)
+        XCTAssertEqual(request.identifier, "letter-account-scheduled")
+        let late = LetterReminderCover(id: "late", title: "", author: "Rowan", unlockAt: ISO8601DateFormatter().string(from: server.addingTimeInterval(-5)), due: true)
+        XCTAssertEqual((LetterNotifications.request(late, scope: "account", serverTime: server)?.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval, 1)
+        let a = APIClient(baseURL: "https://letters.example", historyURL: "", token: "account-a")
+        let b = APIClient(baseURL: "https://letters.example", historyURL: "", token: "account-b")
+        XCTAssertNotEqual(LetterNotifications.scope(a), LetterNotifications.scope(b))
+    }
+    func testLetterRemindersStayVisibleAndDoNotBecomeThinkingOrReplyAnchors() {
+        let reminder: JSONValue = .object(["id":.string("letter-one"),"role":.string("system"),"content":.string("可以拆信了"),"metadata":.object(["blockType":.string("letterReminder"),"letterId":.string("one")])])
+        XCTAssertFalse(ChatPresentation.isActivity(reminder))
+        XCTAssertEqual(ChatPresentation.displayRows([reminder]).count, 1)
+        XCTAssertNil(ChatPresentationSnapshot([reminder]).lastReplyID)
     }
     func testScheduledDraftRestoresTheExactRetryPayload() throws {
         let api = APIClient(baseURL: "https://letters.example", historyURL: "https://letters.example", token: UUID().uuidString)

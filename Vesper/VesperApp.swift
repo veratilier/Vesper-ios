@@ -178,6 +178,7 @@ struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
+    @ObservedObject private var letterInbox = LetterInbox.shared
     @State private var nativeTab = 0
     @State private var libraryPath: [Destination] = []
     @State private var libraryEditing = false
@@ -202,7 +203,7 @@ struct RootView: View {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
                     NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
                     appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
-                    shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+                    shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.badge(letterInbox.hasUpdates ? " " : nil as String?).tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
                 }.onChange(of: nativeTab) { _, tab in
                     switch tab {
@@ -342,8 +343,19 @@ struct RootView: View {
             }
         }
         .task { if !callPresentation.presented { await CallLiveActivity.shared.endStale() } }
-         .task(id: store.token) { await refreshUsage() }
-        .onChange(of: store.token) { _, _ in WidgetSync.clear() }
+        .task(id: store.baseURL + "\n" + store.token) {
+            while !Task.isCancelled {
+                if phase == .active { await LetterNotifications.sync(store.api) }
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in letterInbox.tick() }
+        .onReceive(LetterNotificationRoute.shared.$letterID) { id in
+            if id != nil { navigate(.letters) }
+        }
+        .task(id: store.token) { await refreshUsage() }
+        .onChange(of: store.token) { _, _ in WidgetSync.clear(); letterInbox.clear() }
+        .onChange(of: store.baseURL) { _, _ in letterInbox.clear() }
         .onOpenURL { url in
             guard url.scheme == "vesper" else { return }
             switch url.host {
@@ -389,7 +401,7 @@ struct RootView: View {
         .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
         .onChange(of: phase) { _, phase in
             if phase != .inactive { chat.sceneChanged(active: phase == .active) }
-            if phase == .active { Task { await refreshUsage() } }
+            if phase == .active { Task { await refreshUsage(); await LetterNotifications.sync(store.api) } }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
@@ -570,7 +582,13 @@ final class VesperNotificationDelegate: NSObject, UIApplicationDelegate, UNUserN
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: info) }
+        Task { @MainActor in
+            if let id = info["letterId"] as? String {
+                let api = AppStore().api
+                guard info["letterScope"] as? String == LetterNotifications.scope(api) else { return }
+                LetterNotificationRoute.shared.letterID = id
+            } else { NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: info) }
+        }
         completionHandler()
     }
 }

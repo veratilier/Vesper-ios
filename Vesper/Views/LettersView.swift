@@ -6,6 +6,8 @@ struct LettersView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
     @StateObject private var model = LettersStore()
+    @ObservedObject private var notificationRoute = LetterNotificationRoute.shared
+    var initialSelection: String? = nil
     @State private var screen = "archive"
     @State private var filter = "All"
     @State private var hoverID: String?
@@ -14,6 +16,7 @@ struct LettersView: View {
     @State private var opened: VesperLetter?
     @State private var sealed: VesperLetter?
     @State private var delivered = false
+    @State private var archiveVisible = false
     private var colors: LetterColors { LetterColors(palette: VesperPalette(rawValue: palette) ?? .white) }
     private var title: String { screen == "compose" ? "Write a letter" : screen == "read" ? "From " + (opened?.author ?? "Rowan") : "Letters" }
     private var filed: [VesperLetter] {
@@ -44,17 +47,40 @@ struct LettersView: View {
                 }
             }.padding(.horizontal, 22).padding(.bottom, 24).foregroundStyle(colors.ink)
         }.refreshable { await model.load() }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if screen == "archive", let selected {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(selected.displayTitle).font(.custom("Georgia", size: 16)).lineLimit(1)
+                            Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        Button { open(selected) } label: {
+                            Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
+                                .foregroundStyle(colors.paper).background(colors.ink, in: Capsule())
+                        }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
+                    }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                        .padding(.horizontal, 22).padding(.bottom, 8)
+                }
+            }
             .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.custom("Georgia", size: 24)) } }
             .task(id: app.baseURL + "\n" + app.token) {
                 model.configure(app.api); screen = "archive"; opened = nil; sealed = nil; selectedID = nil; hoverID = nil; page = 0
                 await model.load()
+                selectedID = initialSelection
+                await openNotificationLetter()
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
                     if phase == .active && screen == "archive" { await model.load() }
                 }
             }
+            .onChange(of: notificationRoute.letterID) { _, _ in Task { await openNotificationLetter() } }
             .onChange(of: phase) { _, next in if next == .active { Task { await model.load() } } }
+            .onAppear { archiveVisible = true; markArrivalsSeen() }
+            .onDisappear { archiveVisible = false }
+            .onChange(of: model.letters) { _, _ in markArrivalsSeen() }
+            .onReceive(LetterInbox.shared.$covers) { _ in markArrivalsSeen() }
             .onChange(of: model.draft) { _, _ in model.saveDraft(showStatus: false) }
+            .onChange(of: screen) { _, _ in markArrivalsSeen() }
             .onChange(of: filter) { _, _ in resetSelection() }
             .onChange(of: filed.map(\.id)) { _, _ in if page * 5 >= filed.count { resetSelection() } }
             .sheet(item: $sealed) { letter in
@@ -94,13 +120,7 @@ struct LettersView: View {
             HStack { Text(archiveLabel).font(.custom("Georgia", size: 14)); Spacer(); Text("\(visible.count) / \(filed.count)").font(.custom("Georgia", size: 12)).opacity(0.6) }
             if filed.isEmpty { Text(model.loading ? "Opening your letters…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
             else { LetterStack(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors) }
-            if let selected {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(selected.displayTitle).font(.custom("Georgia", size: 18))
-                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 12)).opacity(0.65)
-                    action("Open letter") { open(selected) }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            } else if !filed.isEmpty { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
+            if selected == nil && !filed.isEmpty { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
             if filed.count > 5 {
                 HStack {
                     Button("Previous") { page -= 1; selectedID = nil; hoverID = nil }.disabled(page == 0)
@@ -162,6 +182,15 @@ struct LettersView: View {
         Button(action: perform) { Text(title).font(.system(size: 17, design: .serif)).foregroundStyle(colors.paper).frame(maxWidth: .infinity).padding(15).background(colors.ink, in: Capsule()) }.buttonStyle(.plain)
     }
     private func resetSelection() { page = 0; hoverID = nil; selectedID = nil }
+    private func markArrivalsSeen() {
+        if archiveVisible, screen == "archive", phase == .active { LetterInbox.shared.markArrivalSeen(model.letters.filter { $0.author != "Vera" }.map(\.id)) }
+    }
+    private func openNotificationLetter() async {
+        guard let id = notificationRoute.letterID, model.configured else { return }
+        if let letter = await model.open(id: id) {
+            opened = letter; screen = "read"; notificationRoute.letterID = nil
+        }
+    }
     private func open(_ letter: VesperLetter) {
         Task { if let result = await model.open(letter) { opened = result; screen = "read" } }
     }

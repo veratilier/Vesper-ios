@@ -843,7 +843,7 @@ struct NotificationSettingsView: View {
         Page(title: "Notifications", subtitle: "Choose how Vesper can notify you.") {
             GlassCard { VStack(alignment: .leading, spacing: 18) {
                 Text(statusText).font(.headline)
-                Text("Allows date reminders and notifications for new replies received by this app. Delivery while the app is closed requires the server push service; it is not connected yet.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+                Text("Allows date reminders and opening reminders for letters synced to this phone, even when the app is closed. Open Vesper to sync newly received letters. Remote push for unsynced letters and new chat replies is not connected yet.").font(.subheadline).foregroundStyle(VesperTheme.muted)
                 if loaded && authorization == .notDetermined {
                     Button { Task { await requestPermission() } } label: {
                         Text(busy ? "Requesting…" : "Allow notifications")

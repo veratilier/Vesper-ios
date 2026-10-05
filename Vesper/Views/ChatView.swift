@@ -188,7 +188,16 @@ struct ChatView: View {
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
                         ForEach(chat.presentation.rows) { row in
                             if let message = row.messages.first {
-                                if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
+                                if ChatPresentation.isLetterReminder(message) {
+                                    Button {
+                                        LetterNotificationRoute.shared.letterID = message["metadata"]["letterId"].string
+                                    } label: {
+                                        Label(message["content"].string, systemImage: "envelope.open")
+                                            .font(.system(size: 14, design: .serif)).foregroundStyle(VesperTheme.muted)
+                                            .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                    }.buttonStyle(.plain).id(message.id)
+                                } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
                                 else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
                                 else { messageRow(message, activities: row.activities).id(message.id) }
                             }
@@ -751,7 +760,7 @@ final class ChatPresentationSnapshot {
     let lastReplyID: String?
     init(_ messages: [JSONValue]) {
         rows = ChatPresentation.displayRows(messages)
-        lastReplyID = messages.last { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }?.id
+        lastReplyID = messages.last { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) && !ChatPresentation.isLetterReminder($0) }?.id
     }
 }
 
@@ -769,7 +778,11 @@ enum ChatPresentation {
     static func isThinking(_ message: JSONValue) -> Bool {
         ["reasoning", "reasoningSummary", "thinking"].contains(message["metadata"]["blockType"].string) || !message["metadata"]["thoughtSummary"].string.isEmpty
     }
+    static func isLetterReminder(_ message: JSONValue) -> Bool {
+        message["role"].string == "system" && message["metadata"]["blockType"].string == "letterReminder" && !message["metadata"]["letterId"].string.isEmpty
+    }
     static func isActivity(_ message: JSONValue) -> Bool {
+        if isLetterReminder(message) { return false }
         if isUser(message) { return false }
         if message["metadata"]["phase"].string == "commentary" { return true }
         if ["system", "tool", "function"].contains(message["role"].string) { return true }
@@ -802,7 +815,7 @@ enum ChatPresentation {
         for index in messages.indices.reversed() {
             nextReply[index] = next; nextLegacyReply[index] = nextLegacy
             if isUser(messages[index]) { next = nil; nextLegacy = nil }
-            else if !isActivity(messages[index]) {
+            else if !isActivity(messages[index]) && !isLetterReminder(messages[index]) {
                 next = index
                 let turn = messages[index]["metadata"]["turnId"].string
                 if turn.isEmpty { nextLegacy = index }
@@ -816,6 +829,7 @@ enum ChatPresentation {
             let message = messages[index]
             if isUser(message) { previous = nil; previousLegacy = nil; continue }
             let turn = message["metadata"]["turnId"].string
+            if isLetterReminder(message) { continue }
             if !isActivity(message) {
                 previous = index
                 if turn.isEmpty { previousLegacy = index }

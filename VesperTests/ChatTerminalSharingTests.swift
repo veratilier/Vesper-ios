@@ -63,7 +63,10 @@ import SwiftUI
                 .preferredColorScheme(.dark).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
             let image = try await renderFixture(AnyView(history), name: "Live terminal " + palette)
             XCTAssertGreaterThan(brightPixels(image, area: CGRect(x: 16, y: 70, width: 350, height: 280)), 250)
-            let connection = ChatConnectionSheet(message: "Chat recovery failed. Tap Retry to start another attempt.", needsRetry: true, retry: {}, close: {})
+            let connection = ChatIssueSheet(issues: [
+                ChatIssue(id: "connection", title: "聊天连接", detail: "Chat recovery failed. Tap Retry to start another attempt.", action: .connection, dismissible: false),
+                ChatIssue(id: "memory", title: "记忆", detail: "记忆检索超时；这次先用当前聊天记录回复。\n错误代码：NSURLErrorDomain:-1001")
+            ], retry: { _ in }, dismiss: { _ in }, close: {})
                 .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
             _ = try await renderFixture(AnyView(connection), name: "Connection retry " + palette)
         }

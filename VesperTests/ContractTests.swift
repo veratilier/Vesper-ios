@@ -76,6 +76,26 @@ private final class SlowRecallProtocol: URLProtocol {
 }
 
 final class ContractTests: XCTestCase {
+    @MainActor func testChatIssuesCollectFailuresWithoutLosingOtherDetailsOnDismiss() {
+        let chat = ChatSession()
+        chat.memoryStatus = "记忆检索超时"
+        chat.error = "HTTP 503: Upload failed"
+        chat.modelError = "Model list unavailable"
+        let record: JSONValue = .object(["id": .string("music-call"), "title": .string("music_playlist_add"),
+            "status": .string("failed"), "output": .string("HTTP 403: Catalog lookup rejected")])
+        chat.events = ["vesper-tool:" + record.pretty]
+        XCTAssertEqual(chat.issueDetails.map(\.id), ["memory", "chat", "models", "tool-music-call"])
+        XCTAssertEqual(chat.issueDetails.last?.detail, "HTTP 403: Catalog lookup rejected")
+        XCTAssertEqual(chat.issueDetails.first(where: { $0.id == "models" })?.action, .models)
+        chat.dismissIssue("memory")
+        XCTAssertEqual(chat.issueDetails.map(\.id), ["chat", "models", "tool-music-call"])
+        chat.dismissIssue("tool-music-call")
+        XCTAssertEqual(chat.issueDetails.map(\.id), ["chat", "models"])
+        XCTAssertEqual(ToolActivityRecords.cards(chat.events).first?["output"].string, "HTTP 403: Catalog lookup rejected", "Dismissing a notice must preserve tool history")
+        chat.dismissIssue("chat"); chat.dismissIssue("models")
+        XCTAssertTrue(chat.issueDetails.isEmpty)
+    }
+
     func testMemoryRecallAllowsResponseSlowerThanOldFourSecondLimit() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SlowRecallProtocol.self]

@@ -100,23 +100,35 @@ private struct AttachmentQuickLook: UIViewControllerRepresentable {
 }
 
 
-struct ChatConnectionSheet: View {
-    let message: String
-    let needsRetry: Bool
-    let retry: () -> Void
+struct ChatIssueSheet: View {
+    let issues: [ChatIssue]
+    let retry: (ChatIssue.Action) -> Void
+    let dismiss: (String) -> Void
     let close: () -> Void
     @AppStorage("vesperPalette") private var palette = "blue"
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(message).foregroundStyle(VesperTheme.ink)
-                Button(needsRetry ? "Retry" : "Check status", action: retry)
-                    .buttonStyle(.borderedProminent)
-                    .tint(VesperTheme.ink)
-                    .foregroundStyle(palette == "black" ? Color.black : Color.white)
-                Spacer()
-            }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if issues.isEmpty { Text("没有待处理的问题。") }
+                    ForEach(issues) { issue in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(issue.title).font(.headline)
+                            Text(issue.detail).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 16) {
+                                if issue.action != .none {
+                                    Button(issue.action == .models ? "Reload models" : "Retry") { retry(issue.action) }
+                                        .buttonStyle(.borderedProminent).tint(VesperTheme.ink)
+                                        .foregroundStyle(palette == "black" ? Color.black : Color.white)
+                                }
+                                if issue.dismissible { Button("Dismiss") { dismiss(issue.id) }.buttonStyle(.plain) }
+                            }
+                        }
+                        if issue.id != issues.last?.id { Divider() }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+            }.navigationTitle("Details").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done", action: close).foregroundStyle(VesperTheme.ink)
@@ -185,7 +197,6 @@ struct ChatView: View {
     private var chatContent: some View {
         VStack(spacing: 0) {
             header.zIndex(1)
-            if !chat.memoryStatus.isEmpty { Text(chat.memoryStatus).font(.caption2).foregroundStyle(VesperTheme.muted).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
@@ -460,8 +471,7 @@ struct ChatView: View {
                         }
                     }
                     if chat.loadingModels { ProgressView("Loading models…") }
-                    if let error = chat.modelError {
-                        Text(error).font(.caption).foregroundStyle(.secondary)
+                    if chat.modelError != nil {
                         Button("Retry") { Task { await chat.loadModels() } }.disabled(chat.loadingModels)
                     }
                 }.navigationTitle("Model").navigationBarTitleDisplayMode(.inline)
@@ -472,14 +482,15 @@ struct ChatView: View {
     var body: some View {
         attachmentContent
         .sheet(isPresented: $connectionDetails) {
-            ChatConnectionSheet(
-                message: chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
-                    chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
-                    "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5",
-                needsRetry: chat.connectionNeedsRetry,
-                retry: { chat.retryConnection(); connectionDetails = false },
+            ChatIssueSheet(
+                issues: chat.issueDetails,
+                retry: { action in
+                    if action == .models { Task { await chat.loadModels() } }
+                    else { chat.retryConnection() }
+                },
+                dismiss: { chat.dismissIssue($0) },
                 close: { connectionDetails = false })
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $memoryRecallVisible) { MemoryRecallView(conversationID: chat.conversationID) }
@@ -499,21 +510,21 @@ struct ChatView: View {
                 }.padding() }.navigationTitle("Approval")
             }.interactiveDismissDisabled()
         }
-        .alert("Chat", isPresented: Binding(get: { chat.error != nil }, set: { if !$0 { chat.error = nil } })) { Button("OK") { chat.error = nil } } message: { Text(chat.error ?? "") }
     }
     @Environment(\.dismiss) private var dismissChat
     private var header: some View {
         HStack(spacing: 5) {
             if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
             else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
-            if chat.reconnecting || chat.connectionNeedsRetry || chat.unconfirmedSend {
+            if !chat.issueDetails.isEmpty {
                 Button { connectionDetails = true } label: {
                     Group {
-                        if chat.reconnecting { ProgressView().controlSize(.small) }
+                        if chat.issueDetails.allSatisfy(\.progress) { ProgressView().controlSize(.small) }
                         else { Image(systemName: "exclamationmark.circle") }
                     }.frame(width: 28, height: 40)
                 }
-                .accessibilityLabel(chat.reconnecting ? "Chat reconnecting, details" : "Chat connection needs attention, details")
+                .accessibilityLabel("查看问题详情")
+                .accessibilityIdentifier("chat-issue-details")
             }
             Spacer()
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
@@ -760,7 +771,6 @@ struct ChatMessageRow: View, Equatable {
                 if message["metadata"]["locationOnly"] != .bool(true) && message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
                 }
-                if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
                 if message["status"].string != "streaming" && !replyIsRunning {
                     HStack(spacing: 12) {
                         if user || media { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }

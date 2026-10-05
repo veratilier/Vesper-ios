@@ -78,6 +78,16 @@ enum ChatConnectionStage: String {
     case waiting = "Waiting for network"
 }
 
+struct ChatIssue: Identifiable, Equatable {
+    enum Action: Equatable { case none, connection, models }
+    let id: String
+    let title: String
+    let detail: String
+    var action: Action = .none
+    var dismissible = true
+    var progress = false
+}
+
 /// Unlike a task-group race, this deadline does not wait for an I/O operation
 /// that ignores cancellation. Late completions are discarded; callers also fence generations.
 @MainActor private final class ChatDeadline<Value> {
@@ -184,7 +194,45 @@ enum ChatUserInput {
     @Published var hasOlderMessages = false
     @Published var loadingOlder = false
     @Published var jumpMessageID: String?
-    @Published var memoryStatus = ""
+    @Published var memoryStatus = "" {
+        didSet { if oldValue != memoryStatus { memoryDiagnostic = "" } }
+    }
+    @Published private(set) var memoryDiagnostic = ""
+    @Published private var dismissedToolIssues: Set<String> = []
+    var issueDetails: [ChatIssue] {
+        var issues: [ChatIssue] = []
+        if reconnecting || connectionNeedsRetry {
+            issues.append(ChatIssue(id: "connection", title: "聊天连接",
+                detail: connectionIssue ?? (connectionNeedsRetry ? "Chat recovery failed. Tap Retry to start another attempt." : "正在重新连接 · 第 \(recoveryAttempts)/5 次尝试"),
+                action: .connection, dismissible: false, progress: reconnecting && connectionIssue == nil))
+        }
+        if unconfirmedSend {
+            issues.append(ChatIssue(id: "send", title: "发送结果待确认",
+                detail: "尚未收到发送确认。重试时会先核对服务端记录，避免重复发送。",
+                action: .connection, dismissible: false))
+        }
+        if !memoryStatus.isEmpty {
+            issues.append(ChatIssue(id: "memory", title: "记忆",
+                detail: memoryStatus + (memoryDiagnostic.isEmpty ? "" : "\n错误代码：" + memoryDiagnostic)))
+        }
+        if let error, !error.isEmpty { issues.append(ChatIssue(id: "chat", title: "聊天操作", detail: error)) }
+        if let modelError, !modelError.isEmpty { issues.append(ChatIssue(id: "models", title: "模型列表", detail: modelError, action: .models)) }
+        for record in ToolActivityRecords.cards(events) where ["failed", "error"].contains(record["status"].string) {
+            let id = "tool-" + record.id
+            guard !dismissedToolIssues.contains(id) else { continue }
+            issues.append(ChatIssue(id: id, title: "操作：" + record["title"].string,
+                detail: record["output"].string.isEmpty ? "这次操作未完成，工具没有返回具体原因。" : record["output"].string))
+        }
+        return issues
+    }
+    func dismissIssue(_ id: String) {
+        switch id {
+        case "memory": memoryStatus = ""; memoryDiagnostic = ""
+        case "chat": error = nil
+        case "models": modelError = nil
+        default: if id.hasPrefix("tool-") { dismissedToolIssues.insert(id) }
+        }
+    }
     @Published var contextUsage: JSONValue = .null
     private var historyCursor = ""
     var voiceCallContext: String?
@@ -1079,7 +1127,7 @@ enum ChatUserInput {
         sending = true
         defer { if sendIntent == intent { sending = false } }
         connectionSuppressed = false
-        busy = true; status = "Sending…"; thinkingSummary = ""; events = []; error = nil
+        busy = true; status = "Sending…"; thinkingSummary = ""; events = []; error = nil; dismissedToolIssues = []
         let messageID = pendingDraftID ?? UUID().uuidString
         pendingDraftID = messageID
         let createdAt = isoNow()
@@ -1134,9 +1182,10 @@ enum ChatUserInput {
                     let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID), "recent": .array(recent)]))
                     try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                     try ChatMemoryRecall.validate(result)
-                    recallContext = result["additionalContext"] == .null ? .object([:]) : result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""
+                    recallContext = result["additionalContext"] == .null ? .object([:]) : result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""; memoryDiagnostic = ""
                     if !result["diagnostics"]["failure"].string.isEmpty {
                         memoryStatus = "部分记忆检索暂不可用；这次使用已取回的记忆和当前聊天记录。"
+                        memoryDiagnostic = "retrieval_unavailable"
                         Self.log.error("memory-recall partial-retrieval-failure")
                     }
                 }
@@ -1144,6 +1193,7 @@ enum ChatUserInput {
                     try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                     if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
                     memoryStatus = ChatMemoryRecall.notice(for: error)
+                    memoryDiagnostic = ChatMemoryRecall.diagnostic(for: error)
                     Self.log.error("memory-recall failed diagnostic=\(ChatMemoryRecall.diagnostic(for: error), privacy: .public)")
                 }
             }

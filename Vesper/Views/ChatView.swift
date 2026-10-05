@@ -139,7 +139,6 @@ struct ChatView: View {
     @EnvironmentObject private var chat: ChatSession
     @StateObject private var voiceRecorder = VoiceMessageRecorder()
     @StateObject private var speech = SpeechInput()
-    @StateObject private var location = ChatLocation()
     @State private var speechBase = ""
     @State private var avatarRole = "user"
     @State private var avatarPicker = false
@@ -398,7 +397,7 @@ struct ChatView: View {
         .sheet(isPresented: $locationPicker) { locationSheet }
         .sheet(isPresented: $musicPicker) { musicSheet }
         .sheet(isPresented: $stickerPicker) { NavigationStack { StickerLibraryView { sticker in
-            Task { if await chat.send("", sticker: sticker) { stickerPicker = false; drawer = false } }
+            Task { _ = await chat.send("", sticker: sticker, onAccepted: { stickerPicker = false; drawer = false }) }
         } } }
         .sheet(isPresented: $history) { historySheet }
         .confirmationDialog("Start a new chat and clear this draft?", isPresented: $confirmNew) { Button("New chat", role: .destructive) { newChat() } }
@@ -601,7 +600,7 @@ struct ChatView: View {
             drawerItem("Album", "photo") { photoPicker = true }
             drawerItem("Camera", "camera.fill") { if UIImagePickerController.isSourceTypeAvailable(.camera) { cameraPicker = true } else { chat.error = "Camera unavailable on this device." } }
             drawerItem("Call", "phone.fill") { openCall() }
-            drawerItem("Location", "mappin.circle.fill") { locationPicker = true; location.locate() }
+            drawerItem("Location", "mappin.circle.fill") { locationPicker = true }
             drawerItem("File", "folder.fill") { filePicker = true }
             drawerItem("Music", "music.note") { musicPicker = true }
             drawerItem("Stickers", "face.smiling") { stickerPicker = true }
@@ -611,26 +610,15 @@ struct ChatView: View {
         Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
     }
     private var locationSheet: some View {
-        NavigationStack { VStack(spacing: 20) {
-            if location.loading { ProgressView("Finding your location…") }
-            if let coordinate = location.coordinate {
-                Text("\(coordinate.latitude), \(coordinate.longitude)").font(.caption)
-                Button("Add location to message") { draft += (draft.isEmpty ? "" : "\n") + "My location: https://maps.apple.com/?ll=\(coordinate.latitude),\(coordinate.longitude)"; locationPicker = false }
-            }
-            if let error = location.error { Text(error); Button("Retry") { location.locate() } }
-            Text("Your location is shared only when you send the message.").font(.caption).foregroundStyle(.secondary)
-        }.padding().navigationTitle("Location").toolbar { Button("Done") { locationPicker = false } } }.presentationDetents([.medium])
+        ChatLocationShareSheet { location in
+            Task { _ = await chat.send("", location: location, onAccepted: { locationPicker = false; drawer = false }) }
+        }
     }
     private var musicSheet: some View {
-        NavigationStack { List {
-            ForEach(store.document("music").array.filter { $0["source"].string == "appleMusic" }) { track in
-                Button {
-                    pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "appleMusicId", "appleMusicURL", "source", "duration"].map { ($0, track[$0]) }))
-                    musicPicker = false; drawer = false
-                } label: { Label(track["title"].string, systemImage: "music.note") }
-            }
-            if store.document("music").array.allSatisfy({ $0["source"].string != "appleMusic" }) { Text("Add songs from Apple Music first.") }
-        }.navigationTitle("Music").toolbar { Button("Done") { musicPicker = false } } }.presentationDetents([.medium, .large])
+        ChatMusicSharePicker { track in
+            pendingMusic = track
+            musicPicker = false; drawer = false
+        }
     }
     private var historySheet: some View {
         NavigationStack {
@@ -756,13 +744,14 @@ private struct ChatMessageRow: View, Equatable {
                         else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) } }
                     } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
                 }
+                if message["metadata"]["locationCard"] != .null { ChatLocationCard(location: message["metadata"]["locationCard"]) }
                 if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(message["metadata"]["musicCard"])) }
                 else if message["status"].string != "streaming" {
                     ForEach(ChatMusicShare.links(in: message["content"].string)) { track in ChatMusicLinkCard(track: track) }
                 }
                 if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
-                if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
+                if message["metadata"]["locationOnly"] != .bool(true) && message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
                 }
                 if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }

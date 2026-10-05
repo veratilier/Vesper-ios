@@ -8,6 +8,14 @@ struct StickerLibraryView: View {
     @EnvironmentObject private var chat: ChatSession
     @Environment(\.dismiss) private var dismiss
     var onSelect: ((JSONValue) -> Void)? = nil
+    @State private var editing = false
+    @State private var loading = false
+    @State private var selected: JSONValue?
+    @State private var editName = ""
+    @State private var editDescription = ""
+    @State private var confirmDelete = false
+    @State private var editError = ""
+    @State private var saving = false
     @State private var stickers: [JSONValue] = []
     @State private var photos: [PhotosPickerItem] = []
     @State private var importing = false
@@ -18,33 +26,49 @@ struct StickerLibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Shared with your web sticker library. Rowan can find these with sticker search.").font(.caption).foregroundStyle(.secondary)
-                TextField("Description (optional), e.g. happy, hug", text: $importDescription, axis: .vertical)
-                    .textFieldStyle(.roundedBorder).disabled(busy)
-                Text("Applies to every image in your next import. Leave blank if you prefer.").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Import photos", systemImage: "photo.badge.plus") }
-                    Button { importing = true } label: { Label("Import files", systemImage: "folder.badge.plus") }
-                }.buttonStyle(.bordered).disabled(busy)
-                if busy { ProgressView("Importing…") }
+                if editing {
+                    Text("Add stickers or tap one to edit its name, description or delete it.").font(.caption).foregroundStyle(VesperTheme.muted)
+                    TextField("Description for new stickers (optional)", text: $importDescription, axis: .vertical)
+                        .textFieldStyle(.roundedBorder).disabled(busy)
+                    HStack {
+                        PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Add photos", systemImage: "photo.badge.plus") }
+                        Button { importing = true } label: { Label("Add files", systemImage: "folder.badge.plus") }
+                    }.buttonStyle(.bordered).disabled(busy)
+                }
+                if busy || loading { ProgressView(busy ? "Importing…" : "Loading…") }
                 if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
-                if stickers.isEmpty && !busy { Text("No stickers yet. Import an image above.").foregroundStyle(.secondary) }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 90))], spacing: 14) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 20) {
+                    if !editing {
+                        Button { editing = true } label: {
+                            Image(systemName: "square.and.pencil").font(.system(size: 27, weight: .light))
+                                .frame(maxWidth: .infinity).frame(height: 76)
+                                .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(VesperTheme.muted.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5])))
+                        }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
+                    }
                     ForEach(stickers, id: \.selfID) { sticker in
-                        Button { onSelect?(sticker) } label: {
-                            VStack {
-                                StickerArtwork(sticker: sticker).frame(height: 90)
-                                Text(sticker["name"].string).font(.caption).lineLimit(2)
-                            }
-                        }.buttonStyle(.plain).disabled(onSelect == nil || chat.busy || busy)
+                        Button {
+                            if editing { selected = sticker; editName = sticker["name"].string; editDescription = sticker["description"].string; editError = "" }
+                            else { onSelect?(sticker) }
+                        } label: {
+                            StickerArtwork(sticker: sticker).frame(height: 76)
+                        }.buttonStyle(.plain).accessibilityLabel(sticker["description"].string.isEmpty ? sticker["name"].string : sticker["description"].string)
+                            .disabled((!editing && (onSelect == nil || chat.busy)) || busy)
                     }
                 }
-            }.padding()
+                if stickers.isEmpty && !loading && !busy {
+                    Text("No stickers yet. Tap Edit to add your favorites.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+                }
+            }.padding(18)
+        }.background { Background() }.foregroundStyle(VesperTheme.ink)
+        .navigationTitle(editing ? "Edit stickers" : "Stickers").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { if editing { editing = false } else { dismiss() } }.disabled(busy)
+            }
         }
-        .navigationTitle("Stickers").navigationBarTitleDisplayMode(.inline)
-        .toolbar { if onSelect != nil { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } } }
-        .searchable(text: $query, prompt: "Search stickers").onSubmit(of: .search) { Task { await load() } }
         .task { await load() }.refreshable { await load() }
+        .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) { editor }
         .onChange(of: photos) { _, picks in
             guard !picks.isEmpty else { return }
             busy = true
@@ -83,7 +107,38 @@ struct StickerLibraryView: View {
             }
         }
     }
+    private var editor: some View {
+        NavigationStack {
+            Form {
+                if let selected { StickerArtwork(sticker: selected).frame(height: 150).frame(maxWidth: .infinity) }
+                TextField("Name", text: $editName)
+                TextField("Description", text: $editDescription, axis: .vertical)
+                if !editError.isEmpty { Text(editError).font(.caption).foregroundStyle(.red) }
+                Button("Delete sticker", role: .destructive) { confirmDelete = true }
+            }.disabled(saving).navigationTitle("Edit sticker").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { selected = nil }.disabled(saving) }
+                    ToolbarItem(placement: .confirmationAction) { Button("Save") { Task { await saveSticker(delete: false) } }.disabled(saving || editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                }
+                .confirmationDialog("Delete this sticker? Existing messages will show an unavailable image.", isPresented: $confirmDelete, titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) { Task { await saveSticker(delete: true) } }
+                }
+        }.presentationDetents([.medium, .large])
+    }
+    private func saveSticker(delete: Bool) async {
+        guard let selected, !saving else { return }
+        let assetID = selected["assetId"].string
+        guard !assetID.isEmpty, let encoded = assetID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
+        saving = true; editError = ""; defer { saving = false }
+        do {
+            let result = try await store.api.request("/api/stickers/" + encoded, method: delete ? "DELETE" : "PATCH", body: delete ? nil : .object(["name": .string(editName.trimmingCharacters(in: .whitespacesAndNewlines)), "description": .string(editDescription)]))
+            if !delete { guard result["sticker"]["assetId"].string == assetID else { throw ServiceError(message: "The sticker update was not confirmed.") } }
+            self.selected = nil; status = delete ? "Sticker deleted." : "Sticker saved."
+            await load()
+        } catch { editError = error.localizedDescription }
+    }
     private func load() async {
+        loading = true; defer { loading = false }
         do {
             var components = URLComponents(); components.queryItems = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: "200")]
             let result = try await store.api.request("/api/stickers?" + (components.percentEncodedQuery ?? ""))

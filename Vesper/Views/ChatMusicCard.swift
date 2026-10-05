@@ -133,3 +133,56 @@ private struct ChatMusicCardContent: View {
         // Retain supplied metadata and the original link when lookup fails.
     }
 }
+
+struct ChatMusicSharePicker: View {
+    let onSelect: (JSONValue) -> Void
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var catalog = MusicCatalog()
+    @State private var query = ""
+    @State private var searched = false
+    private var tracks: [JSONValue] {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return store.document("music").array.filter { ChatMusicShare.isApple($0) } }
+        return searched && !catalog.busy ? catalog.collection["tracks"].array : []
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        TextField("Search songs or artists", text: $query).submitLabel(.search).onSubmit(search)
+                        Button(action: search) { Image(systemName: "magnifyingglass").frame(width: 44, height: 44) }
+                            .accessibilityLabel("Search music").disabled(catalog.busy || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.padding(.leading, 14).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    Text(query.isEmpty ? "Your music" : "Search results").font(.headline)
+                    if catalog.busy { ProgressView("Searching…") }
+                    if !catalog.message.isEmpty && !query.isEmpty { Text(catalog.message).font(.footnote).foregroundStyle(VesperTheme.muted) }
+                    ForEach(tracks) { track in
+                        Button { onSelect(ChatMusicShare.normalized(track)) } label: {
+                            HStack(spacing: 12) {
+                                AsyncImage(url: URL(string: track["cover"].string)) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "music.note").frame(maxWidth: .infinity, maxHeight: .infinity).background(VesperTheme.surface) }
+                                    .frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 9))
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(track["title"].string).font(.system(size: 15, weight: .medium)).lineLimit(2)
+                                    Text(track["artist"].string).font(.caption).foregroundStyle(VesperTheme.muted).lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "square.and.arrow.up").font(.system(size: 17))
+                            }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        }.buttonStyle(.plain)
+                    }
+                    if tracks.isEmpty && !catalog.busy && query.isEmpty { Text("Search for a song to share.").foregroundStyle(VesperTheme.muted) }
+                    Text("Choose a song, then send its card from the composer.").font(.caption).foregroundStyle(VesperTheme.muted)
+                }.padding(20)
+            }.background { Background() }.foregroundStyle(VesperTheme.ink)
+                .navigationTitle("Share music").navigationBarTitleDisplayMode(.inline)
+                .onChange(of: query) { _, _ in searched = false }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }.presentationDetents([.medium, .large])
+    }
+    private func search() {
+        guard !catalog.busy, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        searched = true; let term = query
+        Task { await catalog.search(term, api: store.api) }
+    }
+}

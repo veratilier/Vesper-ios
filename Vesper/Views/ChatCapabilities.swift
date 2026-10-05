@@ -3,6 +3,7 @@ import UIKit
 import Speech
 import AVFoundation
 import CoreLocation
+import MapKit
 import UniformTypeIdentifiers
 import os
 
@@ -920,5 +921,113 @@ struct CallInvitation: View {
         }.padding(28).frame(maxWidth: 320).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
             .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.6), lineWidth: 1))
             .shadow(color: .black.opacity(0.08), radius: 24, y: 12).accessibilityAddTraits(.isModal)
+    }
+}
+
+
+enum ChatSharedLocation {
+    static func valid(_ value: JSONValue) -> Bool {
+        guard case .number(let latitude) = value["latitude"], case .number(let longitude) = value["longitude"] else { return false }
+        return latitude.isFinite && longitude.isFinite && (-90...90).contains(latitude) && (-180...180).contains(longitude)
+    }
+    static func context(_ value: JSONValue) -> String {
+        "Shared location: \(value["title"].string.isEmpty ? "Current location" : value["title"].string). Latitude: \(value["latitude"].number), longitude: \(value["longitude"].number). Located at: \(value["locatedAt"].string). Accuracy radius: \(value["horizontalAccuracyMeters"].number) meters. Map: https://maps.apple.com/?ll=\(value["latitude"].number),\(value["longitude"].number). This is a shared snapshot; do not infer a live position or exact address from it."
+    }
+}
+struct ChatLocationCard: View {
+    let location: JSONValue
+    var body: some View {
+        if ChatSharedLocation.valid(location) {
+            let coordinate = CLLocationCoordinate2D(latitude: location["latitude"].number, longitude: location["longitude"].number)
+            Link(destination: URL(string: "https://maps.apple.com/?ll=\(coordinate.latitude),\(coordinate.longitude)")!) {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(location["title"].string.isEmpty ? "Current location" : location["title"].string).font(.system(size: 16, weight: .medium)).lineLimit(2)
+                        Text(String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude)).font(.caption).foregroundStyle(VesperTheme.muted)
+                    }.padding(14)
+                    ChatLocationMapPreview(coordinate: coordinate).frame(height: 120).accessibilityHidden(true)
+                    HStack {
+                        Label("Location", systemImage: "mappin.and.ellipse")
+                        Spacer()
+                        Text("±\(Int(location["horizontalAccuracyMeters"].number)) m")
+                    }.font(.caption2).foregroundStyle(VesperTheme.muted).padding(10)
+                }.frame(width: 270).foregroundStyle(VesperTheme.ink)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(VesperTheme.muted.opacity(0.18)))
+            }.buttonStyle(.plain).accessibilityLabel("Shared location. Open in Maps")
+        }
+    }
+}
+private struct ChatLocationMapPreview: View {
+    let coordinate: CLLocationCoordinate2D
+    @State private var preview: UIImage?
+    @State private var unavailable = false
+    var body: some View {
+        ZStack {
+            if let preview { Image(uiImage: preview).resizable().scaledToFill() }
+            else {
+                LinearGradient(colors: [VesperTheme.accent.opacity(0.12), VesperTheme.surface], startPoint: .topLeading, endPoint: .bottomTrailing)
+                VStack(spacing: 8) {
+                    Image(systemName: "map").font(.system(size: 35, weight: .ultraLight)).foregroundStyle(VesperTheme.muted.opacity(0.4))
+                    Text(unavailable ? "Open in Maps" : "Loading map…").font(.caption2).foregroundStyle(VesperTheme.muted)
+                }
+            }
+            if preview != nil { Image(systemName: "mappin.circle.fill").font(.system(size: 28)).foregroundStyle(.red, .white).shadow(radius: 2) }
+        }.frame(maxWidth: .infinity).clipped()
+        .task(id: "\(coordinate.latitude),\(coordinate.longitude)") {
+            preview = nil; unavailable = false
+            let options = MKMapSnapshotter.Options()
+            options.region = MKCoordinateRegion(center: coordinate, latitudinalMeters: 700, longitudinalMeters: 700)
+            options.size = CGSize(width: 270, height: 120)
+            options.scale = UIScreen.main.scale
+            let snapshotter = MKMapSnapshotter(options: options)
+            do {
+                let snapshot = try await withTaskCancellationHandler { try await snapshotter.start() } onCancel: { snapshotter.cancel() }
+                guard !Task.isCancelled else { return }
+                preview = snapshot.image
+            } catch { if !Task.isCancelled { unavailable = true } }
+        }
+    }
+}
+struct ChatLocationShareSheet: View {
+    let onSend: (JSONValue) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var location: JSONValue?
+    @State private var title = "Current location"
+    @State private var loading = false
+    @State private var error = ""
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    if let location { ChatLocationCard(location: decorated(location)) }
+                    if loading { ProgressView("Finding your location…") }
+                    if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.red) }
+                    TextField("Location name", text: $title).textFieldStyle(.roundedBorder)
+                    if let location {
+                        Text("Located at " + ChatPresentation.time(location["locatedAt"].string, full: true)).font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
+                    HStack {
+                        Button("Refresh location") { Task { await locate() } }.disabled(loading)
+                        Spacer()
+                        Button("Send location") { if let location { onSend(decorated(location)) } }
+                            .buttonStyle(PermissionActionStyle()).disabled(location == nil || loading)
+                    }
+                    Text("This sends the location shown above as a card.").font(.caption).foregroundStyle(VesperTheme.muted)
+                }.padding(20)
+            }.background { Background() }.navigationTitle("Share location").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+                .task { await locate() }
+        }.presentationDetents([.medium, .large])
+    }
+    private func decorated(_ value: JSONValue) -> JSONValue {
+        var result = value; result["title"] = .string(title.trimmingCharacters(in: .whitespacesAndNewlines)); return result
+    }
+    @MainActor private func locate() async {
+        guard !loading else { return }; loading = true; error = ""; location = nil
+        defer { loading = false }
+        do { let reader = NativeChatLocation(); location = try await reader.read() }
+        catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }

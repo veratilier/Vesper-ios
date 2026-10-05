@@ -1039,8 +1039,9 @@ enum ChatUserInput {
     var waitingForReply: Bool { busy && (sending || turnID != nil) }
     var preparingSend: Bool { sending && turnID == nil }
 
-    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil, onAccepted: () -> Void = {}) async -> Bool {
-        guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil) else { return false }
+    func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil, location: JSONValue? = nil, onAccepted: () -> Void = {}) async -> Bool {
+        guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil || location != nil) else { return false }
+        if let location, !ChatSharedLocation.valid(location) { error = "This location is invalid. Nothing was sent."; return false }
         let sendIntent = intent
         sending = true
         defer { if sendIntent == intent { sending = false } }
@@ -1050,9 +1051,10 @@ enum ChatUserInput {
         pendingDraftID = messageID
         let createdAt = isoNow()
         var preview: JSONValue = .object(["id": .string(messageID), "conversationId": .string(conversationID), "role": .string("user"), "content": .string(text), "createdAt": .string(createdAt), "source": .string("codex"), "status": .string("pending"), "timeSource": .string("message")])
-        if let music { preview["metadata"]["musicCard"] = music }
+        if let music { preview["metadata"]["musicCard"] = music; preview["metadata"]["musicOnly"] = .bool(text.isEmpty) }
+        if let location { preview["metadata"]["locationCard"] = location; preview["metadata"]["locationOnly"] = .bool(text.isEmpty) }
         if let sticker { preview["type"] = .string("sticker"); preview["metadata"]["sticker"] = sticker }
-        if text.isEmpty && music == nil && sticker == nil { preview["content"] = .string("Sending attachments…") }
+        if text.isEmpty && music == nil && sticker == nil && location == nil { preview["content"] = .string("Sending attachments…") }
         messages.removeAll { $0.id == messageID }; messages.append(preview)
         latestLocalMessageID = messageID
         // Publish the local echo and consume the composer before the first suspension.
@@ -1163,8 +1165,13 @@ enum ChatUserInput {
                 musicContext += ChatMusicContext.update(playbackSnapshot, previous: previous)
             }
             let visualContext = voiceCallContext != nil ? callVisualContext.map { "\n" + $0 } ?? "" : ""
-            let modelInputText = (stickerContext ?? (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text)) + fileContext + musicContext + visualContext
+            let locationContext = location.map { (text.isEmpty ? "" : text + "\n") + ChatSharedLocation.context($0) }
+            let modelInputText = (locationContext ?? stickerContext ?? (text.isEmpty ? (music == nil ? "Please inspect the attachments." : "Listen with me.") : text)) + fileContext + musicContext + visualContext
             user["metadata"] = .object(["attachments": .array(attachments), "modelInputText": .string(modelInputText)])
+            if let location {
+                user["metadata"]["locationCard"] = location; user["metadata"]["locationOnly"] = .bool(text.isEmpty)
+                if text.isEmpty { user["content"] = .string(ChatSharedLocation.context(location)) }
+            }
             // Persist the small comparison state, not live progress. Only delivered messages
             // are used as the baseline, including after history reload or send recovery.
             if let playbackSnapshot {

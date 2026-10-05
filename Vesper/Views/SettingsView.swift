@@ -35,7 +35,7 @@ struct PermissionPage<Content: View>: View {
                 .frame(maxWidth: 720).frame(maxWidth: .infinity)
         }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .foregroundStyle(VesperTheme.ink)
-            .background(palette == "black" ? Color(white: 0.06) : Color(red: 0.96, green: 0.96, blue: 0.95))
+            .background { Background() }.transparentNavigationTop()
     }
 }
 struct PermissionPanel<Content: View>: View {
@@ -44,8 +44,8 @@ struct PermissionPanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 10 : 16) { content }
             .frame(maxWidth: .infinity, alignment: .leading).padding(compact ? 15 : 20)
-            .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 24))
-            .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.muted.opacity(0.13), lineWidth: 1))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.palette == .black ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1))
     }
 }
 struct PermissionActionStyle: ButtonStyle {

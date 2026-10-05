@@ -86,6 +86,11 @@ import SwiftUI
         }
     }
 
+    func testSharedLocationCardLayout() async throws {
+        let location: JSONValue = .object(["latitude": .number(31.27), "longitude": .number(120.74), "title": .string("Current location"), "horizontalAccuracyMeters": .number(12)])
+        _ = try await renderFixture(AnyView(ChatLocationCard(location: location).padding(20).frame(maxWidth: .infinity).background { Background() }), name: "Shared location card")
+    }
+
     private func renderFixture(_ content: AnyView, name: String) async throws -> UIImage {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.windows.first { $0.isKeyWindow }

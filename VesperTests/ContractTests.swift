@@ -774,6 +774,24 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(chat.messages.filter { $0["content"].string == draft }.count, 1)
     }
 
+    func testLocationOnlySendImmediatelyPublishesShareCard() async throws {
+        let socket = RecoverySocket(); socket.hangMethod = "initialize"
+        let chat = session([socket], timeout: 0.05); defer { chat.disconnect() }
+        let location: JSONValue = .object(["latitude": .number(31.27), "longitude": .number(120.74), "title": .string("Test location"), "horizontalAccuracyMeters": .number(10), "locatedAt": .string("2026-10-05T08:00:00Z")])
+        var accepted = false
+        _ = await chat.send("", location: location, onAccepted: {
+            accepted = true
+            XCTAssertEqual(chat.messages.last?["metadata"]["locationCard"], location)
+            XCTAssertEqual(chat.messages.last?["metadata"]["locationOnly"], .bool(true))
+        })
+        XCTAssertTrue(accepted)
+        XCTAssertTrue(ChatSharedLocation.context(location).contains("31.27"))
+        let before = chat.messages.count
+        let invalid = await chat.send("", location: .object(["latitude": .number(95), "longitude": .number(1)]))
+        XCTAssertFalse(invalid)
+        XCTAssertEqual(chat.messages.count, before)
+    }
+
     func testAcceptedUserMessageKeepsItsTimestampWhileReplyRuns() async throws {
         let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
         try await chat.connect()

@@ -10,6 +10,7 @@ struct LettersView: View {
     var initialSelection: String? = nil
     @State private var screen = "archive"
     @State private var filter = "All"
+    @AppStorage("vesperLetterMailbox") private var mailbox = "Vera"
     @State private var hoverID: String?
     @State private var selectedID: String?
     @State private var page = 0
@@ -18,9 +19,9 @@ struct LettersView: View {
     @State private var delivered = false
     @State private var archiveVisible = false
     private var colors: LetterColors { LetterColors(palette: VesperPalette(rawValue: palette) ?? .white) }
-    private var title: String { screen == "compose" ? "Write a letter" : screen == "read" ? "From " + (opened?.author ?? "Rowan") : "Letters" }
+    private var title: String { screen == "compose" ? "Write a letter" : screen == "read" ? "From " + (opened?.author ?? "Rowan") : mailbox + "’s mailbox" }
     private var filed: [VesperLetter] {
-        model.letters.filter { !model.upcoming($0) && $0.matchesFilter(filter) }
+        model.letters.filter { !model.upcoming($0) && $0.matchesMailbox(mailbox, filter: filter) }
     }
     private var visible: [VesperLetter] { Array(filed.dropFirst(page * 5).prefix(5)) }
     private var selected: VesperLetter? { visible.first { $0.id == selectedID } }
@@ -34,6 +35,14 @@ struct LettersView: View {
             VStack(spacing: 18) {
                 HStack {
                     if screen != "archive" { Button { screen = "archive"; delivered = false } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to letters") }
+                    else {
+                        Menu {
+                            Button("Vera’s mailbox") { mailbox = "Vera" }
+                            Button("Rowan’s mailbox") { mailbox = "Rowan" }
+                        } label: {
+                            Image(systemName: "tray.2").frame(width: 44, height: 44).background(.thinMaterial, in: Circle())
+                        }.accessibilityLabel("Switch mailbox").accessibilityIdentifier("switch-letter-mailbox")
+                    }
                     Spacer()
                     if screen == "archive" { Button { screen = "compose" } label: { Label("Write", systemImage: "square.and.pencil") } }
                     if screen == "compose" { Button("Save draft") { model.saveDraft(); screen = "archive" } }
@@ -55,6 +64,7 @@ struct LettersView: View {
             .task(id: app.baseURL + "\n" + app.token) {
                 model.configure(app.api); screen = "archive"; opened = nil; sealed = nil; selectedID = nil; hoverID = nil; page = 0
                 await model.load()
+                if let letter = model.letters.first(where: { $0.id == initialSelection }) { mailbox = letter.readerName }
                 selectedID = initialSelection
                 await openNotificationLetter()
                 while !Task.isCancelled {
@@ -74,6 +84,7 @@ struct LettersView: View {
             .onChange(of: model.draft) { _, _ in model.saveDraft(showStatus: false) }
             .onChange(of: screen) { _, _ in markArrivalsSeen() }
             .onChange(of: filter) { _, _ in resetSelection() }
+            .onChange(of: mailbox) { _, _ in filter = "All"; sealed = nil; resetSelection(); markArrivalsSeen() }
             .onChange(of: filed.map(\.id)) { _, _ in if page * 5 >= filed.count { resetSelection() } }
     }
     var body: some View {
@@ -107,7 +118,7 @@ struct LettersView: View {
     private var archive: some View {
         VStack(spacing: 16) {
             Picker("Letters filter", selection: $filter) { ForEach(["All", "Unread", "Kept"], id: \.self) { Text($0) } }.pickerStyle(.segmented)
-            let upcoming = model.letters.filter { model.upcoming($0) && $0.matchesFilter(filter) }
+            let upcoming = model.letters.filter { model.upcoming($0) && $0.matchesMailbox(mailbox, filter: filter) }
             if !upcoming.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -187,8 +198,12 @@ struct LettersView: View {
                     Text(letter.author).font(VesperTheme.title(40)).frame(maxWidth: .infinity, alignment: .trailing)
                 }.padding(25).frame(minHeight: 420).background(colors.paper).overlay(Rectangle().stroke(colors.line.opacity(0.3))).shadow(color: .black.opacity(0.1), radius: 5, y: 4)
                 HStack(spacing: 12) {
-                    action("Reply") { if model.reply(to: letter) { screen = "compose" } }
-                    Button(letter.kept == true ? "Kept" : "Keep") { Task { if let updated = await model.keep(letter) { opened = updated } } }.frame(maxWidth: .infinity).padding(14).overlay(Capsule().stroke(colors.line)).disabled(model.saving)
+                    if letter.readerName == "Vera" {
+                        action("Reply") { if model.reply(to: letter) { screen = "compose" } }
+                        Button(letter.kept == true ? "Kept" : "Keep") { Task { if let updated = await model.keep(letter) { opened = updated } } }.frame(maxWidth: .infinity).padding(14).overlay(Capsule().stroke(colors.line)).disabled(model.saving)
+                    } else {
+                        Text("Your copy · Rowan’s read and kept status updates separately").font(.footnote).foregroundStyle(colors.ink.opacity(0.65))
+                    }
                 }
             }
         }
@@ -204,12 +219,12 @@ struct LettersView: View {
     }
     private func resetSelection() { page = 0; hoverID = nil; selectedID = nil }
     private func markArrivalsSeen() {
-        if archiveVisible, screen == "archive", phase == .active { LetterInbox.shared.markArrivalSeen(model.letters.filter { $0.author != "Vera" }.map(\.id)) }
+        if archiveVisible, screen == "archive", mailbox == "Vera", phase == .active { LetterInbox.shared.markArrivalSeen(model.letters.filter { $0.readerName == "Vera" }.map(\.id)) }
     }
     private func openNotificationLetter() async {
         guard let id = notificationRoute.letterID, model.configured else { return }
         if let letter = await model.open(id: id) {
-            opened = letter; screen = "read"; notificationRoute.letterID = nil
+            mailbox = letter.readerName; opened = letter; screen = "read"; notificationRoute.letterID = nil
         }
     }
     private func open(_ letter: VesperLetter) {

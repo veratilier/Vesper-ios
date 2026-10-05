@@ -49,6 +49,19 @@ private final class LettersLayoutProtocol: URLProtocol {
 }
 
 @MainActor final class LettersTests: XCTestCase {
+    func testMailboxesUseOnlyTheirRecipientsReadingAndKeepMarks() throws {
+        let data = Data(#"{"id":"sent","title":"Evening","author":"Vera","recipient":"Rowan","createdAt":"now","kept":true,"marks":{"Vera":{"read":true,"kept":true},"Rowan":{"read":false,"kept":false}}}"#.utf8)
+        var letter = try JSONDecoder().decode(VesperLetter.self, from: data)
+        XCTAssertTrue(letter.matchesMailbox("Rowan", filter: "All"))
+        XCTAssertTrue(letter.matchesMailbox("Rowan", filter: "Unread"))
+        XCTAssertFalse(letter.matchesMailbox("Rowan", filter: "Kept"), "Vera’s bookmark cannot put a letter in Rowan’s Kept")
+        XCTAssertFalse(letter.matchesMailbox("Vera", filter: "All"))
+        letter.marks?["Rowan"]?.kept = true; letter.marks?["Rowan"]?.read = true
+        XCTAssertTrue(letter.matchesMailbox("Rowan", filter: "Kept")); XCTAssertFalse(letter.matchesMailbox("Rowan", filter: "Unread"))
+        let incoming = VesperLetter(id: "incoming", title: "", author: "Rowan", createdAt: "now", read: false, kept: true)
+        XCTAssertTrue(incoming.matchesMailbox("Vera", filter: "Unread")); XCTAssertTrue(incoming.matchesMailbox("Vera", filter: "Kept"))
+        XCTAssertFalse(incoming.matchesMailbox("Rowan", filter: "All"))
+    }
     func testOlderArchiveRefreshCannotUndoSuccessfulKeep() async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [LettersRefreshProtocol.self]
         let session = URLSession(configuration: config)

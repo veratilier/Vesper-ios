@@ -35,6 +35,12 @@ struct VesperLetter: Codable, Identifiable, Equatable {
     var keepLabels: [String] { keepers.map { ($0 == "Vera" ? "你" : $0 + " ") + "已收藏" } }
     var isKept: Bool { !keepers.isEmpty }
     func matchesFilter(_ filter: String) -> Bool { filter == "All" || (filter == "Unread" ? readerRead == false : isKept) }
+    func matchesMailbox(_ mailbox: String, filter: String) -> Bool {
+        guard readerName == mailbox else { return false }
+        if filter == "All" { return true }
+        if filter == "Unread" { return readerRead == false }
+        return marks?[mailbox]?.kept ?? (mailbox == "Vera" && kept == true)
+    }
 }
 enum LetterDates {
     static func parse(_ string: String) -> Date? {

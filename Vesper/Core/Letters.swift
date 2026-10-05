@@ -3,6 +3,11 @@ import CryptoKit
 import Combine
 import UserNotifications
 
+struct LetterMark: Codable, Equatable {
+    var read: Bool
+    var kept: Bool
+    var readAt: String?
+}
 struct VesperLetter: Codable, Identifiable, Equatable {
     let id: String
     var title: String
@@ -15,9 +20,21 @@ struct VesperLetter: Codable, Identifiable, Equatable {
     var locked: Bool?
     var read: Bool?
     var kept: Bool?
+    var marks: [String: LetterMark]?
     var displayTitle: String { title.isEmpty ? "A letter from \(author)" : title }
     var isLocked: Bool { locked == true }
     var upcoming: Bool { unlockAt.flatMap(LetterDates.parse).map { $0 > Date() } ?? false }
+    var readerName: String { recipient ?? (author == "Vera" ? "Rowan" : "Vera") }
+    var readerRead: Bool? { readerName == "Rowan" ? marks?["Rowan"]?.read : marks?["Vera"]?.read ?? read ?? false }
+    var readLabel: String {
+        let name = readerName == "Vera" ? "你" : readerName + " "
+        guard let readerRead else { return name + "暂无回执" }
+        return name + (readerRead ? "已读" : "未读")
+    }
+    var keepers: [String] { ["Vera", "Rowan"].filter { marks?[$0]?.kept == true || ($0 == "Vera" && kept == true) } }
+    var keepLabels: [String] { keepers.map { ($0 == "Vera" ? "你" : $0 + " ") + "已收藏" } }
+    var isKept: Bool { !keepers.isEmpty }
+    func matchesFilter(_ filter: String) -> Bool { filter == "All" || (filter == "Unread" ? readerRead == false : isKept) }
 }
 enum LetterDates {
     static func parse(_ string: String) -> Date? {
@@ -67,11 +84,12 @@ enum LetterDraftCache {
     var configured: Bool { api != nil }
     private var api: APIClient?
     private var generation = UUID()
+    private var revision = 0
     private var decoder = JSONDecoder()
     private var serverOffset: TimeInterval = 0
     func upcoming(_ letter: VesperLetter) -> Bool { letter.unlockAt.flatMap(LetterDates.parse).map { $0 > Date().addingTimeInterval(serverOffset) } ?? false }
     func configure(_ api: APIClient) {
-        generation = UUID(); self.api = api; letters = []; cursor = ""; status = ""; loading = false; saving = false; serverOffset = 0
+        generation = UUID(); revision = 0; self.api = api; letters = []; cursor = ""; status = ""; loading = false; saving = false; serverOffset = 0
         draft = LetterDraftCache.load(api)
     }
     private func decode(_ value: JSONValue) throws -> VesperLetter { try decoder.decode(VesperLetter.self, from: JSONEncoder().encode(value)) }
@@ -81,13 +99,13 @@ enum LetterDraftCache {
     }
     func load(reset: Bool = true) async {
         guard let api, !loading else { return }
-        let request = generation; loading = true
+        let request = generation, version = revision; loading = true
         defer { if generation == request { loading = false } }
         do {
             var query = URLComponents(); query.queryItems = [URLQueryItem(name: "limit", value: "50")]
             if !reset && !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
             let result = try await api.request("/api/letters?" + (query.percentEncodedQuery ?? ""))
-            guard request == generation else { return }
+            guard request == generation, version == revision else { return }
             if let server = LetterDates.parse(result["serverTime"].string) { serverOffset = server.timeIntervalSinceNow }
             let incoming = try result["letters"].array.map(decode)
             var seen = Set<String>(); letters = ((reset ? [] : letters) + incoming).filter { seen.insert($0.id).inserted }
@@ -95,6 +113,7 @@ enum LetterDraftCache {
         } catch { if generation == request { status = error.localizedDescription } }
     }
     private func replace(_ letter: VesperLetter) {
+        revision += 1
         if let i = letters.firstIndex(where: { $0.id == letter.id }) { letters[i] = letter } else { letters.insert(letter, at: 0) }
     }
     func open(id: String) async -> VesperLetter? {

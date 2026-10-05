@@ -97,11 +97,20 @@ struct LetterStack: View {
                         .overlay(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4).stroke(colors.line.opacity(0.75), lineWidth: 0.8))
                         .offset(x: -9, y: -2)
                 }
+                .overlay(alignment: .bottomLeading) {
+                    HStack(spacing: 6) {
+                        Text(letter.readLabel)
+                        if letter.isKept { Image(systemName: "bookmark.fill") }
+                    }.font(.custom("Georgia", size: 10)).foregroundStyle(colors.ink)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(colors.paper.opacity(0.9), in: Capsule())
+                        .overlay(Capsule().stroke(colors.line.opacity(0.4), lineWidth: 0.5)).padding(8)
+                }
         }.buttonStyle(.plain).frame(width: cardWidth, height: cardWidth / 1.7)
             .rotationEffect(.degrees(front ? -3 : restingAngle), anchor: .bottom)
             .offset(x: (width - cardWidth) / 2 + (slot.isMultiple(of: 2) ? -2 : 2), y: base - lift)
             .zIndex(front ? 100 : Double(90 - slot)).animation(motion, value: front).animation(motion, value: selectedID)
-            .accessibilityLabel(letter.displayTitle + ", " + letter.author).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
+            .accessibilityLabel(([letter.displayTitle, letter.author, letter.readLabel] + letter.keepLabels).joined(separator: ", ")).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
     }
     private func sweep(_ point: CGPoint) {
         guard !visible.isEmpty else { return }

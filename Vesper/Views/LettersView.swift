@@ -20,7 +20,7 @@ struct LettersView: View {
     private var colors: LetterColors { LetterColors(palette: VesperPalette(rawValue: palette) ?? .white) }
     private var title: String { screen == "compose" ? "Write a letter" : screen == "read" ? "From " + (opened?.author ?? "Rowan") : "Letters" }
     private var filed: [VesperLetter] {
-        model.letters.filter { !model.upcoming($0) && (filter == "All" || (filter == "Unread" ? $0.author != "Vera" && $0.read != true : $0.kept == true)) }
+        model.letters.filter { !model.upcoming($0) && $0.matchesFilter(filter) }
     }
     private var visible: [VesperLetter] { Array(filed.dropFirst(page * 5).prefix(5)) }
     private var selected: VesperLetter? { visible.first { $0.id == selectedID } }
@@ -64,9 +64,12 @@ struct LettersView: View {
             }
             .onChange(of: notificationRoute.letterID) { _, _ in Task { await openNotificationLetter() } }
             .onChange(of: phase) { _, next in if next == .active { Task { await model.load() } } }
-            .onAppear { archiveVisible = true; markArrivalsSeen() }
+            .onAppear { archiveVisible = true; markArrivalsSeen(); Task { await model.load() } }
             .onDisappear { archiveVisible = false }
-            .onChange(of: model.letters) { _, _ in markArrivalsSeen() }
+            .onChange(of: model.letters) { _, _ in
+                markArrivalsSeen()
+                if let id = opened?.id, let updated = model.letters.first(where: { $0.id == id }) { opened = updated }
+            }
             .onReceive(LetterInbox.shared.$covers) { _ in markArrivalsSeen() }
             .onChange(of: model.draft) { _, _ in model.saveDraft(showStatus: false) }
             .onChange(of: screen) { _, _ in markArrivalsSeen() }
@@ -91,6 +94,7 @@ struct LettersView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(selected.displayTitle).font(.custom("Georgia", size: 16)).lineLimit(1)
                     Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
+                    letterStatus(selected)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Button { open(selected) } label: {
                     Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
@@ -103,7 +107,7 @@ struct LettersView: View {
     private var archive: some View {
         VStack(spacing: 16) {
             Picker("Letters filter", selection: $filter) { ForEach(["All", "Unread", "Kept"], id: \.self) { Text($0) } }.pickerStyle(.segmented)
-            let upcoming = model.letters.filter { model.upcoming($0) }
+            let upcoming = model.letters.filter { model.upcoming($0) && $0.matchesFilter(filter) }
             if !upcoming.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -127,6 +131,9 @@ struct LettersView: View {
             HStack { Text(archiveLabel).font(.custom("Georgia", size: 14)); Spacer(); Text("\(visible.count) / \(filed.count)").font(.custom("Georgia", size: 12)).opacity(0.6) }
             if filed.isEmpty { Text(model.loading ? "Opening your letters…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
             else { LetterStack(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors) }
+            if selected == nil, let preview = visible.first(where: { $0.id == hoverID }) ?? visible.first {
+                letterStatus(preview).frame(maxWidth: .infinity, alignment: .leading)
+            }
             if selected == nil && !filed.isEmpty { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
             if filed.count > 5 {
                 HStack {
@@ -174,6 +181,7 @@ struct LettersView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(letter.displayTitle).font(.system(size: 23, design: .serif)).frame(maxWidth: .infinity).multilineTextAlignment(.center)
                     Text(LetterDates.display(letter.createdAt)).font(.system(size: 12, design: .serif)).opacity(0.65).frame(maxWidth: .infinity)
+                    letterStatus(letter).frame(maxWidth: .infinity, alignment: .center)
                     Divider(); Text("Dear " + (letter.recipient ?? (letter.author == "Vera" ? "Rowan" : "Vera")) + ",").font(.system(size: 17, design: .serif))
                     Text(letter.text ?? "").font(.system(size: 17, design: .serif)).lineSpacing(8).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     Text(letter.author).font(VesperTheme.title(40)).frame(maxWidth: .infinity, alignment: .trailing)
@@ -184,6 +192,12 @@ struct LettersView: View {
                 }
             }
         }
+    }
+    private func letterStatus(_ letter: VesperLetter) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(letter.readLabel, systemImage: letter.readerRead == true ? "envelope.open" : "envelope")
+            if !letter.keepLabels.isEmpty { Label(letter.keepLabels.joined(separator: " · "), systemImage: "bookmark.fill") }
+        }.font(.custom("Georgia", size: 12)).foregroundStyle(colors.ink.opacity(0.75))
     }
     private func action(_ title: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) { Text(title).font(.system(size: 17, design: .serif)).foregroundStyle(colors.paper).frame(maxWidth: .infinity).padding(15).background(colors.ink, in: Capsule()) }.buttonStyle(.plain)

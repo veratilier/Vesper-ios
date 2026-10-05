@@ -4,6 +4,30 @@ import UIKit
 import UserNotifications
 @testable import Vesper
 
+private final class LettersRefreshProtocol: URLProtocol {
+    static var listStarted: XCTestExpectation?
+    private var work: DispatchWorkItem?
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "letters-refresh.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let keeping = request.httpMethod == "PATCH"
+        let letter: [String: Any] = ["id": "refresh", "title": "Evening", "author": "Rowan", "recipient": "Vera",
+            "createdAt": "2026-10-06T00:00:00Z", "text": "A thought.", "kept": keeping,
+            "marks": ["Vera": ["read": false, "kept": keeping], "Rowan": ["read": false, "kept": false]]]
+        let body = try! JSONSerialization.data(withJSONObject: keeping ? ["letter": letter] : ["letters": [letter]])
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.client?.urlProtocol(self, didReceive: HTTPURLResponse(url: self.request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: body); self.client?.urlProtocolDidFinishLoading(self)
+        }
+        self.work = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + (keeping ? 0 : 1), execute: work)
+        if !keeping { Self.listStarted?.fulfill() }
+    }
+    override func stopLoading() { work?.cancel() }
+}
+
 private final class LettersLayoutProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix("letters-layout.example") == true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -15,6 +39,8 @@ private final class LettersLayoutProtocol: URLProtocol {
         }
         letters.append(["id": "birthday", "title": "For your birthday", "author": "Vera", "recipient": "Rowan", "createdAt": "2026-10-05T06:00:00Z",
                         "unlockAt": "2099-10-29T09:00:00Z", "locked": true])
+        letters[0]["author"] = "Vera"; letters[0]["recipient"] = "Rowan"
+        letters[0]["marks"] = ["Vera": ["read": true, "kept": false], "Rowan": ["read": true, "kept": true]]
         let body = try! JSONSerialization.data(withJSONObject: ["letters": letters, "serverTime": "2026-10-05T06:00:00Z"])
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body); client?.urlProtocolDidFinishLoading(self)
@@ -23,6 +49,41 @@ private final class LettersLayoutProtocol: URLProtocol {
 }
 
 @MainActor final class LettersTests: XCTestCase {
+    func testOlderArchiveRefreshCannotUndoSuccessfulKeep() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [LettersRefreshProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel(); LettersRefreshProtocol.listStarted = nil }
+        var api = APIClient(baseURL: "https://letters-refresh.example", historyURL: "", token: "fixture")
+        api.requestSession = session
+        let model = LettersStore(); model.configure(api)
+        let letter = VesperLetter(id: "refresh", title: "Evening", author: "Rowan", createdAt: "2026-10-06T00:00:00Z", kept: false)
+        model.letters = [letter]
+        let started = expectation(description: "Archive request takes its older snapshot")
+        LettersRefreshProtocol.listStarted = started
+        let refresh = Task { await model.load() }
+        await fulfillment(of: [started], timeout: 2)
+        let kept = await model.keep(letter)
+        XCTAssertEqual(kept?.kept, true)
+        await refresh.value
+        XCTAssertEqual(model.letters.first?.kept, true, "A delayed archive response must not overwrite a newer keep result")
+        XCTAssertEqual(model.letters.first?.keepLabels, ["你已收藏"])
+    }
+
+    func testLetterReceiptsShowRecipientReadingAndBothKeepersWithoutChangingPersonalMarks() throws {
+        let data = Data(#"{"id":"sent","title":"Evening","author":"Vera","recipient":"Rowan","createdAt":"2026-10-06T00:00:00Z","read":true,"kept":false,"marks":{"Vera":{"read":true,"kept":false},"Rowan":{"read":false,"kept":true}}}"#.utf8)
+        var letter = try JSONDecoder().decode(VesperLetter.self, from: data)
+        XCTAssertEqual(letter.readLabel, "Rowan 未读", "Opening your own copy cannot claim Rowan read it")
+        XCTAssertTrue(letter.matchesFilter("Unread")); XCTAssertTrue(letter.matchesFilter("Kept"))
+        XCTAssertEqual(letter.keepLabels, ["Rowan 已收藏"]); XCTAssertEqual(letter.kept, false)
+        letter.marks?["Rowan"]?.read = true
+        XCTAssertEqual(letter.readLabel, "Rowan 已读"); XCTAssertFalse(letter.matchesFilter("Unread"))
+        letter.marks?["Vera"]?.kept = true
+        XCTAssertEqual(letter.keepLabels, ["你已收藏", "Rowan 已收藏"])
+        let old = VesperLetter(id: "old", title: "", author: "Vera", createdAt: "now", read: true)
+        XCTAssertNil(old.readerRead, "Missing receipts must stay unknown on older servers")
+        let incoming = VesperLetter(id: "incoming", title: "", author: "Rowan", createdAt: "now", read: false)
+        XCTAssertEqual(incoming.readLabel, "你未读"); XCTAssertTrue(incoming.matchesFilter("Unread"))
+    }
     func testLettersArchiveWithSingleAndFullStacksOnAllPalettes() async throws {
         URLProtocol.registerClass(LettersLayoutProtocol.self)
         defer { URLProtocol.unregisterClass(LettersLayoutProtocol.self) }

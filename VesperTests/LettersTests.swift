@@ -37,8 +37,10 @@ private final class LettersLayoutProtocol: URLProtocol {
             ["id": "layout-\(slot)", "title": slot == 0 ? "A little thought for you" : "A small discovery", "author": "Rowan", "recipient": "Vera",
              "createdAt": "2026-10-0\(max(1, 5 - slot))T06:00:00Z", "text": "A little thought."]
         }
-        letters.append(["id": "birthday", "title": "For your birthday", "author": "Vera", "recipient": "Rowan", "createdAt": "2026-10-05T06:00:00Z",
-                        "unlockAt": "2099-10-29T09:00:00Z", "locked": true])
+        if count > 1 {
+            letters.append(["id": "birthday", "title": "For your birthday", "author": "Vera", "recipient": "Rowan", "createdAt": "2026-10-05T06:00:00Z",
+                            "unlockAt": "2099-10-29T09:00:00Z", "locked": true])
+        }
         letters[0]["author"] = "Vera"; letters[0]["recipient"] = "Rowan"
         letters[0]["marks"] = ["Vera": ["read": true, "kept": false], "Rowan": ["read": true, "kept": true]]
         let body = try! JSONSerialization.data(withJSONObject: ["letters": letters, "serverTime": "2026-10-05T06:00:00Z"])
@@ -108,7 +110,7 @@ private final class LettersLayoutProtocol: URLProtocol {
             preferences.set(palette, forKey: "vesperPalette")
             let store = AppStore(); store.baseURL = "https://\(count == 1 ? "single" : "stack").letters-layout.example"; store.token = UUID().uuidString
             let model = LettersStore(); model.configure(store.api); await model.load()
-            XCTAssertEqual(model.letters.count, count + 1, "The fixture transport must provide filed and upcoming letters")
+            XCTAssertEqual(model.letters.count, count == 1 ? 1 : count + 1, "The fixture must cover empty and populated Upcoming areas")
             model.saveDraft(showStatus: false)
             XCTAssertEqual(model.status, "", "Restoring or automatically saving a draft must not add a status row to the archive")
             let host = UIHostingController(rootView: TabView(selection: .constant(3)) {

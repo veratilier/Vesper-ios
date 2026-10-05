@@ -133,11 +133,23 @@ struct LettersView: View {
                                     }
                                     Spacer(minLength: 0)
                                     Image(systemName: "lock").font(.caption)
-                                }.padding(12).containerRelativeFrame(.horizontal).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
+                                }.padding(12).frame(minHeight: 78).containerRelativeFrame(.horizontal).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
                             }.buttonStyle(.plain)
                         }
                     }
                 }
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "envelope").font(.system(size: 24, weight: .light)).opacity(0.4).frame(width: 65, height: 42)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Upcoming").font(.custom("Georgia", size: 11)).opacity(0.6)
+                        Text("Nothing waiting here").font(.custom("Georgia", size: 15)).opacity(0.6)
+                    }
+                    Spacer(minLength: 0)
+                }.padding(12).frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
+                    .background(colors.paper.opacity(0.4), in: RoundedRectangle(cornerRadius: 15))
+                    .overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.25)))
+                    .accessibilityIdentifier("empty-upcoming-letters")
             }
             HStack { Text(archiveLabel).font(.custom("Georgia", size: 14)); Spacer(); Text("\(visible.count) / \(filed.count)").font(.custom("Georgia", size: 12)).opacity(0.6) }
             if filed.isEmpty { Text(model.loading ? "Opening your letters…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }

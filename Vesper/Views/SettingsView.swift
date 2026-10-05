@@ -39,10 +39,11 @@ struct PermissionPage<Content: View>: View {
     }
 }
 struct PermissionPanel<Content: View>: View {
+    var compact = false
     @ViewBuilder var content: Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) { content }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+        VStack(alignment: .leading, spacing: compact ? 10 : 16) { content }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(compact ? 15 : 20)
             .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 24))
             .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.muted.opacity(0.13), lineWidth: 1))
     }
@@ -80,7 +81,7 @@ struct DevicePermissionsView: View {
     var body: some View {
         PermissionPage(title: "Permissions") {
             Text("Choose what Vesper can access on this iPhone.").font(.subheadline).foregroundStyle(VesperTheme.muted)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 12) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
                 card("Location", icon: "location.fill", status: weather.authorized ? "Allowed" : "Not allowed", detail: "Use your location for local weather.") { WeatherPermissionsView() }
                 card("Health", icon: "heart.fill", status: HKHealthStore.isHealthDataAvailable() ? "Manage access" : "Unavailable", detail: "Choose which health summaries Rowan may read.") { HealthView() }
                 card("Calendar", icon: "calendar", status: calendar, detail: "Read upcoming events and add plans from chat.") { SystemPlannerView(reminderOnly: false) }
@@ -101,21 +102,21 @@ struct DevicePermissionsView: View {
     }
     private func card<Destination: View>(_ title: String, icon: String, status: String, detail: String, @ViewBuilder destination: () -> Destination) -> some View {
         NavigationLink(destination: destination()) {
-            PermissionPanel {
+            PermissionPanel(compact: true) {
                 HStack(alignment: .top) {
-                    Image(systemName: icon).font(.system(size: 21))
+                    Image(systemName: icon).font(.system(size: 19))
                     Spacer(minLength: 4)
                     Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(VesperTheme.muted).multilineTextAlignment(.trailing)
                 }
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(title).font(.system(size: 18, weight: .semibold))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title).font(.system(size: 17, weight: .semibold))
                     Text(detail).font(.system(size: 13)).foregroundStyle(VesperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
                 Text("Settings").font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
-                    .padding(.horizontal, 16).frame(height: 38).background(VesperTheme.ink, in: Capsule())
-            }.frame(minHeight: typeSize.isAccessibilitySize ? 240 : 225)
+                    .padding(.horizontal, 16).frame(height: 34).background(VesperTheme.ink, in: Capsule())
+            }.frame(minHeight: typeSize.isAccessibilitySize ? 220 : 190)
         }.buttonStyle(.plain)
     }
 }

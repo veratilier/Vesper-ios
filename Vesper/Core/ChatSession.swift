@@ -38,6 +38,36 @@ private enum ChatCallback {
     @TaskLocal static var generation: UUID?
 }
 
+enum ChatMemoryRecall {
+    enum Failure: String, Error { case unavailable, hostNotVerified, invalidResponse }
+    static func validate(_ result: JSONValue) throws {
+        switch result["status"].string {
+        case "unavailable": throw Failure.unavailable
+        case "host_not_verified": throw Failure.hostNotVerified
+        case "prepared", "delivered": break
+        default: throw Failure.invalidResponse
+        }
+        guard !result["deliveryId"].string.isEmpty,
+              case .object = result["additionalContext"] else { throw Failure.invalidResponse }
+    }
+    static func notice(for error: Error) -> String {
+        let reason: String
+        if let network = error as? URLError {
+            reason = network.code == .timedOut ? "记忆检索超时" : "记忆检索连接失败"
+        } else if let failure = error as? Failure {
+            reason = failure == .hostNotVerified ? "记忆服务尚未就绪" : "记忆检索服务暂不可用"
+        } else { reason = "记忆检索请求失败" }
+        return reason + "；这次先用当前聊天记录回复。"
+    }
+    // Log only error types/codes, never conversation content or retrieved memories.
+    static func diagnostic(for error: Error) -> String {
+        if let failure = error as? Failure { return failure.rawValue }
+        if let service = error as? ServiceError { return "http-\(service.statusCode ?? 0)" }
+        let error = error as NSError
+        return "\(error.domain):\(error.code)"
+    }
+}
+
 enum ChatConnectionStage: String {
     case handshake = "WebSocket handshake/authentication"
     case initialize = "initialize"
@@ -1102,12 +1132,24 @@ enum ChatUserInput {
                         JSONValue.object(["role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": .string(String(message["content"].string.prefix(2000)))])
                     }
                     let result = try await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID), "recent": .array(recent)]))
+                    try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+                    try ChatMemoryRecall.validate(result)
                     recallContext = result["additionalContext"] == .null ? .object([:]) : result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string; memoryStatus = ""
+                    if !result["diagnostics"]["failure"].string.isEmpty {
+                        memoryStatus = "部分记忆检索暂不可用；这次使用已取回的记忆和当前聊天记录。"
+                        Self.log.error("memory-recall partial-retrieval-failure")
+                    }
                 }
-                catch { memoryStatus = "Memory recall unavailable; this turn uses the existing conversation." }
+                catch {
+                    try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                    memoryStatus = ChatMemoryRecall.notice(for: error)
+                    Self.log.error("memory-recall failed diagnostic=\(ChatMemoryRecall.diagnostic(for: error), privacy: .public)")
+                }
             }
             if voiceCallContext != nil && onNativeHangupRequested != nil {
-                if let result = try? await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID)])) {
+                if let result = try? await api.request("/api/memory/context", method: "POST", body: .object(["query": .string(String(text.prefix(12000))), "conversationId": .string(conversationID), "messageId": .string(messageID)])),
+                   (try? ChatMemoryRecall.validate(result)) != nil {
                     recallContext = result["additionalContext"] == .null ? .object([:]) : result["additionalContext"]; memoryDeliveryID = result["deliveryId"].string
                 }
             }

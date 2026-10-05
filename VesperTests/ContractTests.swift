@@ -54,7 +54,60 @@ private final class ChatHistoryPaginationProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class SlowRecallProtocol: URLProtocol {
+    static var timeout: TimeInterval = 0
+    private var work: DispatchWorkItem?
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "slow-recall.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.timeout = request.timeoutInterval
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let response = HTTPURLResponse(url: self.request.url!, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "application/json"])!
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: Data(#"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+        self.work = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: work)
+    }
+    override func stopLoading() { work?.cancel() }
+}
+
 final class ContractTests: XCTestCase {
+    func testMemoryRecallAllowsResponseSlowerThanOldFourSecondLimit() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SlowRecallProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        var api = APIClient(baseURL: "https://slow-recall.example", historyURL: "", token: "fixture")
+        api.requestSession = session
+        let result = try await api.request("/api/memory/context", method: "POST", body: .object([:]))
+        XCTAssertEqual(SlowRecallProtocol.timeout, 20)
+        XCTAssertNoThrow(try ChatMemoryRecall.validate(result))
+    }
+
+    func testMemoryRecallDoesNotTreatUnavailableHTTP200AsSuccess() {
+        for status in ["unavailable", "host_not_verified", ""] {
+            XCTAssertThrowsError(try ChatMemoryRecall.validate(.object(["status": .string(status)])))
+        }
+        XCTAssertThrowsError(try ChatMemoryRecall.validate(.object(["status": .string("prepared"), "deliveryId": .string("fixture")])))
+        for status in ["prepared", "delivered"] {
+            XCTAssertNoThrow(try ChatMemoryRecall.validate(.object([
+                "status": .string(status), "deliveryId": .string("fixture"), "additionalContext": .object([:])
+            ])))
+        }
+    }
+
+    func testMemoryRecallNoticeDistinguishesTimeoutAndServerFailure() {
+        XCTAssertTrue(ChatMemoryRecall.notice(for: URLError(.timedOut)).contains("超时"))
+        XCTAssertFalse(ChatMemoryRecall.notice(for: ChatMemoryRecall.Failure.unavailable).contains("超时"))
+        XCTAssertTrue(ChatMemoryRecall.notice(for: ChatMemoryRecall.Failure.hostNotVerified).contains("尚未就绪"))
+        XCTAssertEqual(ChatMemoryRecall.diagnostic(for: ServiceError(message: "private response", statusCode: 503)), "http-503")
+        XCTAssertEqual(ChatMemoryRecall.diagnostic(for: URLError(.timedOut)), "NSURLErrorDomain:-1001")
+    }
+
     private let sleepFixtureNow = Date(timeIntervalSince1970: 1_800_000_000)
     private func sleepSample(_ start: Double, _ end: Double, _ stage: SleepDetails.Stage,
                              source: String = "watch") -> SleepDetails.Sample {

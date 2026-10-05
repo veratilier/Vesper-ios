@@ -717,21 +717,24 @@ enum ChatUserInput {
             await loadConversations(); return true
         } catch { busy = false; self.error = error.localizedDescription; return false }
     }
-    func deleteMessage(_ message: JSONValue) async {
+    func deleteMessage(_ message: JSONValue) async { await deleteMessages([message]) }
+    func deleteMessages(_ records: [JSONValue]) async {
         guard !busy, let api else { return }
-        do {
-            _ = try await api.request("/conversations/\(conversationID)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(threadID ?? "") : message["metadata"]["threadId"]]), history: true)
-            tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
-            messages.removeAll { $0.id == message.id }
-            if let store = appStore {
-                let favoritesCleaned = await ChatFavorites.removeCopies(conversationID: conversationID, messageID: message.id, in: store)
-                if !favoritesCleaned {
-                    self.error = "Message deleted from history, but its saved Favorite may still contain a copy. Remove it from Favorites."
+        let targetConversation = conversationID, targetThread = threadID ?? ""
+        let store = appStore
+        for message in records {
+            do {
+                _ = try await api.request("/conversations/\(targetConversation)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(targetThread) : message["metadata"]["threadId"]]), history: true)
+                if conversationID == targetConversation {
+                    tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
+                    messages.removeAll { $0.id == message.id }
                 }
-            } else {
-                self.error = "Message deleted from history, but its saved Favorite could not be checked."
-            }
-        } catch { self.error = error.localizedDescription }
+                if let store {
+                    let favoritesCleaned = await ChatFavorites.removeCopies(conversationID: targetConversation, messageID: message.id, in: store)
+                    if !favoritesCleaned { self.error = "Message deleted from history, but its saved Favorite may still contain a copy. Remove it from Favorites." }
+                } else { self.error = "Message deleted from history, but its saved Favorite could not be checked." }
+            } catch { self.error = error.localizedDescription; return }
+        }
     }
     func newConversation(id: String = UUID().uuidString) {
         guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"

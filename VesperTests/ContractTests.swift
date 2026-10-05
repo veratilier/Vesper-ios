@@ -271,6 +271,81 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(ChatPhaseRecovery.restore([saved], entries: [unknown], threadID: "thread", fallbackThreadID: nil, tombstones: []), [saved])
     }
 
+    private func sharedReply(_ id: String, media: String? = nil, caption: String = "", status: String = "delivered") -> JSONValue {
+        var value: JSONValue = .object(["id": .string(id), "conversationId": .string("room"), "role": .string("agent"), "content": .string(caption), "status": .string(status), "metadata": .object(["turnId": .string("turn"), "threadId": .string("thread")])])
+        if let media {
+            if media == "attachments" { value["metadata"][media] = .array([.object(["id": .string(id + "-file"), "type": .string("image/png"), "url": .string("https://example.com/photo.png")])]) }
+            else { value["metadata"][media] = .object(["id": .string(id + "-media"), "assetId": .string(id + "-asset")]) }
+            value["metadata"]["showTurnStatus"] = .bool(false)
+        }
+        return value
+    }
+
+    func testAssistantMediaAndCaptionShareOneRowInEitherArrivalOrder() {
+        for kind in ["sticker", "attachments", "musicCard", "locationCard"] {
+            let media = sharedReply("media", media: kind)
+            let text = sharedReply("text", caption: "For you", status: "streaming")
+            for input in [[media, text], [text, media]] {
+                let rows = ChatPresentation.displayRows(input)
+                XCTAssertEqual(rows.count, 1, kind)
+                XCTAssertEqual(rows[0].id, "text")
+                XCTAssertEqual(rows[0].messages, input, "Keep the originals for deletion and memory")
+                XCTAssertEqual(rows[0].presentedMessage["content"].string, "For you")
+                XCTAssertEqual(rows[0].presentedMessage["status"].string, "streaming")
+                XCTAssertEqual(rows[0].presentedMessage["metadata"]["sharedMedia"].array, [media])
+                XCTAssertEqual(ChatPresentation.liveHeadingID(rows, turnID: "turn"), "text")
+                XCTAssertEqual(ChatPresentationSnapshot(input).lastReplyID, "text")
+                XCTAssertEqual(ChatPresentationSnapshot(input).rowID(forMessageID: "media"), "text")
+                XCTAssertEqual(ChatPresentationSnapshot(input).rowID(forMessageID: "text"), "text")
+            }
+        }
+    }
+
+    func testAssistantMixedMediaRetainsCaptionsAndActivityOnce() {
+        var photo = sharedReply("photo", media: "attachments", caption: "文件")
+        photo["metadata"]["attachmentOnly"] = .bool(true)
+        let music = sharedReply("music", media: "musicCard", caption: "Listen with me")
+        let sticker = sharedReply("sticker", media: "sticker")
+        var activity = sharedReply("tool")
+        activity["role"] = .string("tool")
+        let text = sharedReply("text", caption: "A little thought")
+        let input = [photo, activity, music, sticker, text]
+        let rows = ChatPresentation.displayRows(input)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].messages, [photo, music, sticker, text])
+        XCTAssertEqual(rows[0].activities, [activity])
+        XCTAssertEqual(rows[0].presentedMessage["content"].string, "Listen with me\n\nA little thought")
+        XCTAssertEqual(rows[0].presentedMessage["metadata"]["attachments"].array, photo["metadata"]["attachments"].array)
+        XCTAssertEqual(photo["content"].string, "文件")
+        XCTAssertEqual(rows[0].presentedMessage["metadata"]["attachmentOnly"], .bool(false))
+    }
+
+    func testAssistantMediaGroupingRespectsConversationTurnAndMessageBoundaries() {
+        let media = sharedReply("media", media: "sticker")
+        let text = sharedReply("text", caption: "Hello")
+        for field in ["turnId", "threadId"] {
+            for value in ["", "other"] {
+                var different = text; different["metadata"][field] = .string(value)
+                XCTAssertEqual(ChatPresentation.displayRows([media, different]).count, 2)
+            }
+        }
+        var other = text; other["conversationId"] = .string("other")
+        XCTAssertEqual(ChatPresentation.displayRows([media, other]).count, 2)
+        var wake = text; wake["metadata"]["wakeRunId"] = .string("wake")
+        XCTAssertEqual(ChatPresentation.displayRows([media, wake]).count, 2)
+        var user = text; user["role"] = .string("user")
+        XCTAssertEqual(ChatPresentation.displayRows([media, user, text]).count, 3)
+        var voice = media; voice["metadata"]["voiceMessage"] = .bool(true)
+        XCTAssertEqual(ChatPresentation.displayRows([voice, text]).count, 2)
+        var second = text; second["id"] = .string("second")
+        XCTAssertEqual(ChatPresentation.displayRows([media, text, second]).count, 2)
+        var question = sharedReply("question"); question["role"] = .string("tool"); question["metadata"]["userInput"] = .object(["status": .string("pending")])
+        XCTAssertEqual(ChatPresentation.displayRows([media, question, text]).count, 2)
+        var userMedia = media; userMedia["role"] = .string("user"); userMedia["content"] = .string("My caption")
+        let row = ChatPresentation.displayRows([userMedia])[0]
+        XCTAssertEqual(row.presentedMessage, userMedia)
+    }
+
     func testCommentaryIsCollapsedIntoMatchingReplyWithoutHidingFinalText() {
         let commentary: JSONValue = .object(["id": .string("progress"), "role": .string("agent"), "content": .string("Checking books"), "metadata": .object(["phase": .string("commentary"), "turnId": .string("t")])])
         let reply: JSONValue = .object(["id": .string("final"), "role": .string("agent"), "content": .string("Read this book"), "metadata": .object(["phase": .string("final_answer"), "turnId": .string("t")])])

@@ -4,6 +4,22 @@ import SafariServices
 @testable import Vesper
 
 @MainActor final class SharedContentTests: XCTestCase {
+    func testMusicSeekClampsToDurationAndRejectsUnknownOrInvalidTimes() throws {
+        XCTAssertEqual(try MusicPlayer.seekPosition(45, duration: 180), 45)
+        XCTAssertEqual(try MusicPlayer.seekPosition(500, duration: 180), 180)
+        XCTAssertEqual(try MusicPlayer.seekPosition(0, duration: 180), 0)
+        for value in [-1, Double.nan, Double.infinity] { XCTAssertThrowsError(try MusicPlayer.seekPosition(value, duration: 180)) }
+        for duration in [0, -1, Double.nan, Double.infinity] { XCTAssertThrowsError(try MusicPlayer.seekPosition(45, duration: duration)) }
+    }
+    func testMusicCommandRejectsMissingOrStalePlaybackInsteadOfClaimingSuccess() async {
+        let player = MusicPlayer()
+        let result = await player.applyControl(.object(["id": .string("seek-fixture"), "action": .string("seek"), "trackId": .string("missing"), "positionSeconds": .number(30)]))
+        XCTAssertEqual(result["applied"], .bool(false))
+        XCTAssertFalse(result["error"].string.isEmpty)
+        let retried = await player.applyControl(.object(["id": .string("seek-fixture"), "action": .string("seek")]))
+        XCTAssertEqual(retried, result)
+    }
+
     func testMarkdownAndBareLinksKeepDestinations() {
         let text = "[Expo](https://github.com/expo/expo) https://github.com/expo/expo.\n[https://example.com](https://example.org/path?q=1)"
         XCTAssertEqual(ChatMarkdownText.render(text).runs.compactMap { $0.link?.absoluteString },

@@ -259,14 +259,20 @@ private struct MusicLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var tab = "mine"
     @State private var query = ""
+    @State private var selectedVesperPlaylistID: String?
+    @State private var creatingPlaylist = false
+    @State private var playlistName = ""
+    @State private var playlistBusy = false
     var body: some View {
         NavigationStack {
             List {
                 if !catalog.message.isEmpty { Text(catalog.message).font(.caption).foregroundStyle(VesperTheme.muted) }
-                if catalog.collection != .null { collection }
+                if let playlist = selectedVesperPlaylist { vesperCollection(playlist) }
+                else if catalog.collection != .null { collection }
                 else {
                     Picker("Music", selection: $tab) { Text("My Music").tag("mine"); Text("Discover").tag("discover") }.pickerStyle(.segmented)
                     if tab == "mine" {
+                        vesperPlaylists
                         playlists
                     }
                     else { search }
@@ -290,11 +296,99 @@ private struct MusicLibraryView: View {
                     }
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 }
+                .alert("New Vesper playlist", isPresented: $creatingPlaylist) {
+                    TextField("Playlist name", text: $playlistName)
+                    Button("Cancel", role: .cancel) { }
+                    Button("Create") {
+                        let name = playlistName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Task { await playlistTool("music_playlist_create", arguments: .object(["name": .string(name), "requestId": .string(UUID().uuidString)])) }
+                    }.disabled(playlistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
                 .task {
+                    await refreshPlaylists()
                     catalog.connected = MusicAuthorization.currentStatus == .authorized
                     if catalog.connected { await catalog.refresh(player: player) }
                 }
         }.presentationDragIndicator(.visible)
+    }
+    private var savedPlaylists: [JSONValue] { store.document("musicPlaylists").array }
+    private var selectedVesperPlaylist: JSONValue? { savedPlaylists.first { $0.id == selectedVesperPlaylistID } }
+    private var vesperPlaylists: some View {
+        Section {
+            if savedPlaylists.isEmpty { Text("Ask Rowan to make a playlist, or tap + to create one.").font(.subheadline).foregroundStyle(VesperTheme.muted) }
+            ForEach(savedPlaylists) { playlist in
+                Button { selectedVesperPlaylistID = playlist.id } label: {
+                    HStack(spacing: 12) {
+                        Artwork(url: ChatMusicShare.coverURL(playlist["tracks"].array.first ?? .null))
+                            .frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(playlist["name"].string).font(.subheadline)
+                            Text("\(playlist["tracks"].array.count) songs").font(.caption).foregroundStyle(VesperTheme.muted)
+                        }
+                        Spacer(); Image(systemName: "chevron.right").font(.caption)
+                    }.foregroundStyle(VesperTheme.ink)
+                }.disabled(playlistBusy)
+            }
+        } header: {
+            HStack {
+                Text("Vesper playlists"); Spacer()
+                Button { playlistName = ""; creatingPlaylist = true } label: { Image(systemName: "plus").frame(width: 36, height: 32) }
+                    .accessibilityLabel("Create Vesper playlist")
+            }.textCase(nil).buttonStyle(.borderless).disabled(playlistBusy)
+        }
+    }
+    private func vesperCollection(_ playlist: JSONValue) -> some View {
+        Section {
+            Button { selectedVesperPlaylistID = nil } label: { Label("Back", systemImage: "chevron.left") }
+            HStack {
+                Text(playlist["name"].string).font(.headline); Spacer()
+                Button {
+                    Task {
+                        await playlistTool("music_playlist_play", arguments: .object(["playlistId": .string(playlist.id)]), playback: true)
+                    }
+                } label: { Image(systemName: "play.fill").frame(width: 44, height: 44) }
+                    .buttonStyle(.borderless).accessibilityLabel("Play playlist").disabled(playlistBusy || playlist["tracks"].array.isEmpty)
+            }
+            if playlist["tracks"].array.isEmpty { Text("Find songs in Discover, then use Add to playlist.").foregroundStyle(VesperTheme.muted) }
+            ForEach(playlist["tracks"].array) { track in
+                Button { Task { await catalog.prepare([track], store: store, player: player, append: true) } } label: {
+                    MusicTrackRow(track: track, active: player.track.id == track.id)
+                }.buttonStyle(.plain).disabled(playlistBusy)
+            }
+        }
+    }
+    private func refreshPlaylists() async {
+        do {
+            let result = try await store.api.request("/api/codex/tools", method: "POST", body: .object(["name": .string("music_playlist_list"), "arguments": .object([:])]))
+            store.documents["musicPlaylists"] = result["result"]["playlists"]
+        } catch { catalog.message = error.localizedDescription }
+    }
+    private func playlistTool(_ name: String, arguments: JSONValue, playback: Bool = false) async {
+        guard !playlistBusy else { return }
+        playlistBusy = true; defer { playlistBusy = false }
+        do {
+            let response = try await store.api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": arguments]))
+            if playback {
+                let result = await player.applyControl(response["result"]["command"])
+                if !result["pending"].bool && !result["applied"].bool { throw ServiceError(message: result["error"].string) }
+            }
+            await refreshPlaylists()
+        } catch { catalog.message = error.localizedDescription }
+    }
+    private func addToPlaylist(_ track: JSONValue) -> some View {
+        Menu {
+            if savedPlaylists.isEmpty { Text("Create a Vesper playlist first") }
+            ForEach(savedPlaylists) { playlist in
+                Button(playlist["name"].string) {
+                    // The searched/local Apple Music metadata must be available to the shared tool.
+                    Task {
+                        guard await store.upsert("music", item: track) else { catalog.message = "Could not save this song for the playlist."; return }
+                        await playlistTool("music_playlist_add", arguments: .object(["playlistId": .string(playlist.id), "trackId": .string(track.id)]))
+                    }
+                }
+            }
+        } label: { Image(systemName: "text.badge.plus").frame(width: 44, height: 44) }
+            .accessibilityLabel("Add to Vesper playlist").disabled(playlistBusy)
     }
     private var playlists: some View {
         Section {
@@ -374,6 +468,7 @@ private struct MusicLibraryView: View {
             ForEach(catalog.collection["tracks"].array) { track in
                 HStack {
                     Button { Task { await catalog.prepare([track], store: store, player: player, append: true) } } label: { MusicTrackRow(track: track, active: player.track.id == track.id) }.buttonStyle(.plain)
+                    addToPlaylist(track)
                     Button { Task { await catalog.prepare([track], store: store, player: player, append: true, autoplay: false) } } label: { Image(systemName: "plus").frame(width: 44, height: 44) }.buttonStyle(.borderless).accessibilityLabel("Add to queue")
                 }.disabled(catalog.busy)
             }

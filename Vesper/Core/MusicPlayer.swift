@@ -30,6 +30,8 @@ import SwiftUI
     private var timer: Timer?
     private var selection = UUID()
     private var lastControlID = ""
+    private var lastControlOutcome: JSONValue = .null
+    private var processingControlID = ""
     private var pollingControl = false
     private var lastSyncAt = Date.distantPast
     private var lastSyncTrack = ""
@@ -256,9 +258,66 @@ import SwiftUI
         let index = tracks.firstIndex { $0.id == track.id } ?? 0
         select(tracks[(index + delta + tracks.count) % tracks.count])
     }
+    static func seekPosition(_ value: Double, duration: Double) throws -> Double {
+        guard value.isFinite, value >= 0, duration.isFinite, duration > 0 else {
+            throw ServiceError(message: "Choose a non-negative playback time for a loaded song with a known duration.")
+        }
+        return min(value, duration)
+    }
     func seek(_ value: Double) {
-        native.currentPlaybackTime = value
+        guard !resolving, loadedTrackID == track.id, !loadedTrackID.isEmpty,
+              let target = try? Self.seekPosition(value, duration: duration) else { return }
+        native.currentPlaybackTime = target
         synchronize()
+    }
+    func applyControl(_ command: JSONValue) async -> JSONValue {
+        guard !command.id.isEmpty else { return .object(["applied": .bool(false), "error": .string("Missing music command ID.")]) }
+        if command.id == lastControlID { return lastControlOutcome }
+        guard processingControlID.isEmpty else { return .object(["pending": .bool(true)]) }
+        processingControlID = command.id
+        defer { processingControlID = "" }
+        let outcome: JSONValue
+        do {
+            switch command["action"].string {
+            case "seek":
+                synchronize()
+                guard !resolving, !loadedTrackID.isEmpty, loadedTrackID == track.id else { throw ServiceError(message: "Wait for a song to finish loading before changing its progress.") }
+                guard command["trackId"].string == track.id else { throw ServiceError(message: "The song changed before this progress request arrived. Read the current song again.") }
+                guard case .number(let seconds) = command["positionSeconds"] else { throw ServiceError(message: "Supply positionSeconds as a number.") }
+                let target = try Self.seekPosition(seconds, duration: duration)
+                seek(target)
+                guard abs(position - target) <= 1 else { throw ServiceError(message: "The device did not confirm the requested playback position.") }
+            case "play_track":
+                let shared = command["track"]
+                guard shared.id == command["trackId"].string, shared["source"].string == "appleMusic", !shared["appleMusicId"].string.isEmpty else { throw ServiceError(message: "The command contains no playable Apple Music song.") }
+                let queue = command["queue"].array
+                setQueue(queue.isEmpty ? [shared] : queue)
+                select(shared)
+                let requested = selection
+                await playTask?.value
+                guard selection == requested, loadedTrackID == shared.id, error == nil else { throw ServiceError(message: error ?? "Playback changed before this song finished loading.") }
+            case "play":
+                guard track != .null else { throw ServiceError(message: "Choose a song before resuming playback.") }
+                play(); let requested = selection
+                await playTask?.value
+                guard selection == requested, error == nil else { throw ServiceError(message: error ?? "Playback was interrupted.") }
+            case "pause": pause()
+            case "next", "previous":
+                guard !tracks.isEmpty, !resolving else { throw ServiceError(message: "No loaded queue is available to change songs.") }
+                next(command["action"].string == "next" ? 1 : -1)
+                await playTask?.value
+                if let error { throw ServiceError(message: error) }
+            default: throw ServiceError(message: "Unsupported music command.")
+            }
+            // Apple playback can publish its new state shortly after accepting the command.
+            if command["action"].string != "seek" { try await Task.sleep(for: .milliseconds(250)) }
+            synchronize()
+            outcome = .object(["applied": .bool(true), "playback": liveContext])
+        } catch {
+            outcome = .object(["applied": .bool(false), "error": .string(error.localizedDescription), "playback": liveContext])
+        }
+        lastControlID = command.id; lastControlOutcome = outcome
+        return outcome
     }
     static func playableTracks(_ tracks: [JSONValue]) -> [JSONValue] {
         var seen = Set<String>()
@@ -307,27 +366,13 @@ import SwiftUI
             let result = try await store.api.request("/api/state?key=musicControl")
             let command = result["value"]
             guard !Task.isCancelled, !command.id.isEmpty, command["processedAt"].string.isEmpty else { return }
-            if command.id != lastControlID {
-                switch command["action"].string {
-                case "play": play()
-                case "pause": pause()
-                case "next": guard !tracks.isEmpty else { return }; next(1)
-                case "previous": guard !tracks.isEmpty else { return }; next(-1)
-                case "play_track":
-                    let id = command["trackId"].string
-                    let shared = command["track"]
-                    guard let song = (tracks + library + [shared]).first(where: {
-                        ($0.id == id || $0["appleMusicId"].string == id) && $0["source"].string == "appleMusic" && !$0["appleMusicId"].string.isEmpty
-                    }) else { return }
-                    select(song)
-                default: return
-                }
-                lastControlID = command.id
-            }
+            let outcome = await applyControl(command)
+            guard !outcome["pending"].bool else { return }
             _ = await store.mutate("musicControl", reportErrors: false) { current in
                 guard current.id == command.id else { return current }
                 var updated = current
                 updated["processedAt"] = .string(isoNow())
+                updated["deviceResult"] = outcome
                 return updated
             }
         } catch { /* A later foreground refresh can retry. */ }

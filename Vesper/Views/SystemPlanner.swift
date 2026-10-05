@@ -153,6 +153,8 @@ import EventKitUI
 }
 
 struct SystemPlannerView: View {
+    var reminderOnly: Bool? = nil
+    @Environment(\.scenePhase) private var phase
     @StateObject private var planner = SystemPlanner.shared
     @State private var selectedEvent: EKEvent?
     @State private var selectedReminder: EKReminder?
@@ -165,30 +167,52 @@ struct SystemPlannerView: View {
     @State private var end = Date().addingTimeInterval(3600)
     @State private var saving = false
     var body: some View {
-        List {
-            Section("Permissions") {
-                Button("Allow Calendar access") { Task { await planner.authorize(reminders: false) } }
-                Button("Allow Reminders access") { Task { await planner.authorize(reminders: true) } }
-                Text("These are your iPhone calendars and reminder lists. When you ask Rowan to read your calendar, a seven-day event summary is sent to the chat service and becomes part of the conversation. Rowan can also create events and reminders when you ask in chat. Only the details you provide and the saved item receipt are sent for writes. This requires the native app to be connected; it does not run from the remote wake service.").font(.caption)
-            }
-            if let error = planner.error { Text(error).foregroundStyle(.red).font(.caption) }
-            Section("Calendar · next 7 days") {
-                ForEach(planner.events, id: \.calendarItemIdentifier) { item in
-                    Button { selectedEvent = item; editingEvent = true } label: { VStack(alignment: .leading) { Text(item.title ?? "Event"); Text(item.startDate.formatted()).font(.caption); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) } }.disabled(!item.calendar.allowsContentModifications)
-                }
-                if planner.events.isEmpty { Text("No events available.").foregroundStyle(.secondary) }
-            }
-            Section("Incomplete reminders") {
-                ForEach(planner.reminders, id: \.calendarItemIdentifier) { item in
-                    HStack { Button { Task { await planner.complete(item) } } label: { Image(systemName: "circle") }.accessibilityLabel("Complete reminder")
-                        Button { selectedReminder = item; editingReminder = true } label: { VStack(alignment: .leading) { Text(item.title ?? "Reminder"); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) } }.disabled(!item.calendar.allowsContentModifications)
+        PermissionPage(title: reminderOnly == true ? "Reminders" : reminderOnly == false ? "Calendar" : "Calendar & Reminders") {
+            if reminderOnly != true { accessPanel(reminders: false) }
+            if reminderOnly != false { accessPanel(reminders: true) }
+            if let error = planner.error { Text(error).foregroundStyle(.red).font(.footnote) }
+            if reminderOnly != true {
+                HStack { Text("Next 7 days").font(.headline); Spacer(); Text("\(planner.events.count)").foregroundStyle(VesperTheme.muted) }.padding(.top, 8)
+                PermissionPanel {
+                    if planner.events.isEmpty { Text("No events available.").foregroundStyle(VesperTheme.muted) }
+                    ForEach(Array(planner.events.enumerated()), id: \.element.calendarItemIdentifier) { index, item in
+                        if index > 0 { Divider() }
+                        Button { selectedEvent = item; editingEvent = true } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.title ?? "Event").font(.system(size: 16, weight: .medium))
+                                    Text(item.startDate.formatted()).font(.footnote).foregroundStyle(VesperTheme.muted)
+                                    Text(item.calendar.title).font(.caption).foregroundStyle(VesperTheme.muted)
+                                }
+                                Spacer()
+                                Image(systemName: item.calendar.allowsContentModifications ? "chevron.right" : "lock").font(.caption).foregroundStyle(VesperTheme.muted)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain).disabled(!item.calendar.allowsContentModifications)
                     }
                 }
-                if planner.reminders.isEmpty { Text("No reminders available.").foregroundStyle(.secondary) }
             }
-        }.navigationTitle("Calendar & Reminders").navigationBarTitleDisplayMode(.inline)
-        .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add event or reminder") }
-        .task { await planner.refresh() }.refreshable { await planner.refresh() }
+            if reminderOnly != false {
+                HStack { Text("Incomplete reminders").font(.headline); Spacer(); Text("\(planner.reminders.count)").foregroundStyle(VesperTheme.muted) }.padding(.top, 8)
+                PermissionPanel {
+                    if planner.reminders.isEmpty { Text("No reminders available.").foregroundStyle(VesperTheme.muted) }
+                    ForEach(Array(planner.reminders.enumerated()), id: \.element.calendarItemIdentifier) { index, item in
+                        if index > 0 { Divider() }
+                        HStack(spacing: 12) {
+                            Button { Task { await planner.complete(item) } } label: { Image(systemName: "circle").frame(width: 44, height: 44) }
+                                .accessibilityLabel("Complete reminder").disabled(!item.calendar.allowsContentModifications)
+                            Button { selectedReminder = item; editingReminder = true } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.title ?? "Reminder").font(.system(size: 16, weight: .medium))
+                                    Text(item.calendar.title).font(.caption).foregroundStyle(VesperTheme.muted)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.disabled(!item.calendar.allowsContentModifications)
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .toolbar { Button { reminder = reminderOnly ?? false; adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add event or reminder") }
+        .task(id: phase) { if phase == .active { await planner.refresh() } }.refreshable { await planner.refresh() }
         .sheet(isPresented: $editingEvent, onDismiss: { Task { await planner.refresh() } }) {
             if let selectedEvent { EventEditor(event: selectedEvent, store: planner.store) }
         }
@@ -212,6 +236,29 @@ struct SystemPlannerView: View {
             }
         }
     }
+    private func accessPanel(reminders: Bool) -> some View {
+        let entity: EKEntityType = reminders ? .reminder : .event
+        let status = EKEventStore.authorizationStatus(for: entity)
+        return PermissionPanel {
+            HStack {
+                Label(reminders ? "Reminders access" : "Calendar access", systemImage: reminders ? "checklist" : "calendar").font(.headline)
+                Spacer()
+                Text(PermissionLabels.calendar(entity)).font(.caption).foregroundStyle(VesperTheme.muted)
+            }
+            Text(reminders ? "Rowan can create tasks in your default Apple Reminders list when you ask." : "Rowan can read the next seven days and create events in your default calendar when you ask.")
+                .foregroundStyle(VesperTheme.muted)
+            if status == .notDetermined || status == .writeOnly {
+                Button("Allow access") { Task { await planner.authorize(reminders: reminders) } }.buttonStyle(PermissionActionStyle())
+            } else {
+                Button("Open iPhone Settings") { PermissionLabels.openSettings() }.buttonStyle(PermissionActionStyle())
+            }
+            DisclosureGroup("About this access") {
+                Text("Requested details and saved-item confirmations become part of your chat. Creation runs on the connected iPhone. Existing items below can be managed manually.")
+                    .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+            }.font(.subheadline)
+        }
+    }
+
 }
 
 struct EventEditor: UIViewControllerRepresentable {

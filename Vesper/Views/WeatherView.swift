@@ -212,21 +212,21 @@ struct WeatherPermissionsView: View {
     @ObservedObject private var weather = WeatherController.shared
     @Environment(\.scenePhase) private var phase
     var body: some View {
-        List {
-            Section {
+        PermissionPage(title: "Location") {
+            PermissionPanel {
                 Toggle("Use location for weather", isOn: Binding(get: { weather.enabled }, set: { weather.setEnabled($0) }))
                     .accessibilityIdentifier("weather-location-permission")
                 Text(status).font(.subheadline).foregroundStyle(VesperTheme.muted)
                 if weather.enabled && !weather.authorized {
                     if weather.authorization == .notDetermined {
-                        Button("Allow location") { weather.setEnabled(true) }
-                    } else { Button("Open iPhone Settings") { openSettings() } }
+                        Button("Allow location") { weather.setEnabled(true) }.buttonStyle(PermissionActionStyle())
+                    } else { Button("Open iPhone Settings") { openSettings() }.buttonStyle(PermissionActionStyle()) }
                 }
-            } footer: {
+            }
+            PermissionPanel {
                 Text("Uses your approximate location while Vesper is open. Coordinates rounded to about 1 km are sent to Open-Meteo to fetch weather. Turning this off stops weather location requests.")
             }
-        }.navigationTitle("Weather access").navigationBarTitleDisplayMode(.inline)
-            .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
+        }
             .onChange(of: phase) { _, value in if value == .active { weather.refresh() } }
     }
     private var status: String {

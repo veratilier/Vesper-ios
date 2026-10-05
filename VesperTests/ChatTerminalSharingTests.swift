@@ -69,6 +69,21 @@ import SwiftUI
         }
     }
 
+    func testPermissionLayoutsAcrossThemes() async throws {
+        let original = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer {
+            if let original { UserDefaults.standard.set(original, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        for palette in ["white", "black"] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let scheme: ColorScheme = palette == "black" ? .dark : .light
+            _ = try await renderFixture(AnyView(NavigationStack { DevicePermissionsView() }.environment(\.scenePhase, .active).preferredColorScheme(scheme)), name: "Permissions " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { SystemPlannerView(reminderOnly: false) }.preferredColorScheme(scheme)), name: "Calendar permission " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { HealthView() }.preferredColorScheme(scheme)), name: "Health permission " + palette)
+        }
+    }
+
     private func renderFixture(_ content: AnyView, name: String) async throws -> UIImage {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.windows.first { $0.isKeyWindow }

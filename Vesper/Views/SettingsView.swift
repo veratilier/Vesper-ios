@@ -3,6 +3,8 @@ import UserNotifications
 import AuthenticationServices
 import CryptoKit
 import Security
+import EventKit
+import HealthKit
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
@@ -21,15 +23,100 @@ struct SettingsView: View {
         GlassCard { HStack(spacing: 14) { Image(systemName: icon).frame(width: 42, height: 42).background(VesperTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(title).font(.headline); Text(subtitle).font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right").font(.caption) } }
     }
 }
-struct DevicePermissionsView: View {
+// Shared permission layout keeps the navigation title, cards and actions consistent.
+struct PermissionPage<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    @AppStorage("vesperPalette") private var palette = "blue"
     var body: some View {
-        List {
-            NavigationLink { NotificationSettingsView() } label: { Label("Notifications", systemImage: "bell") }
-            NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
-            NavigationLink { SystemPlannerView() } label: { Label("Calendar & Reminders", systemImage: "calendar") }
-            NavigationLink { WeatherPermissionsView() } label: { Label("Weather", systemImage: "cloud.sun") }
-        }.navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
-            .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) { content }
+                .font(.system(size: 15)).padding(20).padding(.bottom, 90)
+                .frame(maxWidth: 720).frame(maxWidth: .infinity)
+        }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .foregroundStyle(VesperTheme.ink)
+            .background(palette == "black" ? Color(white: 0.06) : Color(red: 0.96, green: 0.96, blue: 0.95))
+    }
+}
+struct PermissionPanel<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) { content }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.muted.opacity(0.13), lineWidth: 1))
+    }
+}
+struct PermissionActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
+            .padding(.horizontal, 18).frame(minHeight: 44)
+            .background(VesperTheme.ink, in: Capsule()).opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+enum PermissionLabels {
+    static func calendar(_ entity: EKEntityType) -> String {
+        switch EKEventStore.authorizationStatus(for: entity) {
+        case .fullAccess: return "Allowed"
+        case .writeOnly: return "Write only"
+        case .denied: return "Off"
+        case .restricted: return "Restricted"
+        case .notDetermined: return "Not requested"
+        default: return "Check Settings"
+        }
+    }
+    static func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+    }
+}
+struct DevicePermissionsView: View {
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ObservedObject private var weather = WeatherController.shared
+    @State private var notifications = "Checking…"
+    @State private var calendar = "Checking…"
+    @State private var reminders = "Checking…"
+    var body: some View {
+        PermissionPage(title: "Permissions") {
+            Text("Choose what Vesper can access on this iPhone.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 12) {
+                card("Location", icon: "location.fill", status: weather.authorized ? "Allowed" : "Not allowed", detail: "Use your location for local weather.") { WeatherPermissionsView() }
+                card("Health", icon: "heart.fill", status: HKHealthStore.isHealthDataAvailable() ? "Manage access" : "Unavailable", detail: "Choose which health summaries Rowan may read.") { HealthView() }
+                card("Calendar", icon: "calendar", status: calendar, detail: "Read upcoming events and add plans from chat.") { SystemPlannerView(reminderOnly: false) }
+                card("Reminders", icon: "checklist", status: reminders, detail: "Let Rowan add tasks to Apple Reminders.") { SystemPlannerView(reminderOnly: true) }
+                card("Notifications", icon: "bell.fill", status: notifications, detail: "Receive date and synced letter reminders.") { NotificationSettingsView() }
+            }
+        }.task(id: phase) {
+            guard phase == .active else { return }
+            calendar = PermissionLabels.calendar(.event); reminders = PermissionLabels.calendar(.reminder)
+            let value = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+            switch value {
+            case .authorized: notifications = "Allowed"
+            case .provisional, .ephemeral: notifications = "Limited"
+            case .denied: notifications = "Off"
+            default: notifications = "Not requested"
+            }
+        }
+    }
+    private func card<Destination: View>(_ title: String, icon: String, status: String, detail: String, @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink(destination: destination()) {
+            PermissionPanel {
+                HStack(alignment: .top) {
+                    Image(systemName: icon).font(.system(size: 21))
+                    Spacer(minLength: 4)
+                    Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(VesperTheme.muted).multilineTextAlignment(.trailing)
+                }
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(title).font(.system(size: 18, weight: .semibold))
+                    Text(detail).font(.system(size: 13)).foregroundStyle(VesperTheme.muted).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Text("Settings").font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
+                    .padding(.horizontal, 16).frame(height: 38).background(VesperTheme.ink, in: Capsule())
+            }.frame(minHeight: typeSize.isAccessibilitySize ? 240 : 225)
+        }.buttonStyle(.plain)
     }
 }
 struct ConnectionView: View {
@@ -840,20 +927,18 @@ struct NotificationSettingsView: View {
         }
     }
     var body: some View {
-        Page(title: "Notifications", subtitle: "Choose how Vesper can notify you.") {
-            GlassCard { VStack(alignment: .leading, spacing: 18) {
+        PermissionPage(title: "Notifications") {
+            PermissionPanel { VStack(alignment: .leading, spacing: 18) {
                 Text(statusText).font(.headline)
                 Text("Allows date reminders and opening reminders for letters synced to this phone, even when the app is closed. Open Vesper to sync newly received letters. Remote push for unsynced letters and new chat replies is not connected yet.").font(.subheadline).foregroundStyle(VesperTheme.muted)
                 if loaded && authorization == .notDetermined {
                     Button { Task { await requestPermission() } } label: {
                         Text(busy ? "Requesting…" : "Allow notifications")
-                            .foregroundStyle(.white).padding(.horizontal, 20).frame(minHeight: 44)
-                            .background(VesperTheme.ink, in: Capsule())
-                    }.buttonStyle(.plain).disabled(busy)
+                    }.buttonStyle(PermissionActionStyle()).disabled(busy)
                 } else if loaded {
                     Button("Open notification settings") {
                         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(PermissionActionStyle())
                 }
                 if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
             } }

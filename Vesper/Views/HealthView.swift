@@ -465,19 +465,39 @@ enum SleepDetails {
 struct HealthView: View {
     @StateObject private var reader = HealthReader()
     var body: some View {
-        Page(title: "Health", subtitle: "A little care for your day.") {
-            GlassCard { VStack(alignment: .leading, spacing: 14) {
-                Text("Choose which Health data Vesper may read. Rowan can request authorized summaries through the native Health tool in chat. Only requested summaries are sent to the Vesper chat service and become part of the conversation.").font(.subheadline)
-                Button { Task { await reader.connect() } } label: { Text("Choose Health permissions").foregroundStyle(.white).padding(14).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(reader.busy || !reader.available)
-                Button("Read all Health categories on this iPhone") { Task { await reader.refresh(requestedIDs: ["all"]) } }.disabled(reader.busy || !reader.available)
-                Button("Read latest sleep details") { Task { await reader.refresh(requestedIDs: ["sleep_details"]) } }.disabled(reader.busy || !reader.available)
-                if !reader.available { Text("HealthKit is not available on this device.") }
-                Text("No readable data can mean no recorded samples or no read permission. Vesper cannot tell which; change access in the Health app.").font(.caption).foregroundStyle(VesperTheme.muted)
+        PermissionPage(title: "Health") {
+            PermissionPanel {
+                Label("Health access", systemImage: "heart.fill").font(.headline)
+                Text("Choose the categories Vesper may read. Rowan can use the summaries you request in chat.").foregroundStyle(VesperTheme.muted)
+                Button("Choose permissions") { Task { await reader.connect() } }
+                    .buttonStyle(PermissionActionStyle()).disabled(reader.busy || !reader.available)
+                DisclosureGroup("About your data") {
+                    Text("Only requested summaries are sent to the chat service. Apple does not reveal whether read access was denied: no data may also mean no recorded samples. Manage access in the Health app.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+                }.font(.subheadline)
+                if !reader.available { Text("Health is unavailable on this device.").font(.footnote) }
+            }
+            PermissionPanel {
+                Text("Read a summary").font(.headline)
+                Button("Latest sleep details") { Task { await reader.refresh(requestedIDs: ["sleep_details"]) } }.disabled(reader.busy || !reader.available)
+                Divider()
+                Button("All Health categories") { Task { await reader.refresh(requestedIDs: ["all"]) } }.disabled(reader.busy || !reader.available)
                 if reader.busy { ProgressView() }
-                if !reader.error.isEmpty { Text(reader.error).font(.caption).foregroundStyle(.red) }
-            } }
-            ForEach(Array(reader.rows.enumerated()), id: \.offset) { _, row in GlassCard { VStack(alignment: .leading, spacing: 8) { Text(row.0).font(.caption).foregroundStyle(VesperTheme.muted); Text(row.1).font(.title3) }.frame(maxWidth: .infinity, alignment: .leading) } }
-            if let updated = reader.updated { Text("Read at " + updated.formatted()).font(.caption); Button("Refresh") { Task { await reader.refresh(requestedIDs: reader.requestedIDs) } }.disabled(reader.busy) }
+                if !reader.error.isEmpty { Text(reader.error).font(.footnote).foregroundStyle(.red) }
+            }
+            if !reader.rows.isEmpty {
+                Text("Latest results").font(.headline).padding(.top, 8)
+                PermissionPanel {
+                    ForEach(Array(reader.rows.enumerated()), id: \.offset) { index, row in
+                        if index > 0 { Divider() }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(row.0).font(.subheadline).foregroundStyle(VesperTheme.muted)
+                            Text(row.1).font(.system(size: 15)).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let updated = reader.updated { Text("Read at " + updated.formatted()).font(.caption).foregroundStyle(VesperTheme.muted) }
+                }
+            }
         }
     }
 }

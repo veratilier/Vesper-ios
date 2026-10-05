@@ -103,7 +103,7 @@ struct StickerLibraryView: View {
                     HStack {
                         PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Add photos", systemImage: "photo.badge.plus") }
                         Button { importing = true } label: { Label("Add files", systemImage: "folder.badge.plus") }
-                    }.buttonStyle(.bordered).disabled(busy)
+                    }.buttonStyle(VesperGlassButtonStyle()).disabled(busy)
                 }
                 if busy || loading { ProgressView(busy ? "Importing…" : "Loading…") }
                 if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }

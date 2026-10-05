@@ -21,13 +21,52 @@ enum VesperTheme {
     static var surface: Color { palette.surface }
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
+
+/// The same regular Liquid Glass used by the system tab bar, shared by app chrome.
+extension View {
+    @ViewBuilder func vesperButtonStyle() -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) { self.buttonStyle(.glass) }
+        else { self.buttonStyle(VesperGlassButtonStyle()) }
+        #else
+        self.buttonStyle(VesperGlassButtonStyle())
+        #endif
+    }
+    @ViewBuilder func vesperGlass<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+        }
+        #else
+        self.background(.ultraThinMaterial, in: shape)
+            .overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+        #endif
+    }
+}
+struct VesperGlassButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.padding(.horizontal, 14).padding(.vertical, 8)
+            .frame(minHeight: 44).vesperGlass(in: Capsule(), interactive: true)
+            .opacity(configuration.isPressed ? 0.65 : 1)
+    }
+}
+struct VesperIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.frame(width: 32, height: 32)
+            .vesperGlass(in: Circle(), interactive: true)
+            .opacity(configuration.isPressed ? 0.65 : 1)
+    }
+}
 struct AppearancePicker: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     @AppStorage("vesperPalette") private var palette = "blue"
     @State private var showing = false
     @AppStorage("iconChangeError") private var iconError = ""
     var body: some View {
-        Button { showing = true } label: { Image(systemName: "paintpalette") }
+        Button { showing = true } label: { Image(systemName: "paintpalette") }.buttonStyle(.plain)
             .accessibilityLabel("Appearance")
             .popover(isPresented: $showing) {
                 VStack(alignment: .leading, spacing: 22) {
@@ -85,7 +124,7 @@ struct Page<Content: View>: View {
                 }.padding(.vertical, 8)
                 content
             }.padding(20).frame(maxWidth: 780).frame(maxWidth: .infinity)
-        }.scrollDismissesKeyboard(.interactively)
+        }.scrollDismissesKeyboard(.interactively).vesperButtonStyle()
     }
 }
 struct EmptyCard: View {

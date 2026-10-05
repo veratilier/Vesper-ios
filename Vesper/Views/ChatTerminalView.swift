@@ -97,7 +97,7 @@ struct ChatTerminalView: View {
                 }
                 if connected && !running {
                     Button("Open this chat in terminal") { perform(endpoint + "/start") }
-                        .buttonStyle(.bordered).disabled(busy)
+                        .buttonStyle(VesperGlassButtonStyle()).disabled(busy)
                 }
                 HStack(spacing: 8) {
                     ForEach(["Esc", "Tab", "^C", "←", "↑", "↓", "→", "↵"], id: \.self) { label in

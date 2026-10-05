@@ -42,12 +42,18 @@ struct MusicView: View {
     @EnvironmentObject private var player: MusicPlayer
     @StateObject private var catalog = MusicCatalog()
     @State private var sheet: MusicSheet?
-    @State private var showingLyrics = false
+    @State private var showingLyrics: Bool
     @AppStorage("music.lyricsFrostedBackground") private var lyricsFrostedBackground = true
     private enum MusicSheet: String, Identifiable { case library, queue; var id: String { rawValue } }
+    init(showingLyrics: Bool = false) { _showingLyrics = State(initialValue: showingLyrics) }
+    #if DEBUG
+    private var dockObserver: ((CGRect) -> Void)?
+    init(showingLyrics: Bool, observeDock: @escaping (CGRect) -> Void) {
+        _showingLyrics = State(initialValue: showingLyrics); dockObserver = observeDock
+    }
+    #endif
     var body: some View {
         GeometryReader { geometry in
-            ScrollView {
                 VStack(spacing: 12) {
                     HStack {
                         Spacer()
@@ -55,37 +61,53 @@ struct MusicView: View {
                             Image(systemName: playbackModeIcon)
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .vesperGlass(in: Circle(), interactive: true)
                         }
                         .accessibilityLabel("Playback mode: \(playbackModeName). Tap to change")
                         Button { sheet = .library } label: {
                             Image(systemName: "books.vertical")
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .overlay(Circle().stroke(VesperTheme.accent.opacity(0.25)))
+                                .vesperGlass(in: Circle(), interactive: true)
                         }
                         .accessibilityLabel("My Music")
                     }
-                    let artworkSize = max(220, min(geometry.size.width - 52, 460))
-                    let lyricsHeight = max(artworkSize + 100, min(geometry.size.height - 210, 650))
                     TabView(selection: $showingLyrics) {
-                        NowPlayingArtwork(artwork: player.currentArtwork,
-                                          url: player.track["cover"].string, size: artworkSize)
-                            .tag(false)
+                        GeometryReader { area in
+                            let size = max(100, min(area.size.width, area.size.height - 110, 460))
+                            ScrollView {
+                                VStack(spacing: 16) {
+                                    NowPlayingArtwork(artwork: player.currentArtwork,
+                                                      url: player.track["cover"].string, size: size)
+                                        .frame(maxWidth: .infinity)
+                                    trackCopy
+                                }.padding(.vertical, 8)
+                            }
+                        }.tag(false)
                         lyricsPanel.tag(true)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(width: artworkSize, height: showingLyrics ? lyricsHeight : artworkSize)
-                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
                     .accessibilityHint("Swipe sideways to switch between the album cover and lyrics")
-                    if !showingLyrics { trackCopy }
-                    progress
-                    controls
-                }.padding(.horizontal, 26).padding(.top, 4).padding(.bottom, 40)
+                    VStack(spacing: 12) { progress; controls }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("music-playback-dock")
+                        #if DEBUG
+                        .background {
+                            if let dockObserver {
+                                GeometryReader { area in
+                                    let frame = area.frame(in: .global)
+                                    Color.clear.onAppear { dockObserver(frame) }.onChange(of: frame) { _, value in dockObserver(value) }
+                                }
+                            }
+                        }
+                        #endif
+                }.padding(.horizontal, 26).padding(.top, 4).padding(.bottom, 20)
                     .frame(maxWidth: 580).frame(maxWidth: .infinity)
-            }
         }
+        .buttonStyle(.plain)
         .task { player.configure(store); player.updateLibrary(store.document("music").array) }
         .onChange(of: store.document("music")) { _, value in player.updateLibrary(value.array) }
         .sheet(item: $sheet) { item in
@@ -125,6 +147,7 @@ struct MusicView: View {
                     Image(systemName: lyricsFrostedBackground ? "square.on.square.fill" : "square.dashed")
                         .font(.system(size: 19))
                         .frame(width: 44, height: 44)
+                        .vesperGlass(in: Circle(), interactive: true)
                 }
                 .accessibilityLabel(lyricsFrostedBackground ? "Turn off frosted lyrics background" : "Turn on frosted lyrics background")
             }
@@ -204,7 +227,7 @@ struct MusicView: View {
             Spacer(minLength: 5)
             Button { player.toggle() } label: {
                 Group { if player.resolving { ProgressView() } else { Image(systemName: player.playing ? "pause" : "play").font(.system(size: 29)) } }
-                    .frame(width: 68, height: 68).background(.ultraThinMaterial, in: Circle()).overlay(Circle().stroke(.white.opacity(0.6)))
+                    .frame(width: 68, height: 68).vesperGlass(in: Circle(), interactive: true)
             }.disabled(player.tracks.isEmpty || player.resolving).accessibilityLabel(player.playing ? "Pause" : "Play")
             Spacer(minLength: 5)
             control("forward.end", label: "Next song") { player.next(1) }
@@ -214,7 +237,7 @@ struct MusicView: View {
         }.padding(.vertical, 4)
     }
     private func control(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: icon).font(.system(size: 21)).frame(width: 46, height: 46).background(.ultraThinMaterial, in: Circle()).overlay(Circle().stroke(.white.opacity(0.6))) }.accessibilityLabel(label)
+        Button(action: action) { Image(systemName: icon).font(.system(size: 21)).frame(width: 46, height: 46).vesperGlass(in: Circle(), interactive: true) }.accessibilityLabel(label)
     }
     private var queueSheet: some View {
         NavigationStack {

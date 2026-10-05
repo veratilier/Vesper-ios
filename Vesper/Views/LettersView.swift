@@ -40,7 +40,7 @@ struct LettersView: View {
                             Button("Vera’s mailbox") { mailbox = "Vera" }
                             Button("Rowan’s mailbox") { mailbox = "Rowan" }
                         } label: {
-                            Image(systemName: "tray.2").frame(width: 44, height: 44).background(.thinMaterial, in: Circle())
+                            Image(systemName: "tray.2").frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
                         }.accessibilityLabel("Switch mailbox").accessibilityIdentifier("switch-letter-mailbox")
                     }
                     Spacer()
@@ -109,7 +109,7 @@ struct LettersView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Button { open(selected) } label: {
                     Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
-                        .foregroundStyle(colors.paper).background(colors.ink, in: Capsule())
+                        .foregroundStyle(colors.ink).vesperGlass(in: Capsule(), interactive: true)
                 }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
             }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
                 .padding(.horizontal, 22).padding(.bottom, 8)
@@ -227,7 +227,7 @@ struct LettersView: View {
         }.font(.custom("Georgia", size: 12)).foregroundStyle(colors.ink.opacity(0.75))
     }
     private func action(_ title: String, perform: @escaping () -> Void) -> some View {
-        Button(action: perform) { Text(title).font(.system(size: 17, design: .serif)).foregroundStyle(colors.paper).frame(maxWidth: .infinity).padding(15).background(colors.ink, in: Capsule()) }.buttonStyle(.plain)
+        Button(action: perform) { Text(title).font(.system(size: 17, design: .serif)).foregroundStyle(colors.ink).frame(maxWidth: .infinity).padding(15).vesperGlass(in: Capsule(), interactive: true) }.buttonStyle(.plain)
     }
     private func resetSelection() { page = 0; hoverID = nil; selectedID = nil }
     private func markArrivalsSeen() {

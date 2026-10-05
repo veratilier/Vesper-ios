@@ -538,7 +538,7 @@ struct MovieRoomView: View {
                 Button { screen.active || screen.starting ? screen.stop() : screen.start() } label: {
                     Label(screen.active ? "停止分享屏幕" : screen.starting ? "Starting…" : "分享屏幕", systemImage: screen.active ? "stop.circle.fill" : "rectangle.on.rectangle")
                         .foregroundStyle(.white)
-                }.buttonStyle(.borderedProminent).tint(VesperTheme.ink)
+                }.buttonStyle(VesperGlassButtonStyle()).tint(VesperTheme.ink)
                 Text("Shares the Vesper screen automatically while this room is open. Other apps and protected video are not captured; audio is not shared.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = screen.error { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack {

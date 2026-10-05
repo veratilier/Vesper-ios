@@ -10,6 +10,7 @@ import UserNotifications
     var body: some Scene {
         WindowGroup {
             RootView().environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
+                .vesperButtonStyle()
                 .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
                 .onChange(of: palette) { _, value in ThemeIcons.apply(value) }
         }
@@ -71,7 +72,7 @@ private struct VesperGridFrames: PreferenceKey {
     }
 }
 
-private struct VesperAppGrid: View {
+struct VesperAppGrid: View {
     @Binding var editing: Bool
     let open: (Destination) -> Void
     @AppStorage("vesperAppGridOrder") private var savedOrder = ""
@@ -143,7 +144,7 @@ private struct VesperAppGrid: View {
     private func tile(_ page: Destination) -> some View {
         let icon = Image(systemName: page.icon).font(.system(size: 25, weight: .medium))
             .frame(width: 56, height: 56)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 16), interactive: true)
         return VStack(spacing: 8) {
             if editing && !reduceMotion {
                 icon.phaseAnimator([false, true]) { image, phase in
@@ -487,7 +488,7 @@ struct RootView: View {
             Spacer()
             HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); homeWordmark }
             Spacer()
-            AppearancePicker().frame(width: 44, height: 44)
+            AppearancePicker().frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
     }
     private func refreshUsage() async {
@@ -522,8 +523,7 @@ struct OpeningView: View {
                     Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().stroke(.white.opacity(0.7)))
+                        .vesperGlass(in: Capsule(), interactive: true)
                     }.buttonStyle(.plain).disabled(!ready || entering)
                     } else if store.loading {
                         ProgressView("Connecting to Vesper…")

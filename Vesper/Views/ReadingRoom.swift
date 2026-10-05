@@ -38,7 +38,7 @@ struct ReadingRoomView: View {
                     Spacer()
                     Button { adding = true } label: {
                         Image(systemName: "plus").font(.system(size: 18, weight: .semibold))
-                            .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                            .frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
                     }.accessibilityLabel("Add a book")
                 }
                 let books = store.document("readingRoom").array
@@ -69,7 +69,7 @@ struct ReadingRoomView: View {
                             }), matching: .images) {
                                 Image(systemName: "photo.badge.plus")
                                     .font(.caption.weight(.semibold)).frame(width: 34, height: 34)
-                                    .background(.regularMaterial, in: Circle())
+                                    .vesperGlass(in: Circle(), interactive: true)
                             }
                             .buttonStyle(.plain).padding(6)
                             .accessibilityLabel("Change cover for \(book["title"].string)")
@@ -474,7 +474,7 @@ private struct ReadingNoteSheet: View {
                         .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                     Text("橙色是你的批注，青色是 Rowan 的批注。选中同一段文字，可以接着写。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("保存批注", action: save).buttonStyle(.borderedProminent)
+                    Button("保存批注", action: save).buttonStyle(VesperGlassButtonStyle())
                         .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
                 }.padding(20)
             }

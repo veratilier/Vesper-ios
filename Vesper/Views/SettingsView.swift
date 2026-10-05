@@ -7,20 +7,34 @@ import EventKit
 import HealthKit
 
 struct SettingsView: View {
-    @EnvironmentObject private var store: AppStore
     var body: some View {
-        Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
-            NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
-            NavigationLink { UsageView() } label: { settingsRow("Usage & balances", subtitle: "GPT, ElevenLabs and MiniMax", icon: "chart.bar") }
-            NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Weather, health, calendar and reminders", icon: "hand.raised") }
-            NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
-            NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
-            NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
-            NavigationLink { DataSettingsView() } label: { settingsRow("Data", subtitle: "Export and privacy", icon: "archivebox") }
+        Page(title: "Settings") {
+            VStack(spacing: 0) {
+                NavigationLink { ConnectionView() } label: { settingsRow("Connection", icon: "network") }
+                separator
+                NavigationLink { UsageView() } label: { settingsRow("Usage & balances", icon: "chart.bar") }
+                separator
+                NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", icon: "hand.raised") }
+                separator
+                NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", icon: "sparkles") }
+                separator
+                NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", icon: "waveform") }
+                separator
+                NavigationLink { ToolsView() } label: { settingsRow("Tools", icon: "link") }
+                separator
+                NavigationLink { DataSettingsView() } label: { settingsRow("Data", icon: "archivebox") }
+            }.vesperGlass(in: RoundedRectangle(cornerRadius: 25)).buttonStyle(.plain)
         }.buttonStyle(.plain)
     }
-    private func settingsRow(_ title: String, subtitle: String, icon: String) -> some View {
-        GlassCard { HStack(spacing: 14) { Image(systemName: icon).frame(width: 42, height: 42).background(VesperTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(title).font(.headline); Text(subtitle).font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right").font(.caption) } }
+    private var separator: some View { Divider().padding(.leading, 62).padding(.trailing, 16) }
+    private func settingsRow(_ title: String, icon: String) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon).font(.system(size: 19)).frame(width: 30, height: 32)
+            Text(title).font(.system(size: 17, weight: .medium))
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(VesperTheme.muted)
+        }.padding(.horizontal, 16).padding(.vertical, 14).frame(minHeight: 60)
+            .contentShape(Rectangle())
     }
 }
 // Shared permission layout keeps the navigation title, cards and actions consistent.
@@ -35,7 +49,7 @@ struct PermissionPage<Content: View>: View {
                 .frame(maxWidth: 720).frame(maxWidth: .infinity)
         }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .foregroundStyle(VesperTheme.ink)
-            .background { Background() }.transparentNavigationTop()
+            .background { Background() }.transparentNavigationTop().vesperButtonStyle()
     }
 }
 struct PermissionPanel<Content: View>: View {
@@ -51,9 +65,9 @@ struct PermissionPanel<Content: View>: View {
 struct PermissionActionStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
+            .foregroundStyle(VesperTheme.ink)
             .padding(.horizontal, 18).frame(minHeight: 44)
-            .background(VesperTheme.ink, in: Capsule()).opacity(configuration.isPressed ? 0.7 : 1)
+            .vesperGlass(in: Capsule(), interactive: true).opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
 enum PermissionLabels {
@@ -114,8 +128,8 @@ struct DevicePermissionsView: View {
                 }
                 Spacer(minLength: 0)
                 Text("Settings").font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
-                    .padding(.horizontal, 16).frame(height: 34).background(VesperTheme.ink, in: Capsule())
+                    .foregroundStyle(VesperTheme.ink)
+                    .padding(.horizontal, 16).frame(height: 34).vesperGlass(in: Capsule(), interactive: true)
             }.frame(minHeight: typeSize.isAccessibilitySize ? 220 : 190)
         }.buttonStyle(.plain)
     }
@@ -130,7 +144,7 @@ struct ConnectionView: View {
                 FormField(label: "Chat address", text: $store.socketURL)
                 Text("Device token").font(.caption).foregroundStyle(VesperTheme.muted)
                 SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-                Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(store.loading)
+                Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(VesperTheme.ink).frame(maxWidth: .infinity, minHeight: 44).vesperGlass(in: Capsule(), interactive: true) }.buttonStyle(.plain).disabled(store.loading)
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
@@ -474,7 +488,7 @@ private struct WakeSaveButton: View {
                 .font(.headline)
                 .foregroundStyle(VesperTheme.ink)
                 .frame(maxWidth: .infinity, minHeight: 56)
-                .background(.regularMaterial, in: Capsule())
+                .vesperGlass(in: Capsule(), interactive: true)
                 .overlay(Capsule().strokeBorder(.white.opacity(0.6), lineWidth: 1))
                 .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
         }
@@ -657,8 +671,8 @@ struct VoiceSettingsView: View {
                 FormField(label: "Model", text: $model)
                 if provider == "MiniMax" { FormField(label: "Group ID (optional)", text: $groupID) }
                 HStack { Text("Speed"); Slider(value: $speed, in: 0.7...1.2, step: 0.05); Text(String(format: "%.2f×", speed)).font(.caption) }
-                Button("Save voice") { save() }.buttonStyle(.bordered)
-                Button(preview.speaking ? "Stop preview" : "Preview voice") { if preview.speaking { preview.stop() } else if validate() { Task { await preview.play("宝贝，我在这里。", store: store, connectionOverride: configuration) } } }.buttonStyle(.bordered)
+                Button("Save voice") { save() }.buttonStyle(VesperGlassButtonStyle())
+                Button(preview.speaking ? "Stop preview" : "Preview voice") { if preview.speaking { preview.stop() } else if validate() { Task { await preview.play("宝贝，我在这里。", store: store, connectionOverride: configuration) } } }.buttonStyle(VesperGlassButtonStyle())
                 Text("Saved in this iPhone’s Keychain and used for call replies. Preview uses your provider’s credits.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
                 if let error = preview.error { Text(error).font(.caption).foregroundStyle(.red) }

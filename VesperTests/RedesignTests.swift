@@ -18,6 +18,38 @@ private struct DesktopPalettePreview: View {
     }
 }
 
+private struct ControlsPalettePreview: View {
+    let page: String
+    var lyrics = false
+    let onDock: (CGRect) -> Void
+    @AppStorage("vesperPalette") private var paletteName = "white"
+    var body: some View {
+        TabView(selection: .constant(page == "Settings" ? 4 : 2)) {
+            Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+            Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+            if page != "Settings" { preview.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2) }
+            else { Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2) }
+            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+            if page == "Settings" { preview.tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
+            else { Text("Settings").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
+        }.vesperButtonStyle()
+            .foregroundStyle((VesperPalette(rawValue: paletteName) ?? .white).ink)
+            .tint((VesperPalette(rawValue: paletteName) ?? .white).ink)
+            .preferredColorScheme(paletteName == "black" ? .dark : .light)
+    }
+    private var preview: some View {
+        NavigationStack {
+                ZStack {
+                    Background()
+                    if page == "Music" { MusicView(showingLyrics: lyrics, observeDock: onDock) }
+                    else if page == "Settings" { SettingsView() }
+                    else { ScrollView { VesperAppGrid(editing: .constant(false), open: { _ in }).padding(18) } }
+                }.navigationTitle(page).navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+        }
+    }
+}
+
 private final class DesktopContactProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "desktop-preview.example" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -32,6 +64,46 @@ private final class DesktopContactProtocol: URLProtocol {
 }
 
 @MainActor final class RedesignTests: XCTestCase {
+    func testControlGlassAndPlaybackDockRemainAboveTheTabBar() async throws {
+        let suite = "controls-layout-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(false, forKey: "music.lyricsFrostedBackground")
+        let store = AppStore(); store.token = ""
+        let player = MusicPlayer(), chat = ChatSession()
+        player.setQueue([.object(["id": .string("preview-song"), "title": .string("天天"), "artist": .string("陶喆"), "album": .string("I'm O.K."), "duration": .number(255),
+            "lyrics": .array((0..<24).map { .object(["time": .number(Double($0 * 10)), "text": .string($0.isMultiple(of: 2) ? "我想要你在我身边" : "分享生命中的一切")]) })])])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func capture(page: String, palette: String, size: CGSize, lyrics: Bool = false) async throws -> CGRect {
+            preferences.set(palette, forKey: "vesperPalette")
+            var dock = CGRect.zero
+            let content = ControlsPalettePreview(page: page, lyrics: lyrics, onDock: { dock = $0 })
+                .environmentObject(store).environmentObject(player).environmentObject(chat).defaultAppStorage(preferences)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(origin: .zero, size: size)
+            window.rootViewController = UIHostingController(rootView: content); window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(700))
+            window.rootViewController?.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let label = "Controls-\(page)-\(palette)-\(Int(size.width))-\(lyrics ? "lyrics" : "cover")"
+            let attachment = XCTAttachment(image: image); attachment.name = label; attachment.lifetime = .keepAlways; add(attachment)
+            if page == "Music" {
+                XCTAssertGreaterThan(dock.height, 90)
+                XCTAssertLessThanOrEqual(dock.maxY, size.height - 88, "Playback controls must clear the floating tab bar")
+            }
+            return dock
+        }
+        for palette in ["white", "blue", "black"] {
+            _ = try await capture(page: "Settings", palette: palette, size: CGSize(width: 393, height: 852))
+            _ = try await capture(page: "Collection", palette: palette, size: CGSize(width: 393, height: 852))
+        }
+        for size in [CGSize(width: 393, height: 852), CGSize(width: 320, height: 668)] {
+            let cover = try await capture(page: "Music", palette: "white", size: size)
+            let lyrics = try await capture(page: "Music", palette: "white", size: size, lyrics: true)
+            XCTAssertEqual(cover.minY, lyrics.minY, accuracy: 1, "Changing to lyrics must not move playback controls")
+            XCTAssertEqual(cover.height, lyrics.height, accuracy: 1)
+        }
+    }
     func testExistingDesktopUpdatesWhenSwitchingAllThreePalettes() async throws {
         // Isolate appearance settings from the app's real icon-changing observer.
         let suite = "desktop-theme-test-" + UUID().uuidString

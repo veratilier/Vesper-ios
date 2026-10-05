@@ -119,7 +119,7 @@ struct ChatIssueSheet: View {
                             HStack(spacing: 16) {
                                 if issue.action != .none {
                                     Button(issue.action == .models ? "Reload models" : "Retry") { retry(issue.action) }
-                                        .buttonStyle(.borderedProminent).tint(VesperTheme.ink)
+                                        .buttonStyle(VesperGlassButtonStyle()).tint(VesperTheme.ink)
                                         .foregroundStyle(palette == "black" ? Color.black : Color.white)
                                 }
                                 if issue.dismissible {
@@ -283,7 +283,7 @@ struct ChatView: View {
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(VesperTheme.ink)
                                     .frame(width: 40, height: 40)
-                                    .background(.regularMaterial, in: Circle())
+                                    .vesperGlass(in: Circle(), interactive: true)
                                     .overlay(Circle().stroke(VesperTheme.muted.opacity(0.3), lineWidth: 1))
                             }
                             .buttonStyle(.plain).accessibilityLabel("回到最新消息")
@@ -515,7 +515,7 @@ struct ChatView: View {
                 ScrollView { VStack(alignment: .leading, spacing: 20) {
                     Text("Review this action").font(.title2)
                     Text(chat.approval?["params"].pretty ?? "").font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    HStack { Button("Decline", role: .cancel) { Task { await chat.resolveApproval(accept: false) } }; Spacer(); Button("Allow once") { Task { await chat.resolveApproval(accept: true) } }.buttonStyle(.borderedProminent) }
+                    HStack { Button("Decline", role: .cancel) { Task { await chat.resolveApproval(accept: false) } }; Spacer(); Button("Allow once") { Task { await chat.resolveApproval(accept: true) } }.buttonStyle(VesperGlassButtonStyle()) }
                 }.padding() }.navigationTitle("Approval")
             }.interactiveDismissDisabled()
         }
@@ -620,11 +620,11 @@ struct ChatView: View {
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
             ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
-                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
+                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
-                if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
+                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
+                if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.fill").font(.system(size: 21)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true) } }
                 else {
                     ChatSendButton(text: draftStore.text,
                                    hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
@@ -646,7 +646,7 @@ struct ChatView: View {
         }.padding(20).background(.regularMaterial)
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
+        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).vesperGlass(in: RoundedRectangle(cornerRadius: 16), interactive: true); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
     }
     private var locationSheet: some View {
         ChatLocationShareSheet { location in
@@ -787,7 +787,7 @@ struct ChatMessageRow: View, Equatable {
                         Button { onFavorite() } label: { Image(systemName: favorite ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(saving)
                         Button { onRemember() } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(busy)
                         Button { onDelete() } label: { Image(systemName: "trash") }.accessibilityLabel("Delete message").disabled(busy)
-                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(.plain).padding(.vertical, 4)
+                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(VesperIconButtonStyle()).padding(.vertical, 4)
                 }
             }.padding(4).background(highlighted ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12)).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
             if !user { Spacer(minLength: 20) }
@@ -820,7 +820,7 @@ struct ChatMessageRow: View, Equatable {
 }
 
 private struct ChatHeaderButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label.frame(width: 36, height: 44).opacity(configuration.isPressed ? 0.5 : 1) }
+    func makeBody(configuration: Configuration) -> some View { configuration.label.frame(width: 36, height: 44).vesperGlass(in: Capsule(), interactive: true).opacity(configuration.isPressed ? 0.5 : 1) }
 }
 
 // Keep persisted records intact; classify only their presentation, never by message text.
@@ -1047,7 +1047,7 @@ private struct ChatQuestionSheet: View {
                     Button { Task { _ = await chat.resolveQuestion(request.id, selections: answers) } } label: {
                         HStack { if chat.answeringQuestion { ProgressView() }; Text("Submit answer").font(.headline) }
                             .frame(maxWidth: .infinity).padding(.vertical, 16)
-                    }.buttonStyle(.plain).background(.regularMaterial, in: Capsule())
+                    }.buttonStyle(.plain).vesperGlass(in: Capsule(), interactive: true)
                         .disabled(!valid || chat.answeringQuestion).padding(.horizontal, 20).padding(.bottom, 12)
                 }
                 .navigationTitle("Answer question").navigationBarTitleDisplayMode(.inline)

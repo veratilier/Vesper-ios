@@ -250,7 +250,7 @@ private struct LibraryRecordView: View {
                             HStack {
                                 Button { editing = true } label: { Label("纠正", systemImage: "pencil") }
                                 Button(role: .destructive) { reason = ""; withdrawing = true } label: { Label("撤回", systemImage: "archivebox") }
-                            }.buttonStyle(.bordered).disabled(busy)
+                            }.buttonStyle(VesperGlassButtonStyle()).disabled(busy)
                         }
                     } else if status.isEmpty { ProgressView() }
                     if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
@@ -405,7 +405,7 @@ struct LegacyMemoryView: View {
                 TextField("Search memories", text: $query).submitLabel(.search).onSubmit { Task { await load() } }
                 Button { Task { await load() } } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("Search memories")
                 Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add memory")
-            }.padding(14).background(.regularMaterial, in: Capsule())
+            }.padding(14).vesperGlass(in: Capsule(), interactive: true)
             if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
             if section == "Timeline" {
                 Picker("Sort and filter", selection: $filter) { ForEach(["Recent", "Current", "Corrected", "Recalled"], id: \.self) { Text($0).tag($0) } }.pickerStyle(.menu)
@@ -487,7 +487,7 @@ struct MemoryDetailView: View {
                 Button("Correct") { replacement = current["body"].string; editing = true }
                 Button(current["pinned"].bool ? "Unpin" : "Pin") { Task { await update("pin", extra: ["pinned": .bool(!current["pinned"].bool)]) } }
                 Button(current["demotedAt"] == .null ? "Make historical" : "Restore") { Task { await update(current["demotedAt"] == .null ? "demote" : "restore") } }
-            }.buttonStyle(.bordered).disabled(busy)
+            }.buttonStyle(VesperGlassButtonStyle()).disabled(busy)
             if current["reviewStatus"].string == "candidate" && current["type"].string == "core" { Button("Confirm this fact") { Task { await update("approve_core") } }.disabled(busy) }
             Text("Original evidence").font(.headline)
             if detail["evidence"].array.isEmpty { Text("No original source was linked to this memory.").font(.caption).foregroundStyle(VesperTheme.muted) }
@@ -570,12 +570,12 @@ private struct MemoryRelationGraph: View {
                     }
                 }
                 ForEach(Array(topics.enumerated()), id: \.offset) { index, topic in
-                    Text(topic).font(.caption2).lineLimit(2).padding(7).background(.regularMaterial, in: Capsule())
+                    Text(topic).font(.caption2).lineLimit(2).padding(7).vesperGlass(in: Capsule(), interactive: true)
                         .position(point(index, count: topics.count, outer: false, size: geometry.size))
                 }
                 ForEach(Array(records.enumerated()), id: \.element.id) { index, memory in
                     Button { selected = memory } label: {
-                        Image(systemName: "doc.text").frame(width: 38, height: 38).background(.regularMaterial, in: Circle())
+                        Image(systemName: "doc.text").frame(width: 38, height: 38).vesperGlass(in: Circle(), interactive: true)
                             .overlay(Circle().stroke(VesperTheme.accent.opacity(0.5)))
                     }.accessibilityLabel(memory["body"].string).position(point(index, count: records.count, outer: true, size: geometry.size))
                 }
@@ -619,10 +619,10 @@ struct MemoryRecallView: View {
                             Text("发生日期：" + (item["occurred_at"].string.isEmpty ? "未知" : item["occurred_at"].string)).font(.caption)
                             if !item["details"]["interpretation"].string.isEmpty { Text("主观解释：" + item["details"]["interpretation"].string).font(.caption) }
                             sources(item["details"]["evidence"].array)
-                            Button("先修改候选") { editingCandidate = item }.buttonStyle(.bordered)
+                            Button("先修改候选") { editingCandidate = item }.buttonStyle(VesperGlassButtonStyle())
                             HStack {
-                                Button("核对无误，入库") { Task { await review(item, action: "accept") } }.buttonStyle(.bordered)
-                                Button("不保存", role: .destructive) { Task { await review(item, action: "reject") } }.buttonStyle(.bordered)
+                                Button("核对无误，入库") { Task { await review(item, action: "accept") } }.buttonStyle(VesperGlassButtonStyle())
+                                Button("不保存", role: .destructive) { Task { await review(item, action: "reject") } }.buttonStyle(VesperGlassButtonStyle())
                             }.disabled(busy)
                         }
                     }
@@ -637,7 +637,7 @@ struct MemoryRecallView: View {
                                     Text(memory["body"].string)
                                     NavigationLink("查看原文、来源与纠正") { LibraryRecordView(library: library, id: memory.id) }
                                     sources(memory["details"]["evidence"].array)
-                                    Button("不相关") { Task { await feedback(delivery, memory: memory) } }.buttonStyle(.bordered).disabled(busy)
+                                    Button("不相关") { Task { await feedback(delivery, memory: memory) } }.buttonStyle(VesperGlassButtonStyle()).disabled(busy)
                                 }.padding(.vertical, 6)
                             }
                             if debug { Text(delivery["diagnostics"].pretty).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }

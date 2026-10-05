@@ -281,14 +281,14 @@ struct HomeView: View {
         }.accessibilityLabel("Open Music, " + (player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string))
     }
     private var musicControls: some View {
-        HStack(spacing: 0) {
-            Button { player.next(-1) } label: { Image(systemName: "backward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44) }
+        HStack(spacing: 6) {
+            Button { player.next(-1) } label: { Image(systemName: "backward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44).vesperGlass(in: Capsule(), interactive: true) }
                 .accessibilityLabel("Previous song")
             Button { player.toggle() } label: {
                 Image(systemName: player.playing ? "pause.fill" : "play.fill").font(.system(size: 18))
-                    .frame(width: 44, height: 44).background(palette.accent.opacity(0.16), in: Circle())
+                    .frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
             }.accessibilityLabel(player.playing ? "Pause" : "Play")
-            Button { player.next(1) } label: { Image(systemName: "forward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44) }
+            Button { player.next(1) } label: { Image(systemName: "forward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44).vesperGlass(in: Capsule(), interactive: true) }
                 .accessibilityLabel("Next song")
         }.foregroundStyle(palette.muted).disabled(player.tracks.isEmpty)
     }
@@ -330,9 +330,9 @@ private struct DesktopPaper: View {
             }
             .clipShape(PaperEdge(seed: seed, rounded: rounded))
             // Blend the textured backing, keeping native text at full opacity.
-            .opacity(palette == .black ? 0.82 : 0.86)
+            .opacity(palette == .black ? 0.65 : 0.64)
         }
-        .shadow(color: .black.opacity(palette == .black ? 0.20 : 0.10), radius: 5, y: 3)
+        .shadow(color: .black.opacity(palette == .black ? 0.12 : 0.05), radius: 4, y: 2)
         .allowsHitTesting(false).accessibilityHidden(true)
     }
 }

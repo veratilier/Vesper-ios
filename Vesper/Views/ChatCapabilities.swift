@@ -464,7 +464,7 @@ struct NativeCallView: View {
                         HStack {
                             Button("Decline", role: .cancel) { Task { await callChat.resolveApproval(accept: false) } }
                             Spacer()
-                            Button("Allow once") { Task { await callChat.resolveApproval(accept: true) } }.buttonStyle(.borderedProminent)
+                            Button("Allow once") { Task { await callChat.resolveApproval(accept: true) } }.buttonStyle(VesperGlassButtonStyle())
                         }
                     }.padding()
                 }.navigationTitle("Tool approval").navigationBarTitleDisplayMode(.inline)
@@ -545,7 +545,7 @@ struct NativeCallView: View {
                 .buttonStyle(.plain).accessibilityLabel("End call")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
+        .vesperGlass(in: Capsule(), interactive: true)
         .overlay(Capsule().stroke(.white.opacity(0.55), lineWidth: 1))
         .shadow(radius: 10, y: 5)
     }
@@ -563,7 +563,7 @@ struct NativeCallView: View {
                     if video && active {
                         Button { flipCamera() } label: {
                             Image(systemName: "camera.rotate").font(.system(size: 18))
-                                .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                                .frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
                         }.buttonStyle(.plain).disabled(cameraBusy).accessibilityLabel("Switch camera")
                     }
                     Spacer()
@@ -571,12 +571,12 @@ struct NativeCallView: View {
                         Image(systemName: "arrow.down.right.and.arrow.up.left")
                             .font(.system(size: 18, weight: .medium))
                             .frame(width: 44, height: 44)
-                            .background(.regularMaterial, in: Circle())
+                            .vesperGlass(in: Circle(), interactive: true)
                     }.buttonStyle(.plain).accessibilityLabel("Minimize call")
                 }
                 if !video && !typingFocused {
                     CallPortrait().frame(width: 104, height: 104)
-                        .padding(10).background(.ultraThinMaterial, in: Circle())
+                        .padding(10).vesperGlass(in: Circle(), interactive: true)
                 }
                 VStack(spacing: 5) {
                     Text("Rowan").font(.title2.weight(.semibold))
@@ -610,7 +610,7 @@ struct NativeCallView: View {
                     Button("Send speech now") { submit() }
                         .font(.caption.weight(.medium)).foregroundStyle(video ? Color.white : VesperTheme.ink)
                         .padding(.horizontal, 14).padding(.vertical, 7)
-                        .background(.regularMaterial, in: Capsule())
+                        .vesperGlass(in: Capsule(), interactive: true)
                 }
                 if let quietHangupMinutes {
                     HStack {
@@ -641,8 +641,8 @@ struct NativeCallView: View {
                 if !active {
                     Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: {
                         Text(systemCall.id == nil ? "Start call" : "Connecting…")
-                            .foregroundStyle(.white).padding(.horizontal, 24).padding(.vertical, 12)
-                            .background(VesperTheme.ink, in: Capsule())
+                            .foregroundStyle(VesperTheme.ink).padding(.horizontal, 24).padding(.vertical, 12)
+                            .vesperGlass(in: Capsule(), interactive: true)
                     }.buttonStyle(.plain).disabled(callChat.busy || systemCall.id != nil)
                 }
                 if !typingFocused {
@@ -661,8 +661,8 @@ struct NativeCallView: View {
                     }.disabled(!active)
                     Button { end() } label: {
                         Image(systemName: "phone.down.fill").font(.system(size: 25))
-                            .foregroundStyle(.white).frame(width: 68, height: 68)
-                            .background(Color.red, in: Circle())
+                            .foregroundStyle(.red).frame(width: 68, height: 68)
+                            .vesperGlass(in: Circle(), interactive: true)
                     }.buttonStyle(.plain).accessibilityLabel("End call")
                 }
             }.padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 18)
@@ -672,9 +672,10 @@ struct NativeCallView: View {
         Button(action: action) {
             VStack(spacing: 7) {
                 Image(systemName: symbol).font(.system(size: 24))
-                    .foregroundStyle(selected ? Color.white : VesperTheme.ink)
+                    .foregroundStyle(VesperTheme.ink)
                     .frame(width: 62, height: 62)
-                    .background(selected ? VesperTheme.ink : Color.white.opacity(0.85), in: Circle())
+                    .vesperGlass(in: Circle(), interactive: true)
+                    .overlay(Circle().stroke(VesperTheme.accent.opacity(selected ? 0.7 : 0), lineWidth: 2))
                 Text(title).font(.caption2.weight(.medium))
                     .foregroundStyle(video ? Color.white : VesperTheme.ink)
             }.frame(minWidth: 76)
@@ -915,8 +916,8 @@ struct CallInvitation: View {
             Text("Rowan").font(VesperTheme.title(36))
             Text("A little closer, just by voice.").font(.system(size: 13)).foregroundStyle(VesperTheme.muted)
             HStack(spacing: 36) {
-                Button(action: decline) { VStack(spacing: 8) { Image(systemName: "phone.down.fill").frame(width: 52, height: 52).background(Color.red.opacity(0.12), in: Circle()); Text("Decline").font(.caption) }.foregroundStyle(.red) }
-                Button(action: accept) { VStack(spacing: 8) { Image(systemName: "phone.fill").frame(width: 52, height: 52).background(VesperTheme.ink, in: Circle()).foregroundStyle(.white); Text("Accept").font(.caption) } }
+                Button(action: decline) { VStack(spacing: 8) { Image(systemName: "phone.down.fill").frame(width: 52, height: 52).vesperGlass(in: Circle(), interactive: true); Text("Decline").font(.caption) }.foregroundStyle(.red) }
+                Button(action: accept) { VStack(spacing: 8) { Image(systemName: "phone.fill").frame(width: 52, height: 52).vesperGlass(in: Circle(), interactive: true).foregroundStyle(VesperTheme.ink); Text("Accept").font(.caption) } }
             }.font(.system(size: 21)).buttonStyle(.plain).padding(.top, 8)
         }.padding(28).frame(maxWidth: 320).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
             .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.6), lineWidth: 1))

@@ -19,7 +19,7 @@ struct ChatSendButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: "arrow.up.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40)
+            Image(systemName: "arrow.up").font(.system(size: 21, weight: .semibold)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true)
         }
         .disabled((text.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasNonTextPayload) || blocked)
         .accessibilityLabel("Send")

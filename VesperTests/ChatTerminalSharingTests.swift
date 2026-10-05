@@ -85,18 +85,37 @@ import SwiftUI
     }
 
     private func brightPixels(_ image: UIImage, area: CGRect) -> Int {
-        guard let cg = image.cgImage else { return 0 }
+        // Crop in the screenshot's pixel coordinates before drawing into a
+        // bitmap context, whose vertical axis can differ from UIKit's.
+        guard let source = image.cgImage else { return 0 }
+        let scale = CGFloat(source.width) / image.size.width
+        let pixelsArea = CGRect(x: area.minX * scale, y: area.minY * scale,
+                                width: area.width * scale, height: area.height * scale)
+            .intersection(CGRect(x: 0, y: 0, width: source.width, height: source.height))
+        guard !pixelsArea.isEmpty, let cg = source.cropping(to: pixelsArea) else { return 0 }
         var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
         guard let context = CGContext(data: &pixels, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 0 }
         context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
         var count = 0
-        for y in Int(area.minY)..<min(cg.height, Int(area.maxY)) {
-            for x in Int(area.minX)..<min(cg.width, Int(area.maxX)) {
+        for y in 0..<cg.height {
+            for x in 0..<cg.width {
                 let i = (y * cg.width + x) * 4
                 if pixels[i] > 180 && pixels[i + 1] > 180 && pixels[i + 2] > 180 { count += 1 }
             }
         }
         return count
+    }
+
+    func testContrastCropUsesTheTopOfTheScreenshotAtBothScales() {
+        for scale in [CGFloat(1), CGFloat(2)] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = scale
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100), format: format).image { context in
+                UIColor.black.setFill(); context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+                UIColor.white.setFill(); context.fill(CGRect(x: 20, y: 10, width: 10, height: 10))
+            }
+            XCTAssertEqual(brightPixels(image, area: CGRect(x: 20, y: 10, width: 10, height: 10)), Int(100 * scale * scale))
+            XCTAssertEqual(brightPixels(image, area: CGRect(x: 20, y: 80, width: 10, height: 10)), 0)
+        }
     }
 
     func testMusicLinksAreRecognizedWithoutGenericPreviewCards() {

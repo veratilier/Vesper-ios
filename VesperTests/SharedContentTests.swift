@@ -215,7 +215,8 @@ extension SharedContentTests {
         XCTAssertEqual(moved.first, .movieRoom)
         XCTAssertEqual(VesperGridOrder.restore(VesperGridOrder.encode(moved)), moved)
         XCTAssertEqual(Set(moved), Set(VesperGridOrder.defaults))
-        XCTAssertEqual(moved.count, 10)
+        XCTAssertEqual(moved.count, 11)
+        XCTAssertTrue(moved.contains(.journal))
         let back = VesperGridOrder.move(.movieRoom, to: .bookmarks, in: moved)
         XCTAssertEqual(back, VesperGridOrder.defaults)
     }

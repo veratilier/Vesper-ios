@@ -6,6 +6,8 @@ struct LettersView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
     @StateObject private var model = LettersStore()
+    @ObservedObject private var notificationRoute = LetterNotificationRoute.shared
+    var initialSelection: String? = nil
     @State private var screen = "archive"
     @State private var filter = "All"
     @State private var hoverID: String?
@@ -14,6 +16,7 @@ struct LettersView: View {
     @State private var opened: VesperLetter?
     @State private var sealed: VesperLetter?
     @State private var delivered = false
+    @State private var archiveVisible = false
     private var colors: LetterColors { LetterColors(palette: VesperPalette(rawValue: palette) ?? .white) }
     private var title: String { screen == "compose" ? "Write a letter" : screen == "read" ? "From " + (opened?.author ?? "Rowan") : "Letters" }
     private var filed: [VesperLetter] {
@@ -21,7 +24,12 @@ struct LettersView: View {
     }
     private var visible: [VesperLetter] { Array(filed.dropFirst(page * 5).prefix(5)) }
     private var selected: VesperLetter? { visible.first { $0.id == selectedID } }
-    var body: some View {
+    private var archiveLabel: String {
+        guard let created = visible.first?.createdAt, let date = LetterDates.parse(created) else { return "Your letters" }
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US"); formatter.dateFormat = "MMMM yyyy"
+        return formatter.string(from: date)
+    }
+    private var pageContent: some View {
         ScrollView {
             VStack(spacing: 18) {
                 HStack {
@@ -29,7 +37,7 @@ struct LettersView: View {
                     Spacer()
                     if screen == "archive" { Button { screen = "compose" } label: { Label("Write", systemImage: "square.and.pencil") } }
                     if screen == "compose" { Button("Save draft") { model.saveDraft(); screen = "archive" } }
-                }.font(.system(size: 14, design: .serif))
+                }.font(.custom("Georgia", size: 14))
                 if !model.status.isEmpty { Text(model.status).font(.footnote).frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.updatesFrequently) }
                 switch screen {
                 case "compose": compose
@@ -39,19 +47,34 @@ struct LettersView: View {
                 }
             }.padding(.horizontal, 22).padding(.bottom, 24).foregroundStyle(colors.ink)
         }.refreshable { await model.load() }
-            .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.system(size: 21, design: .serif)) } }
+            .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
+            .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.custom("Georgia", size: 24)) } }
+    }
+    private var observedContent: some View {
+        pageContent
             .task(id: app.baseURL + "\n" + app.token) {
                 model.configure(app.api); screen = "archive"; opened = nil; sealed = nil; selectedID = nil; hoverID = nil; page = 0
                 await model.load()
+                selectedID = initialSelection
+                await openNotificationLetter()
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
                     if phase == .active && screen == "archive" { await model.load() }
                 }
             }
+            .onChange(of: notificationRoute.letterID) { _, _ in Task { await openNotificationLetter() } }
             .onChange(of: phase) { _, next in if next == .active { Task { await model.load() } } }
-            .onChange(of: model.draft) { _, _ in model.saveDraft() }
+            .onAppear { archiveVisible = true; markArrivalsSeen() }
+            .onDisappear { archiveVisible = false }
+            .onChange(of: model.letters) { _, _ in markArrivalsSeen() }
+            .onReceive(LetterInbox.shared.$covers) { _ in markArrivalsSeen() }
+            .onChange(of: model.draft) { _, _ in model.saveDraft(showStatus: false) }
+            .onChange(of: screen) { _, _ in markArrivalsSeen() }
             .onChange(of: filter) { _, _ in resetSelection() }
             .onChange(of: filed.map(\.id)) { _, _ in if page * 5 >= filed.count { resetSelection() } }
+    }
+    var body: some View {
+        observedContent
             .sheet(item: $sealed) { letter in
                 VStack(spacing: 24) {
                     LetterEnvelope(colors: colors, author: letter.author).frame(width: 245, height: 150)
@@ -62,12 +85,26 @@ struct LettersView: View {
                 }.padding(30).foregroundStyle(colors.ink).presentationDetents([.medium]).presentationBackground(colors.paper)
             }
     }
+    @ViewBuilder private var selectionBar: some View {
+        if screen == "archive", let selected {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(selected.displayTitle).font(.custom("Georgia", size: 16)).lineLimit(1)
+                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Button { open(selected) } label: {
+                    Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
+                        .foregroundStyle(colors.paper).background(colors.ink, in: Capsule())
+                }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
+            }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .padding(.horizontal, 22).padding(.bottom, 8)
+        }
+    }
     private var archive: some View {
         VStack(spacing: 16) {
             Picker("Letters filter", selection: $filter) { ForEach(["All", "Unread", "Kept"], id: \.self) { Text($0) } }.pickerStyle(.segmented)
             let upcoming = model.letters.filter { model.upcoming($0) }
             if !upcoming.isEmpty {
-                Text("Upcoming").font(.system(size: 14, design: .serif)).frame(maxWidth: .infinity, alignment: .leading)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(upcoming) { letter in
@@ -75,26 +112,22 @@ struct LettersView: View {
                                 HStack(spacing: 12) {
                                     LetterEnvelope(colors: colors, author: letter.author).frame(width: 65, height: 42)
                                     VStack(alignment: .leading, spacing: 5) {
-                                        Text(letter.displayTitle).lineLimit(1)
-                                        Text("Opens " + LetterDates.display(letter.unlockAt ?? "")).font(.system(size: 11, design: .serif)).opacity(0.7)
+                                        Text("Upcoming").font(.custom("Georgia", size: 11)).opacity(0.6)
+                                        Text(letter.displayTitle).font(.custom("Georgia", size: 15)).lineLimit(1)
+                                        Text("Opens " + LetterDates.display(letter.unlockAt ?? "")).font(.custom("Georgia", size: 11)).opacity(0.7)
                                     }
+                                    Spacer(minLength: 0)
                                     Image(systemName: "lock").font(.caption)
-                                }.padding(12).frame(width: 288, alignment: .leading).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
+                                }.padding(12).containerRelativeFrame(.horizontal).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
                             }.buttonStyle(.plain)
                         }
                     }
                 }
             }
-            HStack { Text("Your letters").font(.system(size: 17, design: .serif)); Spacer(); Text("\(filed.count)").font(.footnote).opacity(0.6) }
-            if filed.isEmpty { Text(model.loading ? "Opening the letter box…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
-            UprightLetters(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors)
-            if let selected {
-                VStack(spacing: 8) {
-                    Text(selected.displayTitle).font(.system(size: 18, design: .serif))
-                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.caption).opacity(0.65)
-                    action("Open letter") { open(selected) }
-                }
-            } else { Text("Brush across the letters. Hold one to choose.").font(.system(size: 12, design: .serif)).opacity(0.65) }
+            HStack { Text(archiveLabel).font(.custom("Georgia", size: 14)); Spacer(); Text("\(visible.count) / \(filed.count)").font(.custom("Georgia", size: 12)).opacity(0.6) }
+            if filed.isEmpty { Text(model.loading ? "Opening your letters…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
+            else { LetterStack(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors) }
+            if selected == nil && !filed.isEmpty { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
             if filed.count > 5 {
                 HStack {
                     Button("Previous") { page -= 1; selectedID = nil; hoverID = nil }.disabled(page == 0)
@@ -156,6 +189,15 @@ struct LettersView: View {
         Button(action: perform) { Text(title).font(.system(size: 17, design: .serif)).foregroundStyle(colors.paper).frame(maxWidth: .infinity).padding(15).background(colors.ink, in: Capsule()) }.buttonStyle(.plain)
     }
     private func resetSelection() { page = 0; hoverID = nil; selectedID = nil }
+    private func markArrivalsSeen() {
+        if archiveVisible, screen == "archive", phase == .active { LetterInbox.shared.markArrivalSeen(model.letters.filter { $0.author != "Vera" }.map(\.id)) }
+    }
+    private func openNotificationLetter() async {
+        guard let id = notificationRoute.letterID, model.configured else { return }
+        if let letter = await model.open(id: id) {
+            opened = letter; screen = "read"; notificationRoute.letterID = nil
+        }
+    }
     private func open(_ letter: VesperLetter) {
         Task { if let result = await model.open(letter) { opened = result; screen = "read" } }
     }

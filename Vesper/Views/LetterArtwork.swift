@@ -7,32 +7,54 @@ struct LetterColors {
     var metal: [Color] { palette == .black ? [Color(white: 0.17), Color(white: 0.44), Color(white: 0.24), Color(white: 0.11)] : palette == .blue ? [Color(red: 0.50, green: 0.67, blue: 0.74), Color(white: 0.96), Color(red: 0.73, green: 0.83, blue: 0.87), Color(red: 0.46, green: 0.62, blue: 0.69)] : [Color(white: 0.67), Color(white: 0.99), Color(white: 0.85), Color(white: 0.59)] }
     var ink: Color { palette == .black ? Color(white: 0.92) : Color(red: 0.24, green: 0.23, blue: 0.20) }
     var line: Color { palette == .black ? Color(white: 0.48) : Color(red: 0.69, green: 0.68, blue: 0.62) }
+    var fold: Color { palette == .black ? Color(white: 0.12) : palette == .blue ? Color(red: 0.84, green: 0.90, blue: 0.93) : Color(red: 0.93, green: 0.91, blue: 0.85) }
 }
 struct LetterFlap: Shape {
     func path(in rect: CGRect) -> Path { Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: rect.width, y: 0)); p.addLine(to: CGPoint(x: rect.midX, y: rect.height * 0.64)); p.closeSubpath() } }
+}
+struct LetterPocket: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: 0, y: rect.height)); p.addLine(to: CGPoint(x: rect.midX, y: rect.height * 0.48))
+            p.addLine(to: CGPoint(x: rect.width, y: rect.height)); p.closeSubpath()
+        }
+    }
 }
 struct LetterEnvelope: View {
     let colors: LetterColors
     var title = ""
     var author = "Vera"
     var showTitle = false
+    var recipient: String?
+    var showSeal = true
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .top) {
-                Rectangle().fill(LinearGradient(colors: [colors.paper, colors.shade.opacity(0.9)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                LetterFlap().fill(LinearGradient(colors: [colors.paper, colors.shade], startPoint: .top, endPoint: .bottom)).shadow(color: .black.opacity(0.13), radius: 1, y: 2)
-                if showTitle { Text(title).font(.system(size: 14, design: .serif)).italic().lineLimit(2).multilineTextAlignment(.center).padding(.horizontal, 10).padding(.top, 15).foregroundStyle(colors.ink) }
-                Text(String(author.prefix(1))).font(.system(size: g.size.width < 100 ? 13 : 24, design: .serif)).italic()
+                Rectangle().fill(LinearGradient(colors: [colors.paper, colors.fold], startPoint: .topLeading, endPoint: .bottomTrailing))
+                LetterPocket().fill(LinearGradient(colors: [colors.paper.opacity(0.35), colors.fold.opacity(0.25)], startPoint: .top, endPoint: .bottom))
+                    .overlay(LetterPocket().stroke(colors.line.opacity(0.25), lineWidth: 0.6))
+                LetterFlap().fill(LinearGradient(colors: [colors.paper, colors.fold], startPoint: .top, endPoint: .bottom)).shadow(color: .black.opacity(0.13), radius: 1, y: 2)
+                Image("LetterPaper").resizable().scaledToFill().frame(width: g.size.width, height: g.size.height).clipped()
+                    .opacity(0.24).blendMode(.multiply).accessibilityHidden(true)
+                if showTitle {
+                    VStack(spacing: 6) {
+                        Text(title).font(.custom("Georgia-Italic", size: 14)).lineLimit(2)
+                        if let recipient { Text("To " + recipient).font(.custom("Georgia-Italic", size: 12)).opacity(0.8) }
+                    }.multilineTextAlignment(.center).padding(.horizontal, 15).padding(.top, showSeal ? 15 : g.size.height * 0.26).foregroundStyle(colors.ink)
+                }
+                if showSeal { Text(String(author.prefix(1))).font(.system(size: g.size.width < 100 ? 13 : 24, design: .serif)).italic()
                     .foregroundStyle(colors.ink.opacity(0.7)).frame(width: g.size.width < 100 ? 20 : 36, height: g.size.width < 100 ? 20 : 36)
                     .background(LinearGradient(colors: colors.metal, startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
                     .overlay(Circle().stroke(colors.line, lineWidth: 2)).overlay(Circle().inset(by: 4).stroke(colors.line.opacity(0.5), lineWidth: 0.5))
-                    .offset(y: g.size.height * 0.63)
-            }.overlay(Rectangle().stroke(colors.line.opacity(0.6), lineWidth: 0.8))
+                    .position(x: g.size.width * 0.5, y: g.size.height * 0.63)
+                }
+            }.compositingGroup().frame(width: g.size.width, height: g.size.height, alignment: .top)
+                .overlay(Rectangle().stroke(colors.line.opacity(0.6), lineWidth: 0.8))
                 .shadow(color: .black.opacity(0.13), radius: 4, y: 4)
         }.accessibilityHidden(true)
     }
 }
-struct UprightLetters: View {
+struct LetterStack: View {
     let letters: [VesperLetter]
     @Binding var hoverID: String?
     @Binding var selectedID: String?
@@ -42,45 +64,48 @@ struct UprightLetters: View {
     @State private var lastPoint: CGPoint?
     @State private var touching = false
     private var visible: [VesperLetter] { Array(letters.prefix(5)) }
+    private var canvasHeight: CGFloat { visible.isEmpty ? 0 : visible.count == 1 ? 250 : 320 }
+    private var frontTop: CGFloat { 40 + CGFloat(max(0, visible.count - 1)) * 18 }
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .topLeading) {
-                Ellipse().fill(.black.opacity(0.13)).blur(radius: 10).frame(width: g.size.width * 0.85, height: 28).offset(x: 12, y: 247)
-                RoundedRectangle(cornerRadius: 5).fill(colors.shade).overlay(RoundedRectangle(cornerRadius: 5).stroke(colors.line, lineWidth: 1)).frame(width: g.size.width * 0.78, height: 144).rotationEffect(.degrees(-5)).offset(x: g.size.width * 0.16, y: 95)
+                Color.clear.frame(width: g.size.width, height: canvasHeight)
                 ForEach(Array(visible.enumerated()), id: \.element.id) { slot, letter in
                     envelope(letter, slot: slot, width: g.size.width)
                 }
-                Rectangle().fill(LinearGradient(colors: colors.metal, startPoint: .leading, endPoint: .trailing)).frame(width: g.size.width * 0.16, height: 137).rotationEffect(.degrees(-14)).offset(x: g.size.width * 0.80, y: 123).zIndex(101)
-                HStack(spacing: 20) {
-                    Text("RV").font(.system(size: 26, design: .serif)).italic()
-                    Text("LETTERS TO KEEP").font(.system(size: 10, design: .serif)).tracking(1)
-                }.foregroundStyle(colors.ink.opacity(0.45)).frame(width: g.size.width * 0.82, height: 57)
-                    .background(LinearGradient(colors: [colors.paper, colors.shade], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(colors.line, lineWidth: 2)).rotationEffect(.degrees(5)).offset(x: g.size.width * 0.04, y: 218).zIndex(102)
-            }.frame(width: g.size.width, height: 280).contentShape(Rectangle())
+            }.frame(width: g.size.width, height: canvasHeight, alignment: .topLeading).contentShape(Rectangle())
                 .highPriorityGesture(DragGesture(minimumDistance: 0).onChanged { value in sweep(value.location) }.onEnded { _ in
                     touching = false; holding?.cancel(); lastPoint = nil
                     if selectedID == nil { withAnimation(motion) { hoverID = nil } }
                 })
-        }.frame(height: 280).onDisappear { holding?.cancel(); touching = false }
+        }.frame(height: canvasHeight).onDisappear { holding?.cancel(); touching = false }
     }
     private var motion: Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }
     private func envelope(_ letter: VesperLetter, slot: Int, width: CGFloat) -> some View {
         let front = hoverID == letter.id || selectedID == letter.id
-        let base = 140 - CGFloat(slot) * 15
-        let lift: CGFloat = selectedID == letter.id ? 64 : hoverID == letter.id ? 42 : 0
+        let cardWidth = min(width * 0.84, 320)
+        let base = frontTop - CGFloat(slot) * 18
+        let lift: CGFloat = selectedID == letter.id ? 24 : hoverID == letter.id ? 18 : 0
+        let restingAngle = [1.5, -1.0, 1.2, -1.6, -2.0][slot]
         return Button { selectedID = letter.id; hoverID = letter.id } label: {
-            LetterEnvelope(colors: colors, title: letter.displayTitle, author: letter.author, showTitle: front || slot == 0)
-                .overlay(alignment: .topTrailing) { Text(LetterDates.parse(letter.createdAt)?.formatted(.dateTime.month(.abbreviated).day()) ?? "Letter").font(.system(size: 11, design: .serif)).padding(.horizontal, 10).padding(.vertical, 3).background(colors.paper, in: UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4)).offset(x: -9, y: -20) }
-        }.buttonStyle(.plain).frame(width: width * 0.75, height: 125)
-            .rotationEffect(.degrees(front ? -5 : 1), anchor: .bottom).offset(x: width * 0.08 + CGFloat(slot) * 4, y: base - lift)
-            // Lifting does not change depth: later envelopes remain behind earlier ones.
-            .zIndex(Double(90 - slot)).animation(motion, value: front).animation(motion, value: selectedID)
+            LetterEnvelope(colors: colors, title: letter.displayTitle, author: letter.author, showTitle: front || slot == 0,
+                recipient: letter.recipient ?? (letter.author == "Vera" ? "Rowan" : "Vera"), showSeal: false)
+                .overlay(alignment: .topTrailing) {
+                    Text(LetterDates.parse(letter.createdAt)?.formatted(.dateTime.month(.abbreviated).day()) ?? "Letter")
+                        .font(.custom("Georgia", size: 11)).padding(.horizontal, 10).padding(.vertical, 3)
+                        .background(colors.paper, in: UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
+                        .overlay(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4).stroke(colors.line.opacity(0.75), lineWidth: 0.8))
+                        .offset(x: -9, y: -2)
+                }
+        }.buttonStyle(.plain).frame(width: cardWidth, height: cardWidth / 1.7)
+            .rotationEffect(.degrees(front ? -3 : restingAngle), anchor: .bottom)
+            .offset(x: (width - cardWidth) / 2 + (slot.isMultiple(of: 2) ? -2 : 2), y: base - lift)
+            .zIndex(front ? 100 : Double(90 - slot)).animation(motion, value: front).animation(motion, value: selectedID)
             .accessibilityLabel(letter.displayTitle + ", " + letter.author).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
     }
     private func sweep(_ point: CGPoint) {
         guard !visible.isEmpty else { return }
-        let slot = min(visible.count - 1, max(0, Int(((130 - point.y) / 15).rounded())))
+        let slot = min(visible.count - 1, max(0, Int(((frontTop - point.y) / 18).rounded())))
         let candidate = visible[slot].id
         let moved = lastPoint.map { hypot($0.x - point.x, $0.y - point.y) > 7 } ?? true
         let changed = candidate != hoverID

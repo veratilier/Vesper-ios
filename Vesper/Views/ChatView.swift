@@ -128,6 +128,10 @@ struct ChatConnectionSheet: View {
 }
 
 struct ChatView: View {
+    @Environment(\.scenePhase) private var phase
+    @ObservedObject private var inbox = ChatInbox.shared
+    @State private var chatVisible = false
+
     var onMenu: () -> Void = {}
     var restoreLatest = true
     var native = false
@@ -188,7 +192,16 @@ struct ChatView: View {
                         if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
                         ForEach(chat.presentation.rows) { row in
                             if let message = row.messages.first {
-                                if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
+                                if ChatPresentation.isLetterReminder(message) {
+                                    Button {
+                                        LetterNotificationRoute.shared.letterID = message["metadata"]["letterId"].string
+                                    } label: {
+                                        Label(message["content"].string, systemImage: "envelope.open")
+                                            .font(.system(size: 14, design: .serif)).foregroundStyle(VesperTheme.muted)
+                                            .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                    }.buttonStyle(.plain).id(message.id)
+                                } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
                                 else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
                                 else { messageRow(message, activities: row.activities).id(message.id) }
                             }
@@ -306,8 +319,22 @@ struct ChatView: View {
         observedLocalMessageID = chat.latestLocalMessageID
         followsLatest = true
     }
-    private var photoContent: some View {
+    private func markDisplayedMessages() {
+        guard chatVisible, phase == .active else { return }
+        let messages = chat.messages.filter { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }
+        let ids = Set(messages.flatMap { [$0.id,$0["metadata"]["itemId"].string] }.filter { !$0.isEmpty })
+        inbox.markDisplayed(conversation: chat.conversationID, messageIDs: ids)
+    }
+    private var observedChatContent: some View {
         chatContent
+        .onAppear { chatVisible = true; markDisplayedMessages() }
+        .onDisappear { chatVisible = false }
+        .onChange(of: chat.messages) { _, _ in markDisplayedMessages() }
+        .onChange(of: inbox.incoming) { _, _ in markDisplayedMessages() }
+        .onChange(of: phase) { _, _ in markDisplayedMessages() }
+    }
+    private var photoContent: some View {
+        observedChatContent
         .task { chat.configure(store); if restoreLatest { await chat.loadConversations(); if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() } } }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
@@ -751,7 +778,7 @@ final class ChatPresentationSnapshot {
     let lastReplyID: String?
     init(_ messages: [JSONValue]) {
         rows = ChatPresentation.displayRows(messages)
-        lastReplyID = messages.last { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }?.id
+        lastReplyID = messages.last { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) && !ChatPresentation.isLetterReminder($0) }?.id
     }
 }
 
@@ -769,7 +796,11 @@ enum ChatPresentation {
     static func isThinking(_ message: JSONValue) -> Bool {
         ["reasoning", "reasoningSummary", "thinking"].contains(message["metadata"]["blockType"].string) || !message["metadata"]["thoughtSummary"].string.isEmpty
     }
+    static func isLetterReminder(_ message: JSONValue) -> Bool {
+        message["role"].string == "system" && message["metadata"]["blockType"].string == "letterReminder" && !message["metadata"]["letterId"].string.isEmpty
+    }
     static func isActivity(_ message: JSONValue) -> Bool {
+        if isLetterReminder(message) { return false }
         if isUser(message) { return false }
         if message["metadata"]["phase"].string == "commentary" { return true }
         if ["system", "tool", "function"].contains(message["role"].string) { return true }
@@ -802,7 +833,7 @@ enum ChatPresentation {
         for index in messages.indices.reversed() {
             nextReply[index] = next; nextLegacyReply[index] = nextLegacy
             if isUser(messages[index]) { next = nil; nextLegacy = nil }
-            else if !isActivity(messages[index]) {
+            else if !isActivity(messages[index]) && !isLetterReminder(messages[index]) {
                 next = index
                 let turn = messages[index]["metadata"]["turnId"].string
                 if turn.isEmpty { nextLegacy = index }
@@ -816,6 +847,7 @@ enum ChatPresentation {
             let message = messages[index]
             if isUser(message) { previous = nil; previousLegacy = nil; continue }
             let turn = message["metadata"]["turnId"].string
+            if isLetterReminder(message) { continue }
             if !isActivity(message) {
                 previous = index
                 if turn.isEmpty { previousLegacy = index }

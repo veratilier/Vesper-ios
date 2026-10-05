@@ -325,13 +325,16 @@ struct ChatView: View {
         let ids = Set(messages.flatMap { [$0.id,$0["metadata"]["itemId"].string] }.filter { !$0.isEmpty })
         inbox.markDisplayed(conversation: chat.conversationID, messageIDs: ids)
     }
-    private var photoContent: some View {
+    private var observedChatContent: some View {
         chatContent
         .onAppear { chatVisible = true; markDisplayedMessages() }
         .onDisappear { chatVisible = false }
         .onChange(of: chat.messages) { _, _ in markDisplayedMessages() }
         .onChange(of: inbox.incoming) { _, _ in markDisplayedMessages() }
         .onChange(of: phase) { _, _ in markDisplayedMessages() }
+    }
+    private var photoContent: some View {
+        observedChatContent
         .task { chat.configure(store); if restoreLatest { await chat.loadConversations(); if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() } } }
         .onChange(of: focused) { _, value in if value { drawer = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }

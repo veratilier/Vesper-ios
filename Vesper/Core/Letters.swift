@@ -73,9 +73,9 @@ enum LetterDraftCache {
         draft = LetterDraftCache.load(api)
     }
     private func decode(_ value: JSONValue) throws -> VesperLetter { try decoder.decode(VesperLetter.self, from: JSONEncoder().encode(value)) }
-    func saveDraft() {
+    func saveDraft(showStatus: Bool = true) {
         guard let api else { return }
-        do { try LetterDraftCache.save(draft, api: api); status = "Draft saved" } catch { status = error.localizedDescription }
+        do { try LetterDraftCache.save(draft, api: api); if showStatus { status = "Draft saved" } } catch { status = error.localizedDescription }
     }
     func load(reset: Bool = true) async {
         guard let api, !loading else { return }

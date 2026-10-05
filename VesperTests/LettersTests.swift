@@ -3,7 +3,49 @@ import SwiftUI
 import UIKit
 @testable import Vesper
 
+private final class LettersLayoutProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix("letters-layout.example") == true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let count = request.url?.host?.hasPrefix("single") == true ? 1 : 5
+        var letters: [[String: Any]] = (0..<count).map { slot in
+            ["id": "layout-\(slot)", "title": slot == 0 ? "A little thought for you" : "A small discovery", "author": "Rowan", "recipient": "Vera",
+             "createdAt": "2026-10-0\(max(1, 5 - slot))T06:00:00Z", "text": "A little thought."]
+        }
+        letters.append(["id": "birthday", "title": "For your birthday", "author": "Vera", "recipient": "Rowan", "createdAt": "2026-10-05T06:00:00Z",
+                        "unlockAt": "2099-10-29T09:00:00Z", "locked": true])
+        let body = try! JSONSerialization.data(withJSONObject: ["letters": letters, "serverTime": "2026-10-05T06:00:00Z"])
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @MainActor final class LettersTests: XCTestCase {
+    func testLettersArchiveWithSingleAndFullBoxesOnAllPalettes() async throws {
+        URLProtocol.registerClass(LettersLayoutProtocol.self)
+        defer { URLProtocol.unregisterClass(LettersLayoutProtocol.self) }
+        let suite = "letters-layout-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (count, palette) in [(1, "white"), (5, "white"), (5, "blue"), (5, "black")] {
+            preferences.set(palette, forKey: "vesperPalette")
+            let store = AppStore(); store.baseURL = "https://\(count == 1 ? "single" : "stack").letters-layout.example"; store.token = UUID().uuidString
+            let model = LettersStore(); model.configure(store.api); await model.load()
+            XCTAssertEqual(model.letters.count, count + 1, "The fixture transport must provide filed and upcoming letters")
+            model.saveDraft(showStatus: false)
+            XCTAssertEqual(model.status, "", "Restoring or automatically saving a draft must not add a status row to the archive")
+            let host = UIHostingController(rootView: NavigationStack { ZStack { Background(); LettersView() } }
+                .environmentObject(store).defaultAppStorage(preferences).preferredColorScheme(palette == "black" ? .dark : .light))
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 844)
+            window.rootViewController = host; window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Letters-archive-\(count)-\(palette)"; attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
     func testLetterBoxStaysWithinPhoneMarginsWhenBrowsingAndSelecting() throws {
         for width in [320, 393, 430] {
             for count in [1, 5] {

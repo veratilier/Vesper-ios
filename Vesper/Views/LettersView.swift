@@ -21,6 +21,11 @@ struct LettersView: View {
     }
     private var visible: [VesperLetter] { Array(filed.dropFirst(page * 5).prefix(5)) }
     private var selected: VesperLetter? { visible.first { $0.id == selectedID } }
+    private var archiveLabel: String {
+        guard let created = visible.first?.createdAt, let date = LetterDates.parse(created) else { return "Your letters" }
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US"); formatter.dateFormat = "MMMM yyyy"
+        return formatter.string(from: date)
+    }
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
@@ -29,7 +34,7 @@ struct LettersView: View {
                     Spacer()
                     if screen == "archive" { Button { screen = "compose" } label: { Label("Write", systemImage: "square.and.pencil") } }
                     if screen == "compose" { Button("Save draft") { model.saveDraft(); screen = "archive" } }
-                }.font(.system(size: 14, design: .serif))
+                }.font(.custom("Georgia", size: 14))
                 if !model.status.isEmpty { Text(model.status).font(.footnote).frame(maxWidth: .infinity, alignment: .leading).accessibilityAddTraits(.updatesFrequently) }
                 switch screen {
                 case "compose": compose
@@ -39,7 +44,7 @@ struct LettersView: View {
                 }
             }.padding(.horizontal, 22).padding(.bottom, 24).foregroundStyle(colors.ink)
         }.refreshable { await model.load() }
-            .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.system(size: 21, design: .serif)) } }
+            .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.custom("Georgia", size: 24)) } }
             .task(id: app.baseURL + "\n" + app.token) {
                 model.configure(app.api); screen = "archive"; opened = nil; sealed = nil; selectedID = nil; hoverID = nil; page = 0
                 await model.load()
@@ -49,7 +54,7 @@ struct LettersView: View {
                 }
             }
             .onChange(of: phase) { _, next in if next == .active { Task { await model.load() } } }
-            .onChange(of: model.draft) { _, _ in model.saveDraft() }
+            .onChange(of: model.draft) { _, _ in model.saveDraft(showStatus: false) }
             .onChange(of: filter) { _, _ in resetSelection() }
             .onChange(of: filed.map(\.id)) { _, _ in if page * 5 >= filed.count { resetSelection() } }
             .sheet(item: $sealed) { letter in
@@ -67,7 +72,6 @@ struct LettersView: View {
             Picker("Letters filter", selection: $filter) { ForEach(["All", "Unread", "Kept"], id: \.self) { Text($0) } }.pickerStyle(.segmented)
             let upcoming = model.letters.filter { model.upcoming($0) }
             if !upcoming.isEmpty {
-                Text("Upcoming").font(.system(size: 14, design: .serif)).frame(maxWidth: .infinity, alignment: .leading)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(upcoming) { letter in
@@ -75,26 +79,28 @@ struct LettersView: View {
                                 HStack(spacing: 12) {
                                     LetterEnvelope(colors: colors, author: letter.author).frame(width: 65, height: 42)
                                     VStack(alignment: .leading, spacing: 5) {
-                                        Text(letter.displayTitle).lineLimit(1)
-                                        Text("Opens " + LetterDates.display(letter.unlockAt ?? "")).font(.system(size: 11, design: .serif)).opacity(0.7)
+                                        Text("Upcoming").font(.custom("Georgia", size: 11)).opacity(0.6)
+                                        Text(letter.displayTitle).font(.custom("Georgia", size: 15)).lineLimit(1)
+                                        Text("Opens " + LetterDates.display(letter.unlockAt ?? "")).font(.custom("Georgia", size: 11)).opacity(0.7)
                                     }
+                                    Spacer(minLength: 0)
                                     Image(systemName: "lock").font(.caption)
-                                }.padding(12).frame(width: 288, alignment: .leading).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
+                                }.padding(12).containerRelativeFrame(.horizontal).background(colors.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(colors.line.opacity(0.35)))
                             }.buttonStyle(.plain)
                         }
                     }
                 }
             }
-            HStack { Text("Your letters").font(.system(size: 17, design: .serif)); Spacer(); Text("\(filed.count)").font(.footnote).opacity(0.6) }
+            HStack { Text(archiveLabel).font(.custom("Georgia", size: 14)); Spacer(); Text("\(visible.count) / \(filed.count)").font(.custom("Georgia", size: 12)).opacity(0.6) }
             if filed.isEmpty { Text(model.loading ? "Opening the letter box…" : "Letters will find their place here.").font(.system(size: 15, design: .serif)).padding(.vertical, 12) }
             UprightLetters(letters: visible, hoverID: $hoverID, selectedID: $selectedID, colors: colors)
             if let selected {
-                VStack(spacing: 8) {
-                    Text(selected.displayTitle).font(.system(size: 18, design: .serif))
-                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.caption).opacity(0.65)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(selected.displayTitle).font(.custom("Georgia", size: 18))
+                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 12)).opacity(0.65)
                     action("Open letter") { open(selected) }
-                }
-            } else { Text("Brush across the letters. Hold one to choose.").font(.system(size: 12, design: .serif)).opacity(0.65) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            } else { Text("Brush across the letters. Hold one to choose.").font(.custom("Georgia", size: 12)).opacity(0.65).frame(maxWidth: .infinity, alignment: .leading) }
             if filed.count > 5 {
                 HStack {
                     Button("Previous") { page -= 1; selectedID = nil; hoverID = nil }.disabled(page == 0)

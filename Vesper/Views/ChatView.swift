@@ -119,15 +119,17 @@ struct ChatIssueSheet: View {
                             HStack(spacing: 16) {
                                 if issue.action != .none {
                                     Button(issue.action == .models ? "Reload models" : "Retry") { retry(issue.action) }
-                                        .buttonStyle(VesperGlassButtonStyle()).tint(VesperTheme.ink)
-                                        .foregroundStyle(VesperTheme.ink)
+                                        .buttonStyle(.borderedProminent).tint(VesperTheme.ink)
+                                        .foregroundStyle(palette == "black" ? Color.black : Color.white)
                                 }
                                 if issue.dismissible {
                                     Button { dismiss(issue.id) } label: {
                                         Text("Dismiss").font(.body.weight(.medium))
                                             .foregroundStyle(VesperTheme.ink)
                                             .padding(.horizontal, 18).frame(minHeight: 44)
-                                            .vesperGlass(in: Capsule(), interactive: true)
+                                            .background(VesperTheme.ink.opacity(0.08), in: Capsule())
+                                            .background(.thinMaterial, in: Capsule())
+                                            .overlay(Capsule().stroke(VesperTheme.ink.opacity(0.18), lineWidth: 1))
                                     }.buttonStyle(.plain)
                                 }
                             }
@@ -218,7 +220,7 @@ struct ChatView: View {
                                         Label(message["content"].string, systemImage: "envelope.open")
                                             .font(.system(size: 14, design: .serif)).foregroundStyle(VesperTheme.muted)
                                             .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-                                            .vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+                                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                                     }.buttonStyle(.plain).id(message.id)
                                 } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
                                 else if row.activity { AssistantMessageHeading(message: message, activities: row.activities, liveEvents: message.id == chat.liveHeadingID ? chat.events : [], isLive: message.id == chat.liveHeadingID) }
@@ -263,7 +265,7 @@ struct ChatView: View {
                                 pendingSticker = sticker
                                 stickerPicker = false; drawer = false
                             }
-                            .frame(height: attachmentPanelHeight).vesperGlass(in: Rectangle())
+                            .frame(height: attachmentPanelHeight).background(.regularMaterial)
                         } else if drawer {
                             attachmentDrawer
                                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { attachmentPanelHeight = $0 }
@@ -281,7 +283,7 @@ struct ChatView: View {
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(VesperTheme.ink)
                                     .frame(width: 40, height: 40)
-                                    .vesperGlass(in: Circle(), interactive: true)
+                                    .background(.regularMaterial, in: Circle())
                                     .overlay(Circle().stroke(VesperTheme.muted.opacity(0.3), lineWidth: 1))
                             }
                             .buttonStyle(.plain).accessibilityLabel("回到最新消息")
@@ -434,7 +436,7 @@ struct ChatView: View {
     }
     private var modelSheet: some View {
             NavigationStack {
-                VesperList {
+                List {
                     DisclosureGroup(isExpanded: $modelExpanded) {
                         Button { chat.selectModel("") } label: {
                             HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
@@ -513,7 +515,7 @@ struct ChatView: View {
                 ScrollView { VStack(alignment: .leading, spacing: 20) {
                     Text("Review this action").font(.title2)
                     Text(chat.approval?["params"].pretty ?? "").font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    HStack { Button("Decline", role: .cancel) { Task { await chat.resolveApproval(accept: false) } }; Spacer(); Button("Allow once") { Task { await chat.resolveApproval(accept: true) } }.buttonStyle(VesperGlassButtonStyle()) }
+                    HStack { Button("Decline", role: .cancel) { Task { await chat.resolveApproval(accept: false) } }; Spacer(); Button("Allow once") { Task { await chat.resolveApproval(accept: true) } }.buttonStyle(.borderedProminent) }
                 }.padding() }.navigationTitle("Approval")
             }.interactiveDismissDisabled()
         }
@@ -618,11 +620,11 @@ struct ChatView: View {
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
             ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
-                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true) }.accessibilityLabel("Attachments").disabled(chat.busy)
+                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
-                if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.fill").font(.system(size: 21)).frame(width: 40, height: 40).vesperGlass(in: Circle(), interactive: true) } }
+                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
+                if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,
                                    hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
@@ -630,7 +632,7 @@ struct ChatView: View {
                                    action: send)
                 }
             }
-        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).vesperGlass(in: RoundedRectangle(cornerRadius: 25)).padding(.horizontal, 12).padding(.vertical, 8)
+        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
     }
     private var attachmentDrawer: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 20) {
@@ -641,10 +643,10 @@ struct ChatView: View {
             drawerItem("File", "folder.fill") { filePicker = true }
             drawerItem("Music", "music.note") { musicPicker = true }
             drawerItem("Stickers", "face.smiling") { stickerPicker = true }
-        }.padding(20).vesperGlass(in: Rectangle())
+        }.padding(20).background(.regularMaterial)
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).vesperGlass(in: RoundedRectangle(cornerRadius: 16), interactive: true); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
+        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
     }
     private var locationSheet: some View {
         ChatLocationShareSheet { location in
@@ -661,7 +663,7 @@ struct ChatView: View {
         NavigationStack {
             VStack {
                 Picker("Collection", selection: $historyTab) { Text("Conversations").tag(0); Text("Favorites").tag(1) }.pickerStyle(.segmented).padding(.horizontal)
-                VesperList {
+                List {
                     if historyTab == 0 {
                         NavigationLink { ChatSearchView() { history = false } } label: { Label("Search all messages", systemImage: "magnifyingglass") }
                         Button { Task { await chat.openMainRoom(); history = false } } label: { Label("Main room", systemImage: "house") }.disabled(chat.busy)
@@ -785,7 +787,7 @@ struct ChatMessageRow: View, Equatable {
                         Button { onFavorite() } label: { Image(systemName: favorite ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(saving)
                         Button { onRemember() } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(busy)
                         Button { onDelete() } label: { Image(systemName: "trash") }.accessibilityLabel("Delete message").disabled(busy)
-                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(VesperIconButtonStyle()).padding(.vertical, 4)
+                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(.plain).padding(.vertical, 4)
                 }
             }.padding(4).background(highlighted ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12)).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
             if !user { Spacer(minLength: 20) }
@@ -818,7 +820,7 @@ struct ChatMessageRow: View, Equatable {
 }
 
 private struct ChatHeaderButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label.frame(width: 36, height: 44).vesperGlass(in: Capsule(), interactive: true).opacity(configuration.isPressed ? 0.5 : 1) }
+    func makeBody(configuration: Configuration) -> some View { configuration.label.frame(width: 36, height: 44).opacity(configuration.isPressed ? 0.5 : 1) }
 }
 
 // Keep persisted records intact; classify only their presentation, never by message text.
@@ -1028,14 +1030,14 @@ private struct ChatQuestionSheet: View {
                                 } label: {
                                     Label("Other answer", systemImage: other.contains(question.id) ? "checkmark.circle.fill" : "circle")
                                         .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                                }.buttonStyle(.plain).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+                                }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                             }
                             if question["options"].array.isEmpty || other.contains(question.id) {
                                 let value = Binding(get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 })
                                 Group {
                                     if question["isSecret"].bool { SecureField("Your answer…", text: value) }
                                     else { TextField("Your answer…", text: value, axis: .vertical).lineLimit(1...4) }
-                                }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+                                }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                             }
                         }
                     }
@@ -1045,7 +1047,7 @@ private struct ChatQuestionSheet: View {
                     Button { Task { _ = await chat.resolveQuestion(request.id, selections: answers) } } label: {
                         HStack { if chat.answeringQuestion { ProgressView() }; Text("Submit answer").font(.headline) }
                             .frame(maxWidth: .infinity).padding(.vertical, 16)
-                    }.buttonStyle(.plain).vesperGlass(in: Capsule(), interactive: true)
+                    }.buttonStyle(.plain).background(.regularMaterial, in: Capsule())
                         .disabled(!valid || chat.answeringQuestion).padding(.horizontal, 20).padding(.bottom, 12)
                 }
                 .navigationTitle("Answer question").navigationBarTitleDisplayMode(.inline)
@@ -1067,7 +1069,7 @@ private struct ChatQuestionSheet: View {
                 }
                 Spacer(minLength: 0)
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
             .overlay { RoundedRectangle(cornerRadius: 14).stroke(selected ? VesperTheme.muted : .clear, lineWidth: 1) }
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -1155,7 +1157,7 @@ private struct MiniTerminal: View {
     @State private var expanded = false
     @State private var details = false
     private var title: String { execution["title"].string.isEmpty ? "Terminal" : execution["title"].string }
-    private var statusColor: Color { ["failed", "error"].contains(execution["status"].string) ? .red : execution["status"].string == "running" ? .yellow : VesperTheme.muted }
+    private var statusColor: Color { ["failed", "error"].contains(execution["status"].string) ? .red : execution["status"].string == "running" ? .yellow : .white.opacity(0.8) }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -1165,8 +1167,8 @@ private struct MiniTerminal: View {
                 Button { details = true } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.accessibilityLabel("Expand terminal")
             }
             if expanded { output.frame(maxHeight: 220) }
-        }.font(.system(size: 12, design: .monospaced)).foregroundStyle(VesperTheme.ink)
-        .padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+        }.font(.system(size: 12, design: .monospaced)).foregroundStyle(Color.white.opacity(0.9))
+        .padding(12).background(Color(red: 0.12, green: 0.14, blue: 0.18), in: RoundedRectangle(cornerRadius: 12))
         .buttonStyle(.plain)
         .sheet(isPresented: $details) {
             VStack(alignment: .leading, spacing: 12) {
@@ -1176,8 +1178,8 @@ private struct MiniTerminal: View {
                     Button("Done") { details = false }
                 }
                 output
-            }.padding().font(.system(size: 13, design: .monospaced)).foregroundStyle(VesperTheme.ink)
-            .background { Background() }.presentationDetents([.height(300), .large])
+            }.padding().font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
+            .background(Color(red: 0.12, green: 0.14, blue: 0.18)).presentationDetents([.height(300), .large])
         }
     }
     private var output: some View {
@@ -1266,7 +1268,7 @@ private struct CallRecordButton: View {
     @State private var showing = false
     var body: some View {
         Button { showing = true } label: {
-            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).vesperGlass(in: RoundedRectangle(cornerRadius: 16))
+            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }.buttonStyle(.plain).sheet(isPresented: $showing) {
             NavigationStack {
                 ScrollView {

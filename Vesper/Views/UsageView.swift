@@ -172,7 +172,7 @@ private struct ElevenLabsUsageKeyView: View {
                         Text("Use a key with subscription read permission. It is stored in this device’s Keychain and sent only to ElevenLabs.")
                             .font(.subheadline)
                         SecureField("ElevenLabs API key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+                            .padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                         Text("Leave blank to use your existing ElevenLabs voice key, if available. This does not change your voice settings.")
                             .font(.caption).foregroundStyle(VesperTheme.muted)
                         if let error { Text(error).font(.caption).foregroundStyle(.red) }

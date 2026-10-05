@@ -21,17 +21,7 @@ enum VesperTheme {
     static var surface: Color { palette.surface }
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
-
-/// The same regular Liquid Glass used by the system tab bar, shared by app chrome.
 extension View {
-    @ViewBuilder func vesperButtonStyle() -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) { self.buttonStyle(.glass) }
-        else { self.buttonStyle(VesperGlassButtonStyle()) }
-        #else
-        self.buttonStyle(VesperGlassButtonStyle())
-        #endif
-    }
     @ViewBuilder func vesperGlass<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
@@ -46,34 +36,13 @@ extension View {
         #endif
     }
 }
-struct VesperGlassButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.padding(.horizontal, 14).padding(.vertical, 8)
-            .frame(minHeight: 44).vesperGlass(in: Capsule(), interactive: true)
-            .opacity(configuration.isPressed ? 0.65 : 1)
-    }
-}
-struct VesperSmallButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.padding(4).frame(minWidth: 36, minHeight: 36)
-            .vesperGlass(in: Capsule(), interactive: true)
-            .opacity(configuration.isPressed ? 0.65 : 1)
-    }
-}
-struct VesperIconButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.frame(width: 32, height: 32)
-            .vesperGlass(in: Circle(), interactive: true)
-            .opacity(configuration.isPressed ? 0.65 : 1)
-    }
-}
 struct AppearancePicker: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     @AppStorage("vesperPalette") private var palette = "blue"
     @State private var showing = false
     @AppStorage("iconChangeError") private var iconError = ""
     var body: some View {
-        Button { showing = true } label: { Image(systemName: "paintpalette") }.buttonStyle(.plain)
+        Button { showing = true } label: { Image(systemName: "paintpalette") }
             .accessibilityLabel("Appearance")
             .popover(isPresented: $showing) {
                 VStack(alignment: .leading, spacing: 22) {
@@ -109,34 +78,13 @@ struct Background: View {
         }.ignoresSafeArea()
     }
 }
-
-/// List and form rows use a single backing; row buttons retain their natural layout.
-struct VesperList<Content: View>: View {
-    @ViewBuilder var content: Content
-    var body: some View {
-        List { content.listRowBackground(VesperListSurface()) }
-            .scrollContentBackground(.hidden).buttonStyle(.plain)
-            .background { Background() }
-    }
-}
-struct VesperForm<Content: View>: View {
-    @ViewBuilder var content: Content
-    var body: some View {
-        Form { content.listRowBackground(VesperListSurface()) }
-            .scrollContentBackground(.hidden).buttonStyle(.plain)
-            .background { Background() }
-    }
-}
-private struct VesperListSurface: View {
-    var body: some View { Color.clear.vesperGlass(in: Rectangle()) }
-}
-
 struct GlassCard<Content: View>: View {
     var padding: CGFloat = 18
     @ViewBuilder var content: Content
     var body: some View {
         content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-            .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 25))
+            .overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8), lineWidth: 1.5))
     }
 }
 struct Page<Content: View>: View {
@@ -152,7 +100,7 @@ struct Page<Content: View>: View {
                 }.padding(.vertical, 8)
                 content
             }.padding(20).frame(maxWidth: 780).frame(maxWidth: .infinity)
-        }.scrollDismissesKeyboard(.interactively).vesperButtonStyle()
+        }.scrollDismissesKeyboard(.interactively)
     }
 }
 struct EmptyCard: View {
@@ -177,7 +125,7 @@ struct FormField: View {
             if multiline {
                 TextEditor(text: $text).frame(minHeight: 160).scrollContentBackground(.hidden)
             } else { TextField(label, text: $text) }
-        }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+        }.padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 struct EditorSheet<Content: View>: View {

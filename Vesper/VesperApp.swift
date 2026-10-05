@@ -10,7 +10,6 @@ import UserNotifications
     var body: some Scene {
         WindowGroup {
             RootView().environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
-                .vesperButtonStyle()
                 .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
                 .onChange(of: palette) { _, value in ThemeIcons.apply(value) }
         }
@@ -255,7 +254,7 @@ struct RootView: View {
                 Divider()
                 WeeklyUsageView().padding(.horizontal, 28).padding(.bottom, 12)
             }.padding(.top, 8).frame(width: 280).frame(maxHeight: .infinity)
-                .vesperGlass(in: RoundedRectangle(cornerRadius: 22)).transition(.move(edge: .leading))
+                .background(.regularMaterial).transition(.move(edge: .leading))
                 .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
                 .accessibilityAddTraits(.isModal)
     }
@@ -488,7 +487,7 @@ struct RootView: View {
             Spacer()
             HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); homeWordmark }
             Spacer()
-            AppearancePicker().frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
+            AppearancePicker().frame(width: 44, height: 44)
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
     }
     private func refreshUsage() async {
@@ -523,7 +522,8 @@ struct OpeningView: View {
                     Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
-                        .vesperGlass(in: Capsule(), interactive: true)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.7)))
                     }.buttonStyle(.plain).disabled(!ready || entering)
                     } else if store.loading {
                         ProgressView("Connecting to Vesper…")

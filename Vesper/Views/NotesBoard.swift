@@ -102,8 +102,8 @@ private struct BoardNote: View {
             Text(note["text"].string.isEmpty ? "A new note" : note["text"].string).font(.system(size: 16, design: layout.cardStyle == "grid" ? .monospaced : .serif)).lineSpacing(5).lineLimit(layout.cardStyle == "tag" ? 4 : 8)
             Spacer(minLength: 0)
         }.padding(20).frame(width: 220, height: layout.cardStyle == "tag" ? 165 : 230)
-        .foregroundStyle(VesperTheme.ink)
-        .vesperGlass(in: RoundedRectangle(cornerRadius: layout.cardStyle == "tag" ? 20 : 12))
+        .foregroundStyle(Color(red: 0.16, green: 0.23, blue: 0.27))
+        .background(paper, in: RoundedRectangle(cornerRadius: layout.cardStyle == "tag" ? 20 : 3))
         .overlay { if layout.cardStyle == "grid" { Canvas { context, size in
             for x in stride(from: CGFloat(0), to: size.width, by: 16) { for y in stride(from: CGFloat(0), to: size.height, by: 16) {
                 context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.blue.opacity(0.16)))

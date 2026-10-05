@@ -61,14 +61,14 @@ struct MusicView: View {
                             Image(systemName: playbackModeIcon)
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .vesperGlass(in: Circle(), interactive: true)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
                         .accessibilityLabel("Playback mode: \(playbackModeName). Tap to change")
                         Button { sheet = .library } label: {
                             Image(systemName: "books.vertical")
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .vesperGlass(in: Circle(), interactive: true)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
                         .accessibilityLabel("My Music")
                     }
@@ -147,7 +147,6 @@ struct MusicView: View {
                     Image(systemName: lyricsFrostedBackground ? "square.on.square.fill" : "square.dashed")
                         .font(.system(size: 19))
                         .frame(width: 44, height: 44)
-                        .vesperGlass(in: Circle(), interactive: true)
                 }
                 .accessibilityLabel(lyricsFrostedBackground ? "Turn off frosted lyrics background" : "Turn on frosted lyrics background")
             }
@@ -199,7 +198,7 @@ struct MusicView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 if lyricsFrostedBackground {
-                    Color.clear.vesperGlass(in: RoundedRectangle(cornerRadius: 18))
+                    RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial)
                 }
             }
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(lyricsFrostedBackground ? 0.5 : 0)))
@@ -227,7 +226,7 @@ struct MusicView: View {
             Spacer(minLength: 5)
             Button { player.toggle() } label: {
                 Group { if player.resolving { ProgressView() } else { Image(systemName: player.playing ? "pause" : "play").font(.system(size: 29)) } }
-                    .frame(width: 68, height: 68).vesperGlass(in: Circle(), interactive: true)
+                    .frame(width: 68, height: 68).background(.ultraThinMaterial, in: Circle())
             }.disabled(player.tracks.isEmpty || player.resolving).accessibilityLabel(player.playing ? "Pause" : "Play")
             Spacer(minLength: 5)
             control("forward.end", label: "Next song") { player.next(1) }
@@ -237,11 +236,11 @@ struct MusicView: View {
         }.padding(.vertical, 4)
     }
     private func control(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: icon).font(.system(size: 21)).frame(width: 46, height: 46).vesperGlass(in: Circle(), interactive: true) }.accessibilityLabel(label)
+        Button(action: action) { Image(systemName: icon).font(.system(size: 21)).frame(width: 46, height: 46).background(.ultraThinMaterial, in: Circle()) }.accessibilityLabel(label)
     }
     private var queueSheet: some View {
         NavigationStack {
-            VesperList {
+            List {
                 if player.tracks.isEmpty { Text("The queue is empty.") }
                 ForEach(player.tracks) { track in
                     Button { player.select(track); sheet = nil } label: { MusicTrackRow(track: track, active: player.track.id == track.id) }
@@ -291,7 +290,7 @@ struct MusicLibraryView: View {
     @State private var playlistBusy = false
     var body: some View {
         NavigationStack {
-            VesperList {
+            List {
                 if !catalog.message.isEmpty { Text(catalog.message).font(.caption).foregroundStyle(VesperTheme.muted) }
                 if let playlist = selectedVesperPlaylist { vesperCollection(playlist) }
                 else if catalog.collection != .null { collection }
@@ -338,7 +337,7 @@ struct MusicLibraryView: View {
                     catalog.connected = MusicAuthorization.currentStatus == .authorized
                     if catalog.connected { await catalog.refresh(player: player) }
                 }
-        }.buttonStyle(.plain).presentationDragIndicator(.visible)
+        }.presentationDragIndicator(.visible)
     }
     private var savedPlaylists: [JSONValue] { store.document("musicPlaylists").array }
     private var selectedVesperPlaylist: JSONValue? { savedPlaylists.first { $0.id == selectedVesperPlaylistID } }
@@ -363,7 +362,7 @@ struct MusicLibraryView: View {
                 Text("Vesper playlists"); Spacer()
                 Button { playlistName = ""; creatingPlaylist = true } label: { Image(systemName: "plus").frame(width: 36, height: 32) }
                     .accessibilityLabel("Create Vesper playlist")
-            }.textCase(nil).buttonStyle(VesperSmallButtonStyle()).disabled(playlistBusy)
+            }.textCase(nil).buttonStyle(.borderless).disabled(playlistBusy)
         }
     }
     private func vesperCollection(_ playlist: JSONValue) -> some View {
@@ -376,7 +375,7 @@ struct MusicLibraryView: View {
                         await playlistTool("music_playlist_play", arguments: .object(["playlistId": .string(playlist.id)]), playback: true)
                     }
                 } label: { Image(systemName: "play.fill").frame(width: 44, height: 44) }
-                    .buttonStyle(VesperSmallButtonStyle()).accessibilityLabel("Play playlist").disabled(playlistBusy || playlist["tracks"].array.isEmpty)
+                    .buttonStyle(.borderless).accessibilityLabel("Play playlist").disabled(playlistBusy || playlist["tracks"].array.isEmpty)
             }
             if playlist["tracks"].array.isEmpty { Text("Find songs in Discover, then use Add to playlist.").foregroundStyle(VesperTheme.muted) }
             ForEach(playlist["tracks"].array) { track in
@@ -453,7 +452,7 @@ struct MusicLibraryView: View {
             }
             .font(.system(size: 15))
             .textCase(nil)
-            .buttonStyle(VesperSmallButtonStyle())
+            .buttonStyle(.borderless)
             .disabled(!catalog.connected || catalog.busy)
         }
     }
@@ -467,7 +466,7 @@ struct MusicLibraryView: View {
                         else { Image(systemName: "magnifyingglass") }
                     }.frame(width: 44, height: 44)
                 }
-                .buttonStyle(VesperSmallButtonStyle())
+                .buttonStyle(.borderless)
                 .accessibilityLabel("Search")
                 .disabled(catalog.busy || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -484,13 +483,13 @@ struct MusicLibraryView: View {
                 Button { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player, autoplay: false) } } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
                 }
-                .buttonStyle(VesperSmallButtonStyle())
+                .buttonStyle(.borderless)
                 .accessibilityLabel("Sync queue")
                 .disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
                 Button { Task { await catalog.prepare(catalog.collection["tracks"].array, store: store, player: player) } } label: {
                     Image(systemName: "play.fill").frame(width: 44, height: 44)
                 }
-                .buttonStyle(VesperSmallButtonStyle()).accessibilityLabel("Play all")
+                .buttonStyle(.borderless).accessibilityLabel("Play all")
                 .disabled(catalog.busy || catalog.collection["tracks"].array.isEmpty)
             }
             if catalog.collection["tracks"].array.isEmpty { Text("No songs to show yet.").foregroundStyle(VesperTheme.muted) }
@@ -498,7 +497,7 @@ struct MusicLibraryView: View {
                 HStack {
                     Button { Task { await catalog.prepare([track], store: store, player: player, append: true) } } label: { MusicTrackRow(track: track, active: player.track.id == track.id) }.buttonStyle(.plain)
                     addToPlaylist(track)
-                    Button { Task { await catalog.prepare([track], store: store, player: player, append: true, autoplay: false) } } label: { Image(systemName: "plus").frame(width: 44, height: 44) }.buttonStyle(VesperSmallButtonStyle()).accessibilityLabel("Add to queue")
+                    Button { Task { await catalog.prepare([track], store: store, player: player, append: true, autoplay: false) } } label: { Image(systemName: "plus").frame(width: 44, height: 44) }.buttonStyle(.borderless).accessibilityLabel("Add to queue")
                 }.disabled(catalog.busy)
             }
         }

@@ -29,7 +29,7 @@ struct TerminalTextViewport: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
         view.isEditable = false; view.isSelectable = true
-        view.backgroundColor = .clear; view.textColor = UIColor(VesperTheme.ink)
+        view.backgroundColor = .clear; view.textColor = .white
         view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         view.textContainerInset = UIEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
         view.textContainer.lineFragmentPadding = 0; view.textContainer.widthTracksTextView = true
@@ -39,7 +39,6 @@ struct TerminalTextViewport: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: UITextView, context: Context) {
-        view.textColor = UIColor(VesperTheme.ink)
         guard view.text != text else { return }
         let offset = view.contentOffset
         let nearBottom = view.text.isEmpty || offset.y + view.bounds.height >= view.contentSize.height - 48
@@ -76,7 +75,7 @@ struct ChatTerminalView: View {
                 HStack(spacing: 6) {
                     Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
                     Text(connected ? (running ? "Live · This chat" : "No active terminal") : "Disconnected")
-                        .font(.caption).foregroundStyle(VesperTheme.muted)
+                        .font(.caption).foregroundStyle(.white.opacity(0.65))
                     Spacer()
                     Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Reconnect terminal")
@@ -98,14 +97,14 @@ struct ChatTerminalView: View {
                 }
                 if connected && !running {
                     Button("Open this chat in terminal") { perform(endpoint + "/start") }
-                        .buttonStyle(VesperGlassButtonStyle()).disabled(busy)
+                        .buttonStyle(.bordered).disabled(busy)
                 }
                 HStack(spacing: 8) {
                     ForEach(["Esc", "Tab", "^C", "←", "↑", "↓", "→", "↵"], id: \.self) { label in
                         Button(label) { sendKey(label) }
                             .font(.system(size: 13, design: .monospaced))
                             .frame(maxWidth: .infinity, minHeight: 36)
-                            .vesperGlass(in: RoundedRectangle(cornerRadius: 8))
+                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                     }
                 }.disabled(!connected || !running || busy)
                 HStack {
@@ -115,13 +114,13 @@ struct ChatTerminalView: View {
                     Button { sendDraft() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
                         .accessibilityLabel("Send to terminal")
                         .disabled(draft.isEmpty || !connected || !running || busy)
-                }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+                }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
                 Text("Persistent VPS session · closing this window keeps it running")
-                    .font(.caption2).foregroundStyle(VesperTheme.muted)
-            }.padding(16).background { Background() }
+                    .font(.caption2).foregroundStyle(.white.opacity(0.65))
+            }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
                 .navigationTitle("Chat terminal").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.foregroundStyle(VesperTheme.ink) } }
-        }.preferredColorScheme(VesperTheme.palette == .black ? .dark : .light).tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.foregroundStyle(.white) } }
+        }.preferredColorScheme(.dark).tint(.white).foregroundStyle(.white)
             .task(id: "\(scenePhase)-\(retry)") {
                 guard scenePhase == .active else { connected = false; return }
                 await followScreen()

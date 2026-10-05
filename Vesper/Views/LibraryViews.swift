@@ -37,7 +37,7 @@ struct DesireView: View {
                 Text("潮水轻轻起伏，数值决定抵岸的距离").font(.system(size: 11, design: .serif)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity)
                 if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
             }.padding(20).frame(maxWidth: 700).frame(maxWidth: .infinity)
-        }.background { Background() }
+        }.background(.white.opacity(0.28))
         .task { await load() }.refreshable { await load() }
         .onChange(of: phase) { _, value in if value == .active { Task { await load() } } }
         .sheet(isPresented: $showHistory) {
@@ -257,7 +257,7 @@ struct AlbumView: View {
     }
     private var collectionManager: some View {
         NavigationStack {
-            VesperList {
+            List {
                 if !status.isEmpty { Section { Text(status).font(.caption) } }
                 if savingCategory { ProgressView("正在保存分类…") }
                 Section("已有分类") {
@@ -328,7 +328,7 @@ struct AlbumView: View {
     private func albumChip(_ name: String, id: String) -> some View {
         Button { collection = id } label: {
             Text(name).font(.caption.weight(.medium)).padding(.horizontal, 12).padding(.vertical, 9)
-                .vesperGlass(in: Capsule(), interactive: true).overlay(Capsule().stroke(collection == id ? VesperTheme.accent : .clear, lineWidth: 2))
+                .background(collection == id ? VesperTheme.muted.opacity(0.23) : .white.opacity(0.6), in: Capsule())
         }.buttonStyle(.plain)
     }
     private func createCollection() async {
@@ -398,7 +398,7 @@ struct AlbumPhotoViewer: View {
                                     Text("收藏于 " + saved.formatted(.dateTime.year().month().day().hour().minute())).font(.caption).foregroundStyle(VesperTheme.muted)
                                 }
                                 if !photo["category"].string.isEmpty { Text(photo["category"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
-                            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+                            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
                         }.padding(12)
                     }.tag(photo.id)
                 }
@@ -538,7 +538,7 @@ struct MovieRoomView: View {
                 Button { screen.active || screen.starting ? screen.stop() : screen.start() } label: {
                     Label(screen.active ? "停止分享屏幕" : screen.starting ? "Starting…" : "分享屏幕", systemImage: screen.active ? "stop.circle.fill" : "rectangle.on.rectangle")
                         .foregroundStyle(.white)
-                }.buttonStyle(VesperGlassButtonStyle()).tint(VesperTheme.ink)
+                }.buttonStyle(.borderedProminent).tint(VesperTheme.ink)
                 Text("Shares the Vesper screen automatically while this room is open. Other apps and protected video are not captured; audio is not shared.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = screen.error { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack {

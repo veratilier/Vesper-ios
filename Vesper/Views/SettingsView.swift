@@ -49,7 +49,7 @@ struct PermissionPage<Content: View>: View {
                 .frame(maxWidth: 720).frame(maxWidth: .infinity)
         }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .foregroundStyle(VesperTheme.ink)
-            .background { Background() }.transparentNavigationTop().vesperButtonStyle()
+            .background { Background() }.transparentNavigationTop()
     }
 }
 struct PermissionPanel<Content: View>: View {
@@ -58,15 +58,16 @@ struct PermissionPanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 10 : 16) { content }
             .frame(maxWidth: .infinity, alignment: .leading).padding(compact ? 15 : 20)
-            .vesperGlass(in: RoundedRectangle(cornerRadius: 24))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.palette == .black ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1))
     }
 }
 struct PermissionActionStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(VesperTheme.ink)
+            .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
             .padding(.horizontal, 18).frame(minHeight: 44)
-            .vesperGlass(in: Capsule(), interactive: true).opacity(configuration.isPressed ? 0.7 : 1)
+            .background(VesperTheme.ink, in: Capsule()).opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
 enum PermissionLabels {
@@ -127,8 +128,8 @@ struct DevicePermissionsView: View {
                 }
                 Spacer(minLength: 0)
                 Text("Settings").font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(VesperTheme.ink)
-                    .padding(.horizontal, 16).frame(height: 34).vesperGlass(in: Capsule(), interactive: true)
+                    .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
+                    .padding(.horizontal, 16).frame(height: 34).background(VesperTheme.ink, in: Capsule())
             }.frame(minHeight: typeSize.isAccessibilitySize ? 220 : 190)
         }.buttonStyle(.plain)
     }
@@ -142,8 +143,8 @@ struct ConnectionView: View {
                 FormField(label: "History address", text: $store.historyURL)
                 FormField(label: "Chat address", text: $store.socketURL)
                 Text("Device token").font(.caption).foregroundStyle(VesperTheme.muted)
-                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
-                Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(VesperTheme.ink).frame(maxWidth: .infinity, minHeight: 44).vesperGlass(in: Capsule(), interactive: true) }.buttonStyle(.plain).disabled(store.loading)
+                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(store.loading)
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
@@ -166,7 +167,7 @@ struct WakeView: View {
         return Date(timeIntervalSince1970: timestamp)
     }
     var body: some View {
-        VesperList {
+        List {
             Section {
                 Toggle("Automatic wake-up", isOn: $enabled).disabled(!supported || busy)
                 if runtime != .null { nextWakeRow }
@@ -248,7 +249,7 @@ struct WakeView: View {
         }
     }
     private var permissionsPage: some View {
-        VesperList {
+        List {
             NavigationLink {
                 permissionPage(messages: true)
             } label: {
@@ -264,7 +265,7 @@ struct WakeView: View {
             .safeAreaInset(edge: .bottom) { saveBar }
     }
     private var activityPage: some View {
-        VesperList {
+        List {
             if jobs.isEmpty { Text("No activity to show").foregroundStyle(VesperTheme.muted) }
             ForEach(jobs) { job in
                 NavigationLink { WakeRunDetail(job: job) } label: { runRow(job) }
@@ -273,7 +274,7 @@ struct WakeView: View {
             .navigationTitle("Recent activity").navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
     }
     private func permissionPage(messages: Bool) -> some View {
-        VesperList {
+        List {
             Section {
                 ForEach(runtime[messages ? "messageOptions" : "toolOptions"].array.map { $0.string }, id: \.self) { name in
                     Toggle(name.replacingOccurrences(of: "_", with: " ").capitalized, isOn: permission(name, messages: messages))
@@ -355,7 +356,7 @@ struct WakeSleepView: View {
         return String(format: "%02d:%02d", calendar.component(.hour, from: date), calendar.component(.minute, from: date))
     }
     var body: some View {
-        VesperForm {
+        Form {
             if busy { ProgressView("Loading sleep settings…") }
             Section {
                 Toggle("Sleep time", isOn: $enabled)
@@ -423,7 +424,7 @@ private struct WakePromptView: View {
     @State private var busy = false
     @State private var status = ""
     var body: some View {
-        VesperList {
+        List {
             Section {
                 TextEditor(text: $prompt)
                     .frame(minHeight: 220)
@@ -487,7 +488,7 @@ private struct WakeSaveButton: View {
                 .font(.headline)
                 .foregroundStyle(VesperTheme.ink)
                 .frame(maxWidth: .infinity, minHeight: 56)
-                .vesperGlass(in: Capsule(), interactive: true)
+                .background(.regularMaterial, in: Capsule())
                 .overlay(Capsule().strokeBorder(.white.opacity(0.6), lineWidth: 1))
                 .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
         }
@@ -665,13 +666,13 @@ struct VoiceSettingsView: View {
                 Picker("Provider", selection: Binding(get: { provider }, set: { value in provider = value; baseURL = value == "ElevenLabs" ? "https://api.elevenlabs.io" : "https://api.minimax.chat"; model = value == "ElevenLabs" ? "eleven_multilingual_v2" : "speech-2.6-hd"; voiceID = ""; apiKey = ""; groupID = "" })) { Text("ElevenLabs").tag("ElevenLabs"); Text("MiniMax").tag("MiniMax") }
                 FormField(label: "API address", text: $baseURL)
                 Text("API key").font(.caption)
-                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 FormField(label: "Voice ID", text: $voiceID)
                 FormField(label: "Model", text: $model)
                 if provider == "MiniMax" { FormField(label: "Group ID (optional)", text: $groupID) }
                 HStack { Text("Speed"); Slider(value: $speed, in: 0.7...1.2, step: 0.05); Text(String(format: "%.2f×", speed)).font(.caption) }
-                Button("Save voice") { save() }.buttonStyle(VesperGlassButtonStyle())
-                Button(preview.speaking ? "Stop preview" : "Preview voice") { if preview.speaking { preview.stop() } else if validate() { Task { await preview.play("宝贝，我在这里。", store: store, connectionOverride: configuration) } } }.buttonStyle(VesperGlassButtonStyle())
+                Button("Save voice") { save() }.buttonStyle(.bordered)
+                Button(preview.speaking ? "Stop preview" : "Preview voice") { if preview.speaking { preview.stop() } else if validate() { Task { await preview.play("宝贝，我在这里。", store: store, connectionOverride: configuration) } } }.buttonStyle(.bordered)
                 Text("Saved in this iPhone’s Keychain and used for call replies. Preview uses your provider’s credits.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
                 if let error = preview.error { Text(error).font(.caption).foregroundStyle(.red) }
@@ -742,7 +743,7 @@ private struct McpEditor: View {
     @StateObject private var oauth = McpOAuthSession()
     var body: some View {
         NavigationStack {
-            VesperForm {
+            Form {
                 TextField("Name", text: $name)
                 TextField("HTTPS MCP URL", text: $url).keyboardType(.URL)
                 Toggle("Enabled", isOn: $enabled)

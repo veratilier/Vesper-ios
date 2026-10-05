@@ -116,7 +116,7 @@ private struct ChatMusicCardContent: View {
                 Image(systemName: playable ? (selected ? "pause.fill" : "play.fill") : "arrow.up.right").foregroundStyle(colors.ink)
             }.frame(maxWidth: 265, alignment: .leading).padding(12)
                 .foregroundStyle(colors.ink)
-                .vesperGlass(in: RoundedRectangle(cornerRadius: 16))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette == "black" ? Color.white.opacity(0.16) : Color.white.opacity(0.65), lineWidth: 1))
         }.buttonStyle(.plain).disabled(!playable && shareURL == nil)
             .accessibilityLabel((playable ? "Play " : "Open ") + song["title"].string)
@@ -187,7 +187,7 @@ struct ChatMusicSharePicker: View {
                         TextField("Search songs or artists", text: $query).submitLabel(.search).onSubmit(search)
                         Button(action: search) { Image(systemName: "magnifyingglass").frame(width: 44, height: 44) }
                             .accessibilityLabel("Search music").disabled(catalog.busy || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }.padding(.leading, 14).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+                    }.padding(.leading, 14).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
                     Text(query.isEmpty ? "Your music" : "Search results").font(.headline)
                     if catalog.busy { ProgressView("Searching…") }
                     if !catalog.message.isEmpty && !query.isEmpty { Text(catalog.message).font(.footnote).foregroundStyle(VesperTheme.muted) }
@@ -202,7 +202,7 @@ struct ChatMusicSharePicker: View {
                                 }
                                 Spacer()
                                 Image(systemName: "square.and.arrow.up").font(.system(size: 17))
-                            }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
+                            }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
                         }.buttonStyle(.plain)
                     }
                     if tracks.isEmpty && !catalog.busy && query.isEmpty { Text("Search for a song to share.").foregroundStyle(VesperTheme.muted) }

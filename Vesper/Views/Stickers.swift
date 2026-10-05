@@ -103,7 +103,7 @@ struct StickerLibraryView: View {
                     HStack {
                         PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .images) { Label("Add photos", systemImage: "photo.badge.plus") }
                         Button { importing = true } label: { Label("Add files", systemImage: "folder.badge.plus") }
-                    }.buttonStyle(VesperGlassButtonStyle()).disabled(busy)
+                    }.buttonStyle(.bordered).disabled(busy)
                 }
                 if busy || loading { ProgressView(busy ? "Importing…" : "Loading…") }
                 if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
@@ -112,7 +112,7 @@ struct StickerLibraryView: View {
                         Button { if compact { managing = true } else { editing = true } } label: {
                             Image(systemName: "square.and.pencil").font(.system(size: 27, weight: .light))
                                 .frame(maxWidth: .infinity).frame(height: 76)
-                                .vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+                                .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(VesperTheme.muted.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5])))
                         }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
                     }
@@ -131,7 +131,7 @@ struct StickerLibraryView: View {
     }
     private func editor(_ sticker: JSONValue) -> some View {
         NavigationStack {
-            VesperForm {
+            Form {
                 StickerArtwork(sticker: sticker).frame(height: 150).frame(maxWidth: .infinity).allowsHitTesting(false)
                 TextField("Name", text: $editName)
                 TextField("Description", text: $editDescription, axis: .vertical)

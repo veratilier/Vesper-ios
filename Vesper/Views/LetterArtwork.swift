@@ -93,7 +93,7 @@ struct LetterStack: View {
                 .overlay(alignment: .topTrailing) {
                     Text(LetterDates.parse(letter.createdAt)?.formatted(.dateTime.month(.abbreviated).day()) ?? "Letter")
                         .font(.custom("Georgia", size: 11)).padding(.horizontal, 10).padding(.vertical, 3)
-                        .vesperGlass(in: UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
+                        .background(colors.paper, in: UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
                         .overlay(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4).stroke(colors.line.opacity(0.75), lineWidth: 0.8))
                         .offset(x: -9, y: -2)
                 }
@@ -103,7 +103,7 @@ struct LetterStack: View {
                         if letter.isKept { Image(systemName: "bookmark.fill") }
                     }.font(.custom("Georgia", size: 10)).foregroundStyle(colors.ink)
                         .padding(.horizontal, 8).padding(.vertical, 5)
-                        .vesperGlass(in: Capsule())
+                        .background(colors.paper.opacity(0.9), in: Capsule())
                         .overlay(Capsule().stroke(colors.line.opacity(0.4), lineWidth: 0.5)).padding(8)
                 }
         }.buttonStyle(.plain).frame(width: cardWidth, height: cardWidth / 1.7)

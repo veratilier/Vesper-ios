@@ -161,7 +161,7 @@ struct HomeView: View {
             }
             .padding(.horizontal, 20).padding(.vertical, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .vesperGlass(in: PaperEdge(seed: 9))
+            .background { DesktopPaper(seed: 9) }
         }
         .accessibilityHint("Open Notes to read the full letter")
         .accessibilityIdentifier("home-rowan-letter")
@@ -210,7 +210,7 @@ struct HomeView: View {
             }
             .foregroundStyle(palette.muted).padding(.horizontal, 8).padding(.vertical, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .vesperGlass(in: RoundedRectangle(cornerRadius: 13))
+            .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
         }
         .accessibilityLabel(upcomingDate.map { $0["title"].string + ", " + (DateCounter.days($0).map(HomeDesktopContent.countdown) ?? "") } ?? "Dates, add a date")
         .accessibilityIdentifier("home-date-leaf")
@@ -250,7 +250,7 @@ struct HomeView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .vesperGlass(in: RoundedRectangle(cornerRadius: 13))
+        .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
         .accessibilityIdentifier("home-reminders-slip")
     }
     private var musicRow: some View {
@@ -281,14 +281,14 @@ struct HomeView: View {
         }.accessibilityLabel("Open Music, " + (player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string))
     }
     private var musicControls: some View {
-        HStack(spacing: 6) {
-            Button { player.next(-1) } label: { Image(systemName: "backward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44).vesperGlass(in: Capsule(), interactive: true) }
+        HStack(spacing: 0) {
+            Button { player.next(-1) } label: { Image(systemName: "backward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44) }
                 .accessibilityLabel("Previous song")
             Button { player.toggle() } label: {
                 Image(systemName: player.playing ? "pause.fill" : "play.fill").font(.system(size: 18))
-                    .frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true)
+                    .frame(width: 44, height: 44).background(palette.accent.opacity(0.16), in: Circle())
             }.accessibilityLabel(player.playing ? "Pause" : "Play")
-            Button { player.next(1) } label: { Image(systemName: "forward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44).vesperGlass(in: Capsule(), interactive: true) }
+            Button { player.next(1) } label: { Image(systemName: "forward.end.fill").font(.system(size: 15)).frame(width: 36, height: 44) }
                 .accessibilityLabel("Next song")
         }.foregroundStyle(palette.muted).disabled(player.tracks.isEmpty)
     }
@@ -332,7 +332,7 @@ private struct DesktopPaper: View {
             // Blend the textured backing, keeping native text at full opacity.
             .opacity(palette == .black ? 0.65 : 0.64)
         }
-        .shadow(color: .black.opacity(palette == .black ? 0.12 : 0.05), radius: 4, y: 2)
+        .shadow(color: .black.opacity(palette == .black ? 0.12 : 0.05), radius: 5, y: 3)
         .allowsHitTesting(false).accessibilityHidden(true)
     }
 }

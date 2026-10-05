@@ -104,7 +104,7 @@ struct BookmarkCard: View {
                 Text(card["author"].string + " · " + ChatPresentation.time(card["createdAt"].string)).font(.caption)
                 if !card["imageSource"].string.isEmpty { Text("图片 · " + card["imageSource"].string).font(.caption2).lineLimit(2) }
             }.foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(18)
-        }.vesperGlass(in: RoundedRectangle(cornerRadius: 16))
+        }.background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 5))
             .clipShape(RoundedRectangle(cornerRadius: 5)).shadow(color: .black.opacity(0.12), radius: 12, y: 6)
     }
 }

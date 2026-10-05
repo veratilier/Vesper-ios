@@ -248,7 +248,7 @@ struct AlarmsView: View {
         showingEditor = true
     }
     var body: some View {
-        VesperList {
+        List {
             if alarms.supported && alarms.permission != "Allowed" {
                 Section {
                     Button("Allow Vesper alarms") { Task { await alarms.authorize() } }.disabled(alarms.busy)
@@ -310,7 +310,7 @@ struct AlarmsView: View {
         .refreshable { alarms.refresh() }
         .sheet(isPresented: $showingEditor) {
             NavigationStack {
-                VesperForm {
+                Form {
                     Section {
                         DatePicker("Time", selection: $date, displayedComponents: .hourAndMinute)
                             .datePickerStyle(.wheel).labelsHidden().frame(maxWidth: .infinity)
@@ -342,7 +342,7 @@ struct AlarmsView: View {
                     }
                 }
                 .navigationDestination(isPresented: $showingRepeat) {
-                    VesperList {
+                    List {
                         ForEach(1...7, id: \.self) { day in
                             Button {
                                 if repeatDays.contains(day) { repeatDays.remove(day) }

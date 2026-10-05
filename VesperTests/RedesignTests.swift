@@ -32,7 +32,7 @@ private struct ControlsPalettePreview: View {
             Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
             if page == "Settings" { preview.tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
             else { Text("Settings").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
-        }.vesperButtonStyle()
+        }
             .foregroundStyle((VesperPalette(rawValue: paletteName) ?? .white).ink)
             .tint((VesperPalette(rawValue: paletteName) ?? .white).ink)
             .preferredColorScheme(paletteName == "black" ? .dark : .light)
@@ -63,7 +63,7 @@ private struct SurfacePalettePreview: View {
                 else if page == "Notes" { CollectionView(kind: .notes) }
                 else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
             }
-        }.vesperButtonStyle().foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
             .preferredColorScheme(paletteName == "black" ? .dark : .light)
     }
 }

@@ -31,7 +31,7 @@ struct NativeChatHome: View {
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
-            VesperList {
+            List {
                 Button { searching = true } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
                         .font(.subheadline)
@@ -281,7 +281,7 @@ struct ChatFavoritesView: View {
     }
 
     var body: some View {
-        VesperList {
+        List {
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             if favorites.isEmpty && error.isEmpty {
                 ContentUnavailableView(query.isEmpty ? "No favorite messages yet" : "No matching messages",
@@ -375,7 +375,7 @@ struct ChatSearchView: View {
     @State private var hasMore = false
     @State private var searchNotice = ""
     var body: some View {
-        VesperList {
+        List {
             Picker("Search in", selection: $scope) { Text("All chats").tag("All chats"); Text("This chat").tag("This chat") }.pickerStyle(.segmented)
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             if !searchNotice.isEmpty { Text(searchNotice).font(.caption).foregroundStyle(VesperTheme.muted) }

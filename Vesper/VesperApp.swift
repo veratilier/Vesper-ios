@@ -18,6 +18,7 @@ enum Destination: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters", notes = "Notes"
     case workflow = "Workflow", jottings = "Sketch", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
     var id: String { rawValue }
+    var title: String { self == .journal ? "Diary" : rawValue }
     var icon: String {
         switch self {
         case .home: return "house"
@@ -149,7 +150,7 @@ struct VesperAppGrid: View {
                     image.rotationEffect(.degrees(phase ? 1.5 : -1.5))
                 } animation: { _ in .easeInOut(duration: 0.16) }
             } else { icon }
-            Text(page.rawValue).font(.caption).lineLimit(2).minimumScaleFactor(0.85)
+            Text(page.title).font(.caption).lineLimit(2).minimumScaleFactor(0.85)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .top).contentShape(Rectangle())
     }
@@ -230,7 +231,7 @@ struct RootView: View {
             }.safeAreaInset(edge: .bottom, spacing: 4) { if !NativeMusicAccessory.isSupported { musicDock } }
                 .onAppear { updateMusicRoot(2, visible: true) }.onDisappear { updateMusicRoot(2, visible: false) }
                 .transparentNavigationTop().navigationTitle("Collection")
-                .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
+                .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.title).navigationBarTitleDisplayMode(.inline) }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         if libraryEditing { Button("Done") { libraryEditing = false }.fontWeight(.semibold) }
@@ -250,7 +251,7 @@ struct RootView: View {
                     VStack(spacing: 3) {
                         ForEach(Destination.allCases) { item in
                             Button { withAnimation { navigate(item); sidebar = false } } label: {
-                                Label(item.rawValue, systemImage: item.icon).font(.system(size: 15)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).frame(minHeight: 44)
+                                Label(item.title, systemImage: item.icon).font(.system(size: 15)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).frame(minHeight: 44)
                                     .background(destination == item ? Color.gray.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 14))
                             }.accessibilityAddTraits(destination == item ? .isSelected : [])
                         }
@@ -469,7 +470,7 @@ struct RootView: View {
                 if page != .letters {
                     ToolbarItem(placement: .principal) {
                         if page == .home { homeWordmark }
-                        else { Text(page.rawValue).font(.headline) }
+                        else { Text(page.title).font(.headline) }
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) { NavigationStyleToggle() }

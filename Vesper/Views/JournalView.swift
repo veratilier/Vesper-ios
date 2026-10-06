@@ -210,7 +210,7 @@ struct JournalView: View {
         .task { if store.documents["diary"] == nil && !store.loading { await store.refresh() } }
         .sheet(isPresented: $pickingDate) {
             NavigationStack {
-                DatePicker("Journal date", selection: Binding(get: { selectedDate }, set: { select($0) }), displayedComponents: .date)
+                DatePicker("Diary date", selection: Binding(get: { selectedDate }, set: { select($0) }), displayedComponents: .date)
                     .datePickerStyle(.graphical)
                     .environment(\.calendar, JournalDay.calendar)
                     .environment(\.timeZone, JournalDay.calendar.timeZone)
@@ -254,7 +254,7 @@ struct JournalView: View {
                         Text(JournalDay.label(selectedDate, format: "MMMM yyyy")).font(.system(size: controlSize + 1, weight: .regular, design: .serif))
                         Image(systemName: "chevron.down").font(.caption2)
                     }.frame(minHeight: 44).contentShape(Rectangle())
-                }.accessibilityLabel("Choose journal date")
+                }.accessibilityLabel("Choose diary date")
                 Spacer()
                 HStack(spacing: 4) {
                     Button("Today") { select(.now) }.font(.system(size: controlSize, weight: .regular)).frame(minWidth: 44, minHeight: 44)
@@ -270,7 +270,7 @@ struct JournalView: View {
                             .vesperMaterial(.ultraThinMaterial, in: Circle())
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                        .accessibilityLabel("Switch journal author")
+                        .accessibilityLabel("Switch diary author")
                         .accessibilityValue(author.rawValue)
                         .accessibilityHint("Switch to " + (author == .vera ? "Rowan" : "Vera"))
                 }

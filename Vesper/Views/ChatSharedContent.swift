@@ -63,8 +63,113 @@ struct ChatFileCard: View {
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(VesperTheme.muted)
-        }.padding(14).frame(width: 280, alignment: .leading)
+        }.padding(14).frame(maxWidth: 280, alignment: .leading)
             .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             .accessibilityElement(children: .combine).accessibilityHint("Preview file")
+    }
+}
+
+struct ChatMessageAction: Identifiable {
+    let title: String
+    let icon: String
+    let run: () -> Void
+    var id: String { title }
+}
+
+@MainActor final class ChatActionMenu: ObservableObject {
+    struct Selection {
+        let id: String
+        let frame: CGRect
+        let actions: [ChatMessageAction]
+    }
+    @Published var selection: Selection?
+    func show(id: String, frame: CGRect, actions: [ChatMessageAction]) {
+        guard !frame.isEmpty, !actions.isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        selection = Selection(id: id, frame: frame, actions: actions)
+    }
+}
+
+struct ChatLongPress: ViewModifier {
+    let id: String
+    let actions: () -> [ChatMessageAction]
+    @EnvironmentObject private var menu: ChatActionMenu
+    @State private var frame = CGRect.zero
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.45) { menu.show(id: id, frame: frame, actions: actions()) }
+            .accessibilityActions {
+                ForEach(actions()) { action in Button(action.title, action: action.run) }
+            }
+    }
+}
+
+struct ChatActionOverlay: View {
+    @ObservedObject var menu: ChatActionMenu
+    var body: some View {
+        GeometryReader { geometry in
+            if let selection = menu.selection {
+                let origin = geometry.frame(in: .global).origin
+                let width = min(CGFloat(selection.actions.count) * 70, geometry.size.width - 24)
+                let x = min(max(selection.frame.midX - origin.x, width / 2 + 12), geometry.size.width - width / 2 - 12)
+                let above = selection.frame.minY - origin.y - 42
+                let y = above >= 36 ? above : min(selection.frame.maxY - origin.y + 42, geometry.size.height - 40)
+                Color.black.opacity(0.08).contentShape(Rectangle())
+                    .onTapGesture { menu.selection = nil }
+                    .accessibilityLabel("关闭消息菜单").accessibilityAddTraits(.isButton)
+                HStack(spacing: 0) {
+                    ForEach(selection.actions) { action in
+                        Button {
+                            menu.selection = nil
+                            action.run()
+                        } label: {
+                            VStack(spacing: 6) {
+                                Image(systemName: action.icon).font(.system(size: 19))
+                                Text(action.title).font(.system(size: 12))
+                            }.frame(maxWidth: .infinity).frame(height: 62).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .foregroundStyle(VesperTheme.ink)
+                .frame(width: width)
+                .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.65)))
+                .shadow(color: .black.opacity(0.16), radius: 14, y: 5)
+                .position(x: x, y: y)
+                .accessibilityIdentifier("chat-message-actions")
+            }
+        }
+    }
+}
+
+struct ChatQuotePreview: View {
+    let quote: JSONValue
+    var onOpen: (() -> Void)? = nil
+    var body: some View {
+        Button { onOpen?() } label: {
+            HStack(spacing: 9) {
+                RoundedRectangle(cornerRadius: 2).fill(VesperTheme.muted.opacity(0.6)).frame(width: 3)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ChatPresentation.isUser(quote) ? "Vera" : "Rowan").font(.caption.weight(.semibold))
+                    Text(quote["text"].string).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.fixedSize(horizontal: false, vertical: true).padding(10)
+                .background(VesperTheme.muted.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).foregroundStyle(VesperTheme.muted)
+            .accessibilityHint("跳回被引用的消息")
+    }
+}
+
+struct ChatBubbleSurface: ViewModifier {
+    let user: Bool
+    func body(content: Content) -> some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: user ? 20 : 5,
+                                           bottomTrailingRadius: user ? 5 : 20, topTrailingRadius: 20)
+        content.padding(.horizontal, 14).padding(.vertical, 11)
+            .background(user ? VesperTheme.accent.opacity(0.10) : Color.clear, in: shape)
+            .vesperMaterial(.thinMaterial, in: shape)
+            .overlay(shape.stroke(.white.opacity(0.45), lineWidth: 0.7))
     }
 }

@@ -1497,3 +1497,65 @@ extension ChatConnectionRecoveryTests {
         XCTAssertEqual(chat.userInputRequests.count, 1)
     }
 }
+
+private final class BubblePersistenceProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var storage: [JSONValue] = []
+    static var records: [JSONValue] { lock.lock(); defer { lock.unlock() }; return storage }
+    static func reset() { lock.lock(); storage = []; lock.unlock() }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "bubble-test.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var bytes = request.httpBody ?? Data()
+        if bytes.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }; bytes.append(buffer, count: count)
+            }
+        }
+        if request.httpMethod == "POST", let record = try? JSONDecoder().decode(JSONValue.self, from: bytes) {
+            Self.lock.lock(); Self.storage.append(record); Self.lock.unlock()
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{}".utf8)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+extension ChatConnectionRecoveryTests {
+    func testBubbleToolPersistsVerifiedQuoteAndRejectsFabricatedQuote() async throws {
+        BubblePersistenceProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [BubblePersistenceProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
+        chat.configureConnection(api: APIClient(baseURL: "https://bubble-test.example", historyURL: "https://bubble-test.example", token: "synthetic", requestSession: http), endpoint: "wss://bubble-test.example", threadID: "thread")
+        defer { chat.disconnect() }
+        try await chat.connect()
+        let original: JSONValue = .object(["id": .string("source"), "role": .string("user"), "content": .string("这句我想收藏起来。"), "conversationId": .string(chat.conversationID)])
+        chat.messages = [original]
+        func packet(_ id: String, quote: String) -> JSONValue {
+            .object(["id": .string(id), "method": .string("item/tool/call"), "params": .object([
+                "name": .string("send_native_bubbles"), "callId": .string(id), "arguments": .object([
+                    "bubbles": .array([.object(["text": .string("那就替你留着。"), "replyToMessageId": .string("source"), "quote": .string(quote)]),
+                                       .object(["text": .string("以后看到它，就想起今天。")])])])])])
+        }
+        try socket.emit(packet("good", quote: "这句我想收藏起来。"))
+        await eventually { socket.packets.contains { $0["id"].string == "good" && $0["result"] != .null } }
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "good" }?["result"]["success"], .bool(true))
+        let saved = try XCTUnwrap(BubblePersistenceProtocol.records.first { !$0["metadata"]["bubbles"].array.isEmpty })
+        XCTAssertEqual(saved["metadata"]["bubbles"].array.count, 2)
+        XCTAssertEqual(saved["metadata"]["bubbles"].array[0]["replyTo"]["messageId"].string, "source")
+        XCTAssertEqual(saved["metadata"]["bubbles"].array[0]["replyTo"]["partId"].string, "source#text-0")
+        let restored = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(saved))
+        XCTAssertEqual(ChatBubbles.textParts(restored).map { $0["content"].string }, ["那就替你留着。", "以后看到它，就想起今天。"])
+        try socket.emit(packet("bad", quote: "这句话没有说过。"))
+        await eventually { socket.packets.contains { $0["id"].string == "bad" && $0["result"] != .null } }
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "bad" }?["result"]["success"], .bool(false))
+        XCTAssertEqual(chat.messages.filter { !$0["metadata"]["bubbles"].array.isEmpty }.count, 1)
+        XCTAssertEqual(BubblePersistenceProtocol.records.filter { !$0["metadata"]["bubbles"].array.isEmpty }.count, 1)
+    }
+}

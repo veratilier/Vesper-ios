@@ -16,6 +16,7 @@ final class ChatComposer: ObservableObject {
     @Published var files: [ChatFile] = []
     @Published var pendingMusic: JSONValue?
     @Published var pendingSticker: JSONValue?
+    @Published var replyTo: JSONValue?
 
     private struct Draft {
         var text = ""
@@ -23,18 +24,20 @@ final class ChatComposer: ObservableObject {
         var files: [ChatFile] = []
         var music: JSONValue?
         var sticker: JSONValue?
+        var replyTo: JSONValue?
     }
     private var saved: [String: Draft] = [:]
 
     func switchConversation(from: String, to: String) {
         guard from != to else { return }
-        saved[from] = Draft(text: draft, images: images, files: files, music: pendingMusic, sticker: pendingSticker)
+        saved[from] = Draft(text: draft, images: images, files: files, music: pendingMusic, sticker: pendingSticker, replyTo: replyTo)
         let next = saved[to] ?? Draft()
         draft = next.text
         images = next.images
         files = next.files
         pendingMusic = next.music
         pendingSticker = next.sticker
+        replyTo = next.replyTo
     }
 }
 

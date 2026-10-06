@@ -12,6 +12,7 @@ private struct ChatScrollUpdate: Equatable {
     let lastContent: String
     let localMessageID: String?
     let jumpMessageID: String?
+    let quoteJumpRevision: Int
     let viewportHeight: CGFloat
     let followsLatest: Bool
 }
@@ -169,6 +170,9 @@ struct ChatView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @StateObject private var voiceRecorder = VoiceMessageRecorder()
+    @StateObject private var actionMenu = ChatActionMenu()
+    @State private var quoteJumpPart: String?
+    @State private var quoteJumpRevision = 0
     @StateObject private var speech = SpeechInput()
     @State private var speechBase = ""
     @State private var avatarRole = "user"
@@ -336,6 +340,7 @@ struct ChatView: View {
                          lastContent: chat.messages.last?["content"].string ?? "",
                          localMessageID: chat.latestLocalMessageID,
                          jumpMessageID: chat.jumpMessageID,
+                         quoteJumpRevision: quoteJumpRevision,
                          viewportHeight: viewportHeight,
                          followsLatest: followsLatest)
     }
@@ -353,6 +358,12 @@ struct ChatView: View {
                   chat.jumpMessageID == target else { return }
             // Keep the highlight, but consume the scroll request only once.
             proxy.scrollTo(chat.presentation.rowID(forMessageID: target), anchor: .center)
+            if let part = quoteJumpPart, part != target, !part.isEmpty {
+                // Materialize the original lazy row before targeting its child bubble.
+                try? await Task.sleep(for: .milliseconds(120))
+                if !Task.isCancelled { proxy.scrollTo(part, anchor: .center) }
+                quoteJumpPart = nil
+            }
             positionedConversationID = conversationID
             positionedJumpMessageID = target
             return
@@ -392,6 +403,9 @@ struct ChatView: View {
     }
     private var observedChatContent: some View {
         chatContent
+        .environmentObject(actionMenu)
+        .overlay { ChatActionOverlay(menu: actionMenu).allowsHitTesting(actionMenu.selection != nil) }
+        .onChange(of: chat.conversationID) { _, _ in actionMenu.selection = nil; quoteJumpPart = nil }
         .onAppear { chatVisible = true; markDisplayedMessages() }
         .onDisappear { chatVisible = false }
         .onChange(of: inbox.incoming) { _, _ in markDisplayedMessages() }
@@ -618,11 +632,36 @@ struct ChatView: View {
                        highlighted: row.messages.contains { $0.id == chat.jumpMessageID },
                        onFavorite: { Task { await favorite(message) } },
                        onRemember: { Task { await remember(row.messages.first { $0.id == row.id } ?? message) } },
-                       onDelete: { deleting = row.messages })
+                       onDelete: { deleting = row.messages },
+                       sourceMessages: row.messages,
+                       onPartFavorite: { part in Task { await favorite(part) } },
+                       onReply: { part in
+                           draftStore.replyTo = ChatBubbles.quote(part, conversationID: chat.conversationID)
+                           focused = true
+                       },
+                       onOpenQuote: { quote in
+                           positionedJumpMessageID = nil
+                           followsLatest = false
+                           quoteJumpRevision += 1
+                           chat.jumpMessageID = nil
+                           quoteJumpPart = quote["partId"].string
+                           Task {
+                               let id = quote["messageId"].string
+                               await chat.reveal(id)
+                               if !chat.messages.contains(where: { $0.id == id }) { chat.error = "原消息已删除或暂时无法加载。" }
+                           }
+                       })
             .equatable()
     }
     private var composer: some View {
         VStack(spacing: 4) {
+            if let reply = draftStore.replyTo {
+                HStack {
+                    ChatQuotePreview(quote: reply)
+                    Button { draftStore.replyTo = nil } label: { Image(systemName: "xmark.circle.fill").frame(width: 36, height: 44) }
+                        .accessibilityLabel("取消引用")
+                }.padding(.bottom, 4)
+            }
             if let track = pendingMusic {
                 HStack { ChatMusicCard(track: track); Button { pendingMusic = nil } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Remove music") }
             }
@@ -757,20 +796,20 @@ struct ChatView: View {
         let title = chat.conversations.first(where: { $0.id == chat.conversationID })?["title"].string ?? "Chat"
         _ = await ChatFavorites.save(message, conversationID: chat.conversationID, title: title, in: store)
     }
-    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil; pendingSticker = nil } } }
+    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil; pendingSticker = nil; draftStore.replyTo = nil } } }
     private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; stickerPicker = false; NativeCallPresentation.shared.open(initiator: "user") }
     private func send() {
-        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; let sticker = pendingSticker; drawer = false; stickerPicker = false
+        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; let sticker = pendingSticker; let quote = draftStore.replyTo; drawer = false; stickerPicker = false
         let conversation = chat.conversationID
         Task {
             var accepted = false
-            let sent = await chat.send(sending, images: outgoing, files: outgoingFiles, music: music, sticker: sticker, onAccepted: {
+            let sent = await chat.send(sending, images: outgoing, files: outgoingFiles, music: music, sticker: sticker, replyTo: quote, onAccepted: {
                 accepted = true
-                draft = ""; images = []; files = []; selectedPhotos = []; pendingMusic = nil; pendingSticker = nil; voiceRecorder.cancel()
+                draft = ""; images = []; files = []; selectedPhotos = []; pendingMusic = nil; pendingSticker = nil; draftStore.replyTo = nil; voiceRecorder.cancel()
             })
             // An ambiguous send remains in the transcript for reconciliation, never auto-resend it.
             if accepted && !sent && !chat.unconfirmedSend && chat.conversationID == conversation && draft.isEmpty && images.isEmpty && files.isEmpty && pendingMusic == nil && pendingSticker == nil {
-                draft = sending; images = outgoing; files = outgoingFiles; pendingMusic = music; pendingSticker = sticker
+                draft = sending; images = outgoing; files = outgoingFiles; pendingMusic = music; pendingSticker = sticker; draftStore.replyTo = quote
             }
         }
     }
@@ -793,63 +832,106 @@ struct ChatMessageRow: View, Equatable {
     let onFavorite: () -> Void
     let onRemember: () -> Void
     let onDelete: () -> Void
+    var sourceMessages: [JSONValue] = []
+    var onPartFavorite: (JSONValue) -> Void = { _ in }
+    var onReply: (JSONValue) -> Void = { _ in }
+    var onOpenQuote: (JSONValue) -> Void = { _ in }
+    @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var chat: ChatSession
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.isLive == rhs.isLive && lhs.message == rhs.message && lhs.mediaMessages == rhs.mediaMessages && lhs.activities == rhs.activities && lhs.liveEvents == rhs.liveEvents &&
-        lhs.replyIsRunning == rhs.replyIsRunning && lhs.favorite == rhs.favorite &&
+        lhs.replyIsRunning == rhs.replyIsRunning && lhs.favorite == rhs.favorite && lhs.sourceMessages == rhs.sourceMessages &&
         lhs.saving == rhs.saving && lhs.busy == rhs.busy && lhs.highlighted == rhs.highlighted
     }
+    private var originals: [JSONValue] { sourceMessages.isEmpty ? [message] : sourceMessages }
     var body: some View {
         let user = ChatPresentation.isUser(message)
-        let media = ChatPresentation.hasMedia(message) || !mediaMessages.isEmpty
-        return HStack(alignment: .top, spacing: 0) {
+        HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
-            VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user && (!media || isLive || replyIsRunning) && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents, isLive: isLive) }
-                ForEach(mediaMessages) { item in sharedContent(item, user: user) }
-                if message["metadata"]["musicCard"] == .null && !mediaMessages.contains(where: { $0["metadata"]["musicCard"] != .null }) && message["status"].string != "streaming" {
-                    ForEach(ChatMusicShare.links(in: message["content"].string)) { track in ChatMusicLinkCard(track: track) }
-                }
-                if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
-                if message["metadata"]["locationOnly"] != .bool(true) && message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
-                    ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
-                }
-                if message["status"].string != "streaming" && !replyIsRunning {
-                    HStack(spacing: 12) {
-                        if user || media { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
-                        Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message")
-                        Button { onFavorite() } label: { Image(systemName: favorite ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(saving)
-                        Button { onRemember() } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(busy)
-                        Button { onDelete() } label: { Image(systemName: "trash") }.accessibilityLabel("Delete message").disabled(busy)
-                    }.font(.system(size: 15)).foregroundStyle(VesperTheme.muted).buttonStyle(.plain).padding(.vertical, 4)
-                }
-            }.padding(4).background(highlighted ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12)).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
-            if !user { Spacer(minLength: 20) }
-        }
-    }
-    @ViewBuilder private func sharedContent(_ item: JSONValue, user: Bool) -> some View {
-        let attachments = item["metadata"]["attachments"].array
-        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
-        let files = attachments.filter { !$0["type"].string.hasPrefix("image/") }
-        if !photos.isEmpty {
-            ChatPhotoStack(photos: photos).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
-        }
-        if !files.isEmpty {
-            ScrollView(.horizontal) {
-                HStack {
-                    ForEach(Array(files.enumerated()), id: \.offset) { _, attachment in
-                        if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
-                            ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
+            VStack(alignment: user ? .trailing : .leading, spacing: 9) {
+                if !user { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents, isLive: isLive) }
+                ForEach(originals) { original in
+                    if ChatBubbles.textParts(original).isEmpty, original["metadata"]["replyTo"] != .null {
+                        ChatQuotePreview(quote: original["metadata"]["replyTo"]) { onOpenQuote(original["metadata"]["replyTo"]) }
+                    }
+                    sharedContent(original, user: user)
+                    if original["metadata"]["musicCard"] == .null && original["status"].string != "streaming" {
+                        ForEach(ChatMusicShare.links(in: original["content"].string)) { track in
+                            let part = ChatBubbles.part(original, key: track.id, text: track["appleMusicURL"].string, metadata: .object(["musicCard": track]))
+                            ChatMusicLinkCard(track: track).modifier(ChatLongPress(id: part.id, actions: { actions(part) })).id(part.id)
                         }
                     }
-                }.modifier(AttachmentRowAlignment(single: files.count == 1, user: user))
-            }.defaultScrollAnchor(user ? .trailing : .leading)
+                    if original["metadata"]["call"] != .null { CallRecordButton(message: original) }
+                    ForEach(ChatBubbles.textParts(original)) { part in
+                        VStack(alignment: .leading, spacing: 8) {
+                            if part["metadata"]["replyTo"] != .null {
+                                ChatQuotePreview(quote: part["metadata"]["replyTo"]) { onOpenQuote(part["metadata"]["replyTo"]) }
+                            }
+                            ChatMarkdownText(content: part["content"].string, selectable: false)
+                                .font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(.leading)
+                        }
+                        .modifier(ChatBubbleSurface(user: user))
+                        .modifier(ChatLongPress(id: part.id, actions: { actions(part) }))
+                        .id(part.id)
+                    }
+                }
+            }
+            .padding(4).background(highlighted ? VesperTheme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+            if !user { Spacer(minLength: 42) }
         }
-        if item["metadata"]["locationCard"] != .null { ChatLocationCard(location: item["metadata"]["locationCard"]) }
-        if item["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(item["metadata"]["musicCard"])) }
-        if item["metadata"]["sticker"] != .null { StickerArtwork(sticker: item["metadata"]["sticker"]).frame(width: 150, height: 150) }
     }
-
+    private func actions(_ part: JSONValue) -> [ChatMessageAction] {
+        guard message["status"].string != "streaming" else { return [] }
+        let saved = ChatFavorites.existing(part.id, conversationID: chat.conversationID, in: store) != nil
+        return [
+            ChatMessageAction(title: "复制", icon: "doc.on.doc", run: { copy(part) }),
+            ChatMessageAction(title: saved ? "取消收藏" : "收藏", icon: saved ? "bookmark.fill" : "bookmark", run: { onPartFavorite(part) }),
+            ChatMessageAction(title: "引用", icon: "arrowshape.turn.up.left", run: { onReply(part) })
+        ]
+    }
+    private func copy(_ part: JSONValue) {
+        let attachment = part["metadata"]["attachments"].array.first ?? .null
+        if attachment["type"].string.hasPrefix("image/"), let url = URL(string: attachment["url"].string), url.scheme == "https" {
+            Task {
+                do {
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200, let image = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
+                    UIPasteboard.general.image = image
+                } catch { chat.error = "图片复制失败：" + error.localizedDescription }
+            }
+        } else if attachment != .null, let url = URL(string: attachment["url"].string) { UIPasteboard.general.url = url }
+        else { UIPasteboard.general.string = part["content"].string }
+    }
+    @ViewBuilder private func sharedContent(_ item: JSONValue, user: Bool) -> some View {
+        ForEach(Array(item["metadata"]["attachments"].array.enumerated()), id: \.offset) { index, attachment in
+            let label = attachment["transcript"].string.isEmpty ? attachment["name"].string : attachment["transcript"].string
+            let part = ChatBubbles.part(item, key: "attachment-\(index)", text: label.isEmpty ? "附件" : label,
+                                       metadata: .object(["attachments": .array([attachment])]))
+            Group {
+                if attachment["type"].string.hasPrefix("image/") {
+                    ChatPhotoStack(photos: [attachment]).modifier(ChatLongPress(id: part.id, actions: { actions(part) }))
+                } else if attachment["type"].string.hasPrefix("audio/") {
+                    VoiceMessageBar(attachment: attachment, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item.id, attachmentIndex: index, text: text) } })
+                } else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
+                    ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
+                        .modifier(ChatLongPress(id: part.id, actions: { actions(part) }))
+                }
+            }.id(part.id)
+        }
+        ForEach(["locationCard", "musicCard", "sticker"], id: \.self) { key in
+            if item["metadata"][key] != .null {
+                let media = item["metadata"][key]
+                let label = key == "sticker" ? media["name"].string : (key == "musicCard" ? media["title"].string : media["name"].string)
+                let part = ChatBubbles.part(item, key: key, text: label.isEmpty ? key : label, metadata: .object([key: media]))
+                Group {
+                    if key == "locationCard" { ChatLocationCard(location: media) }
+                    if key == "musicCard" { ChatMusicCard(track: ChatMusicShare.normalized(media)) }
+                    if key == "sticker" { StickerArtwork(sticker: media).frame(width: 150, height: 150) }
+                }.modifier(ChatLongPress(id: part.id, actions: { actions(part) })).id(part.id)
+            }
+        }
+    }
 }
 
 private struct ChatHeaderButton: ButtonStyle {
@@ -885,6 +967,10 @@ enum ChatPresentation {
             // A display snapshot; original records stay in messages for memory and deletion.
             primary["metadata"]["sharedMedia"] = .array(messages.filter(ChatPresentation.hasMedia))
             primary["metadata"]["attachments"] = .array(messages.flatMap { $0["metadata"]["attachments"].array })
+            let summaries = messages.map { $0["metadata"]["thoughtSummary"].string }.filter { !$0.isEmpty }
+            if let latest = summaries.last { primary["metadata"]["thoughtSummary"] = .string(latest) }
+            let events = messages.flatMap { $0["metadata"]["toolEvents"].array }
+            if !events.isEmpty { primary["metadata"]["toolEvents"] = .array(events.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }) }
             return primary
         }
     }
@@ -899,8 +985,9 @@ enum ChatPresentation {
     }
     private static func canCombine(_ row: Row, with next: Row) -> Bool {
         let all = row.messages + next.messages
-        guard !row.activity, !next.activity, !(row.activities + next.activities).contains(where: { $0["metadata"]["userInput"] != .null }), all.contains(where: hasMedia),
-              all.filter({ !hasMedia($0) }).count <= 1,
+        let structured = all.contains { !$0["metadata"]["bubbles"].array.isEmpty }
+        guard !row.activity, !next.activity, !(row.activities + next.activities).contains(where: { $0["metadata"]["userInput"] != .null }), (structured || all.contains(where: hasMedia)),
+              (structured || all.filter({ !hasMedia($0) }).count <= 1),
               let first = all.first else { return false }
         let turn = first["metadata"]["turnId"].string, thread = first["metadata"]["threadId"].string
         guard !turn.isEmpty, !thread.isEmpty else { return false }
@@ -1258,13 +1345,13 @@ private struct AssistantMessageHeading: View {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
                     let time = ChatPresentation.time(ChatTranscript.timestamp(message), full: true)
-                    if isLive || message["status"].string == "streaming" { Text("Thinking…") }
-                    else if !time.isEmpty { Text(time) } else { Text("Thinking") }
+                    if !time.isEmpty { Text(time) } else { Text("…") }
+                    if isLive || message["status"].string == "streaming" { ProgressView().controlSize(.mini) }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("Date, time and Thinking").accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            }.buttonStyle(.plain).accessibilityLabel("时间、思考摘要和工具调用").accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
                 ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in
                     if !ChatTerminalRecords.entries([item]).isEmpty { MiniTerminal(execution: item["metadata"]["execution"]) }

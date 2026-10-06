@@ -50,6 +50,22 @@ import Speech
             file = ChatFile(name: "Voice-" + UUID().uuidString + ".m4a", mime: "audio/mp4", data: data, transcript: transcript, duration: duration)
         } catch { self.error = error.localizedDescription }
     }
+    func transcribeAttachment(_ attachment: JSONValue) async throws -> String {
+        guard let source = URL(string: attachment["url"].string), source.scheme == "https" else { throw ServiceError(message: "这条语音没有可读取的音频。") }
+        let allowed = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) } }
+        guard allowed else { throw ServiceError(message: "请在 iOS 设置中允许语音识别后重试。") }
+        let (data, response) = try await URLSession.shared.data(from: source)
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw URLError(.badServerResponse) }
+        try Task.checkCancellation()
+        let ext = (attachment["name"].string as NSString).pathExtension
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext.isEmpty ? "m4a" : ext)
+        try data.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let text = await transcribe(file)
+        try Task.checkCancellation()
+        guard !text.isEmpty else { throw ServiceError(message: "暂时未能识别这条语音，可以再次长按转文字。") }
+        return text
+    }
     private func transcribe(_ url: URL) async -> String {
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable else { return "" }
         return await withCheckedContinuation { continuation in
@@ -113,25 +129,76 @@ import Speech
 
 struct VoiceMessageBar: View {
     let attachment: JSONValue
+    var messageID: String = "voice"
+    var messageActions: () -> [ChatMessageAction] = { [] }
+    var onTranscript: (String) -> Void = { _ in }
     @StateObject private var playback = VoiceMessagePlayback()
+    @StateObject private var transcriber = VoiceMessageRecorder()
     @EnvironmentObject private var music: MusicPlayer
+    @EnvironmentObject private var chat: ChatSession
     @State private var expanded = false
+    @State private var transcript = ""
+    @State private var transcribing = false
+    @State private var transcriptionTask: Task<Void, Never>?
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Button {
                 guard let url = URL(string: attachment["url"].string), url.scheme == "https" else { return }
                 music.pause(); Task { await playback.toggle(url: url) }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: playback.playing ? "pause.fill" : "play.fill")
-                    Image(systemName: "waveform").font(.system(size: 16))
-                    let seconds = Int(max(0, attachment["duration"].number))
-                    Text(playback.loading ? "Loading…" : "\(seconds / 60):\(String(format: "%02d", seconds % 60))").monospacedDigit()
-                }.font(.system(size: 14)).frame(minWidth: 100, minHeight: 32).padding(.horizontal, 10).padding(.vertical, 4).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                HStack(spacing: 14) {
+                    Image(systemName: playback.playing ? "pause.fill" : "play.fill").font(.system(size: 20))
+                    HStack(spacing: 3) {
+                        ForEach(0..<17) { index in
+                            Capsule().fill(VesperTheme.accent.opacity(playback.playing ? 0.9 : 0.6))
+                                .frame(width: 2.5, height: CGFloat(7 + (index * 7 % 19)))
+                        }
+                    }.accessibilityHidden(true)
+                    Spacer(minLength: 0)
+                    Text(playback.loading ? "…" : "\(Int(max(0, attachment["duration"].number)))″").monospacedDigit()
+                }.font(.system(size: 14)).frame(height: 32).padding(12)
+                    .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
             }.buttonStyle(.plain)
-            Button(expanded ? "Hide transcript" : "View transcript") { expanded.toggle() }.font(.caption)
-            if expanded { Text(attachment["transcript"].string.isEmpty ? "Transcription unavailable." : attachment["transcript"].string).font(.subheadline).textSelection(.enabled).frame(maxWidth: 270, alignment: .leading) }
-            if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
-        }.onDisappear { playback.stop() }
+                .modifier(ChatLongPress(id: messageID, actions: {
+                    messageActions() + [ChatMessageAction(title: expanded ? "收起文字" : "转文字", icon: "text.bubble", run: toggleTranscript)]
+                }))
+            if expanded {
+                VoiceTranscriptPanel(text: transcript, loading: transcribing) { expanded = false }
+            }
+        }.frame(maxWidth: 250)
+        .onChange(of: playback.error) { _, value in if let value { chat.error = value } }
+        .onDisappear { playback.stop(); transcriptionTask?.cancel(); transcriptionTask = nil; transcriber.cancel(); transcribing = false }
+    }
+    private func toggleTranscript() {
+        if expanded { expanded = false; return }
+        transcript = transcript.isEmpty ? attachment["transcript"].string : transcript
+        expanded = true
+        guard transcript.isEmpty, !transcribing else { return }
+        transcribing = true
+        transcriptionTask = Task {
+            defer { transcribing = false }
+            do {
+                let text = try await transcriber.transcribeAttachment(attachment)
+                try Task.checkCancellation()
+                transcript = text; onTranscript(text)
+            } catch is CancellationError { }
+            catch { expanded = false; chat.error = error.localizedDescription }
+        }
+    }
+}
+
+struct VoiceTranscriptPanel: View {
+    let text: String
+    var loading = false
+    let onCollapse: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("语音转写").font(.caption2).foregroundStyle(VesperTheme.muted)
+            if loading { HStack { ProgressView(); Text("正在转文字…").font(.caption) } }
+            else { Text(text).font(.system(size: 14)).lineSpacing(4).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            Button(action: onCollapse) { Label("收起", systemImage: "chevron.up").font(.caption).frame(maxWidth: .infinity, alignment: .trailing) }
+                .buttonStyle(.plain).foregroundStyle(VesperTheme.muted)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 }

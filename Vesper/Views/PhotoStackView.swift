@@ -23,7 +23,7 @@ struct ChatPhotoStack: View {
                     image.resizable().scaledToFit().frame(maxWidth: 276, maxHeight: 320)
                 } placeholder: {
                     ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
-                        .frame(width: 240, height: 240)
+                        .frame(maxWidth: 240).frame(height: 200)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 20))
                 .onTapGesture { front = 0; showingPhoto = true }

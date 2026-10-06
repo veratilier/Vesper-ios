@@ -320,7 +320,7 @@ struct ChatFavoritesView: View {
                         opening = true
                         Task {
                             let opened = await chat.openSearchResult(.object([
-                                "id": item["messageId"], "conversationId": item["conversationId"]
+                                "id": item["metadata"]["sourceMessageId"].string.isEmpty ? item["messageId"] : item["metadata"]["sourceMessageId"], "conversationId": item["conversationId"]
                             ]))
                             opening = false
                             if opened { dismiss(); selected() }

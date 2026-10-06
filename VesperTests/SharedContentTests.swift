@@ -292,3 +292,155 @@ extension SharedContentTests {
         XCTAssertTrue(ChatStickerInput.context(text: "", sticker: sticker).hasPrefix("Shared sticker:"))
     }
 }
+
+@MainActor final class BubbleInteractionTests: XCTestCase {
+    private func message(_ text: String, role: String = "agent") -> JSONValue {
+        .object(["id": .string("original"), "conversationId": .string("room"), "role": .string(role), "content": .string(text),
+                 "createdAt": .string("2026-10-07T10:35:00Z"), "status": .string("delivered")])
+    }
+    func testParagraphsKeepMarkdownAndOriginalHistoryIntact() {
+        let prose = "第一句。\n\n第二段，放在一起。\n还有一句。\n\n```swift\nlet a = 1\n\nprint(a)\n```"
+        let original = message(prose)
+        let parts = ChatBubbles.textParts(original)
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertEqual(parts[1]["content"].string, "第二段，放在一起。\n还有一句。")
+        XCTAssertEqual(parts[2]["content"].string, "```swift\nlet a = 1\n\nprint(a)\n```")
+        XCTAssertEqual(parts.map(\.id), ["original#text-0", "original#text-1", "original#text-2"])
+        XCTAssertTrue(parts.allSatisfy { $0["metadata"]["sourceMessageId"].string == original.id })
+        XCTAssertEqual(original["content"].string, prose)
+        XCTAssertEqual(ChatBubbles.textParts(message(prose, role: "user")).count, 1)
+    }
+    func testQuotesValidateOriginalAndSurviveStorage() throws {
+        let original = message("这张好安静。\n\n像把今天的风也留住了。")
+        let quote = try ChatBubbles.verifiedQuote(original: original, excerpt: "像把今天的风也留住了。", conversationID: "room")
+        XCTAssertEqual(quote["messageId"].string, "original")
+        XCTAssertEqual(quote["partId"].string, "original#text-1")
+        XCTAssertThrowsError(try ChatBubbles.verifiedQuote(original: original, excerpt: "编造的原句。", conversationID: "room"))
+        XCTAssertThrowsError(try ChatBubbles.verifiedQuote(original: original, excerpt: "", conversationID: "room"))
+        var reply = message("这句我想收藏起来。", role: "user")
+        reply["metadata"]["replyTo"] = quote
+        let reloaded = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(reply))
+        XCTAssertEqual(ChatBubbles.textParts(reloaded).first?["metadata"]["replyTo"], quote)
+        let draft = ChatComposer(); draft.replyTo = quote
+        draft.switchConversation(from: "room", to: "other")
+        XCTAssertNil(draft.replyTo)
+        draft.switchConversation(from: "other", to: "room")
+        XCTAssertEqual(draft.replyTo, quote)
+    }
+    func testStructuredAssistantBubblesAndAttachmentIsolation() throws {
+        let quote = try ChatBubbles.verifiedQuote(original: message("原句"), excerpt: "原句", conversationID: "room")
+        var original = message("回复一\n\n回复二")
+        original["metadata"]["bubbles"] = .array([.object(["text": .string("回复一"), "replyTo": quote]), .object(["text": .string("回复二")])])
+        let parts = ChatBubbles.textParts(original)
+        XCTAssertEqual(parts.count, 2)
+        XCTAssertEqual(parts[0]["metadata"]["replyTo"], quote)
+        XCTAssertEqual(parts[1]["metadata"]["replyTo"], .null)
+        let file: JSONValue = .object(["name": .string("计划.pdf"), "type": .string("application/pdf")])
+        original["metadata"]["attachments"] = .array([file])
+        let attachment = ChatBubbles.part(original, key: "attachment-0", text: "计划.pdf", metadata: .object(["attachments": .array([file])]))
+        XCTAssertEqual(attachment["metadata"]["attachments"].array, [file])
+        XCTAssertTrue(ChatBubbles.textParts(original)[0]["metadata"]["attachments"].array.isEmpty)
+        original["metadata"]["attachmentOnly"] = .bool(true)
+        XCTAssertTrue(ChatBubbles.textParts(original).isEmpty)
+        XCTAssertNoThrow(try NativeToolCatalog.normalize([ChatSession.bubblesTool]))
+    }
+    func testFloatingActionsDoNotMoveMessageAndFitSmallScreens() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previousWindow = scene.windows.first(where: \.isKeyWindow)
+        defer { previousWindow?.makeKeyAndVisible() }
+        let store = AppStore(); store.token = ""
+        let chat = ChatSession(), player = MusicPlayer()
+        for width in [320.0, 393.0] {
+            let menu = ChatActionMenu()
+            var frame = CGRect.zero, invoked = false
+            let original = message("这张好安静。\n\n像把今天的风也留住了。")
+            let row = ChatMessageRow(message: original, mediaMessages: [], activities: [], liveEvents: [], isLive: false,
+                                     replyIsRunning: false, favorite: false, saving: false, busy: false, highlighted: false,
+                                     onFavorite: {}, onRemember: {}, onDelete: {}, onReply: { _ in invoked = true })
+            let root = ZStack {
+                Background()
+                VStack {
+                    row.onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
+                    VoiceMessageBar(attachment: .object(["duration": .number(12), "transcript": .string("刚才海边风有点大，不过夕阳特别好看。")]))
+                    ChatFileCard(attachment: .object(["name": .string("周末散步计划.pdf"), "type": .string("application/pdf"), "size": .number(248000)]))
+                    Spacer()
+                }.padding(20)
+            }.overlay { ChatActionOverlay(menu: menu) }
+                .environmentObject(menu).environmentObject(store).environmentObject(chat).environmentObject(player)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: 852)
+            let host = UIHostingController(rootView: root); window.rootViewController = host; window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(400)); host.view.layoutIfNeeded()
+            let before = frame
+            XCTAssertGreaterThan(before.height, 100)
+            XCTAssertGreaterThanOrEqual(before.minX, 0)
+            XCTAssertLessThanOrEqual(before.maxX, width)
+            menu.show(id: "original#text-1", frame: CGRect(x: width - 260, y: 210, width: 240, height: 48), actions: [
+                .init(title: "复制", icon: "doc.on.doc", run: {}), .init(title: "收藏", icon: "bookmark", run: {}),
+                .init(title: "引用", icon: "arrowshape.turn.up.left", run: { invoked = true }), .init(title: "转文字", icon: "text.bubble", run: {})])
+            try await Task.sleep(for: .milliseconds(300)); host.view.layoutIfNeeded()
+            XCTAssertEqual(frame, before, "The floating menu must not reflow chat messages")
+            menu.selection?.actions[2].run(); XCTAssertTrue(invoked)
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Bubbles-floating-\(Int(width))"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+}
+
+extension BubbleInteractionTests {
+    func testQuotedReplyAndTranscriptLayoutInBothThemes() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "bubble-layout-fixture"))
+        let previousPalette = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer {
+            defaults.removePersistentDomain(forName: "bubble-layout-fixture")
+            if let previousPalette { UserDefaults.standard.set(previousPalette, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        defer { previous?.makeKeyAndVisible() }
+        let store = AppStore(); store.token = ""
+        let chat = ChatSession(), menu = ChatActionMenu(), music = MusicPlayer()
+        for (width, palette) in [(320.0, "white"), (393.0, "black")] {
+            defaults.set(palette, forKey: "vesperPalette")
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            var first = message("这句我想收藏起来。", role: "user")
+            first["id"] = .string("vera")
+            first["metadata"]["replyTo"] = try ChatBubbles.verifiedQuote(original: message("像把今天的风也留住了。"), excerpt: "像把今天的风也留住了。", conversationID: "room")
+            var second = message("那就替你留着。\n\n以后看到它，就想起今天。")
+            second["metadata"]["replyTo"] = try ChatBubbles.verifiedQuote(original: first, excerpt: "这句我想收藏起来。", conversationID: "room")
+            var voiceFrame = CGRect.zero, transcriptFrame = CGRect.zero
+            let root = ZStack {
+                Background()
+                VStack(spacing: 12) {
+                    ForEach([first, second]) { message in
+                        ChatMessageRow(message: message, mediaMessages: [], activities: [], liveEvents: [], isLive: false,
+                            replyIsRunning: false, favorite: false, saving: false, busy: false, highlighted: false, onFavorite: {}, onRemember: {}, onDelete: {})
+                    }
+                    HStack {
+                        Spacer(minLength: 42)
+                        VStack(spacing: 6) {
+                            VoiceMessageBar(attachment: .object(["duration": .number(12)]))
+                                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { voiceFrame = $0 }
+                            VoiceTranscriptPanel(text: "刚才海边风有点大，不过夕阳特别好看，想让你也听听海浪的声音。", onCollapse: {})
+                                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { transcriptFrame = $0 }
+                        }.frame(maxWidth: 250)
+                    }
+                    Spacer(minLength: 0)
+                }.padding(20)
+            }.environmentObject(store).environmentObject(chat).environmentObject(menu).environmentObject(music)
+                .defaultAppStorage(defaults).preferredColorScheme(palette == "black" ? .dark : .light).foregroundStyle(VesperTheme.ink)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: 852)
+            window.rootViewController = UIHostingController(rootView: root); window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(400)); window.rootViewController?.view.layoutIfNeeded()
+            XCTAssertEqual(voiceFrame.minX, transcriptFrame.minX, accuracy: 1)
+            XCTAssertEqual(voiceFrame.maxX, transcriptFrame.maxX, accuracy: 1)
+            XCTAssertGreaterThan(transcriptFrame.height, 90)
+            XCTAssertEqual(transcriptFrame.minY - voiceFrame.maxY, 6, accuracy: 1)
+            XCTAssertLessThanOrEqual(transcriptFrame.maxX, width - 19)
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Quotes-transcript-\(palette)-\(Int(width))"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+}

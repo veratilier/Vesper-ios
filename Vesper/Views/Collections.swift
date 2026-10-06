@@ -125,6 +125,151 @@ private struct CollectionCard<Content: View>: View {
     }
 }
 
+/// Both the conversation calendar and journal use Beijing calendar days.
+enum JournalDates {
+    static var calendar: Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return value
+    }
+    static func label(_ date: Date, format: String = "yyyy-MM-dd") -> String {
+        let formatter = DateFormatter(); formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = format; return formatter.string(from: date)
+    }
+    static func firstDay(_ date: Date) -> Date { calendar.date(from: calendar.dateComponents([.year, .month], from: date))! }
+    static func days(_ date: Date) -> [Date] {
+        calendar.range(of: .day, in: .month, for: date)!.map { calendar.date(byAdding: .day, value: $0 - 1, to: firstDay(date))! }
+    }
+    static func mondayOffset(_ date: Date) -> Int { (calendar.component(.weekday, from: firstDay(date)) + 5) % 7 }
+    static func moveMonth(_ date: Date, by amount: Int) -> Date {
+        let month = calendar.date(byAdding: .month, value: amount, to: firstDay(date))!
+        let day = min(calendar.component(.day, from: date), calendar.range(of: .day, in: .month, for: month)!.count)
+        return calendar.date(byAdding: .day, value: day - 1, to: month)!
+    }
+    static func heatLevel(_ count: Int) -> Int { count <= 0 ? 0 : count < 10 ? 1 : count < 30 ? 2 : count < 60 ? 3 : 4 }
+}
+
+struct ChatActivityHeatmap: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var phase
+    var refreshID = 0
+    @State private var month = Date()
+    @State private var selected: String?
+    @State private var activity: JSONValue = .null
+    @State private var activityError = false
+    private var monthKey: String { JournalDates.label(month, format: "yyyy-MM") }
+    private var ready: Bool { activity["month"].string == monthKey && !activityError }
+    private var days: [Date] { JournalDates.days(month) }
+    private var offset: Int { JournalDates.mondayOffset(month) }
+    private var refreshKey: String { [monthKey, store.historyURL, store.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
+    private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level]) }
+    var body: some View {
+        VStack(spacing: 22) {
+            HStack(spacing: 8) {
+                Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
+                Spacer(minLength: 4)
+                Button { moveMonth(-1) } label: { Image(systemName: "chevron.left").frame(width: 30, height: 36) }.accessibilityLabel("Previous activity month")
+                Text(JournalDates.label(month, format: "MMMM yyyy")).font(.system(size: 15, design: .serif)).italic().lineLimit(1).minimumScaleFactor(0.8)
+                Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel("Next activity month")
+            }
+            calendarGrid
+            if activityError {
+                Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
+            } else if !ready { ProgressView().controlSize(.small).accessibilityLabel("Loading chat statistics") }
+        }.buttonStyle(.plain).padding(.horizontal, 18).padding(.vertical, 24)
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
+            .accessibilityIdentifier("chat-activity-heatmap")
+            .task(id: refreshKey) {
+                guard phase == .active else { return }; await loadActivity()
+            }
+            .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
+                NavigationStack {
+                    VStack(alignment: .leading, spacing: 14) {
+                        let stats = activity["days"][selected ?? ""]
+                        Text(ready ? "\(Int(stats["total"].number)) chat messages" : "Counts unavailable").font(.title3)
+                        Text(ready ? "Vera \(Int(stats["user"].number)) · Rowan \(Int(stats["agent"].number))" : "Vera — · Rowan —")
+                        Text(ready ? "Autonomous notes: \(Int(stats["autonomous"].number))" : "Autonomous notes: —").foregroundStyle(VesperTheme.muted)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+                        .navigationTitle(selected ?? "Our days").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selected = nil } } }
+                }.presentationDetents([.height(280)]).presentationDragIndicator(.visible)
+            }
+    }
+    private var cellCount: Int { ((offset + days.count + 6) / 7) * 7 }
+    private var calendarGrid: some View {
+            ChatActivityCalendarLayout(weekCount: cellCount / 7) {
+                ForEach(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], id: \.self) {
+                    Text($0).font(.system(size: 9, weight: .medium)).tracking(0.7).foregroundStyle(VesperTheme.muted).padding(.bottom, 5)
+                }
+                ForEach(0..<cellCount, id: \.self) { slot in
+                    if slot < offset || slot >= offset + days.count {
+                        RoundedRectangle(cornerRadius: 8).fill(heatColor(0)).aspectRatio(1, contentMode: .fit).accessibilityHidden(true)
+                    } else { dayCell(days[slot - offset]) }
+                }
+            }
+    }
+    private func dayCell(_ date: Date) -> some View {
+        let key = JournalDates.label(date)
+        let count = Int(activity["days"][key]["total"].number)
+        return Button { selected = key } label: {
+            RoundedRectangle(cornerRadius: 8).fill(heatColor(ready ? JournalDates.heatLevel(count) : 0))
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    VStack(spacing: 2) {
+                        Text("\(JournalDates.calendar.component(.day, from: date))").font(.system(size: 14, design: .serif))
+                            .foregroundStyle(key > JournalDates.label(.now) ? VesperTheme.muted : VesperTheme.ink)
+                        Text(key > JournalDates.label(.now) ? " " : ready ? String(count) : "—")
+                            .font(.system(size: 9)).monospacedDigit().foregroundStyle(VesperTheme.muted)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(key == JournalDates.label(.now) ? VesperTheme.muted.opacity(0.7) : .white.opacity(0.25), lineWidth: 1))
+        }.accessibilityLabel("\(key), \(ready ? String(count) : "unknown") chat messages")
+    }
+    private func moveMonth(_ amount: Int) { selected = nil; month = JournalDates.moveMonth(month, by: amount); activity = .null; activityError = false }
+    private func loadActivity() async {
+        let requested = monthKey
+        do {
+            let result = try await store.api.request("/activity?month=\(requested)", history: true)
+            try Task.checkCancellation()
+            guard result["month"].string == requested, case .object = result["days"] else { throw ServiceError(message: "Invalid activity response") }
+            guard requested == monthKey else { return }; activity = result; activityError = false
+        } catch is CancellationError { }
+        catch { if requested == monthKey { activityError = true } }
+    }
+}
+
+private struct ChatActivityCalendarLayout: Layout {
+    let weekCount: Int
+    private let columnSpacing: CGFloat = 5
+    private let rowSpacing: CGFloat = 10
+    private let headingHeight: CGFloat = 14
+
+    // Give List one deterministic height, including during its estimated-size pass.
+    // LazyVGrid's square shapes can alternate between row heights on older iOS.
+    private func cellWidth(_ width: CGFloat) -> CGFloat {
+        max(0, (width - columnSpacing * 6) / 7)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        let height = headingHeight + CGFloat(weekCount) * (cellWidth(width) + rowSpacing)
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let cell = cellWidth(bounds.width)
+        for (index, view) in subviews.enumerated() {
+            let column = index % 7
+            let row = index / 7
+            let height = row == 0 ? headingHeight : cell
+            let y = row == 0 ? bounds.minY : bounds.minY + headingHeight + rowSpacing + CGFloat(row - 1) * (cell + rowSpacing)
+            view.place(at: CGPoint(x: bounds.minX + CGFloat(column) * (cell + columnSpacing), y: y),
+                       anchor: .topLeading, proposal: ProposedViewSize(width: cell, height: height))
+        }
+    }
+}
+
 /// Date-only calculations use calendar days, including across daylight-saving changes.
 enum DateCounter {
     static func baseDate(_ item: JSONValue) -> Date? {

@@ -14,7 +14,7 @@ import Foundation
             "id": .string(UUID().uuidString), "folderId": .string("default"),
             "messageId": .string(message.id), "conversationId": .string(conversationID),
             "conversationTitle": .string(title), "content": message["content"],
-            "role": message["role"], "createdAt": message["createdAt"]
+            "role": message["role"], "createdAt": message["createdAt"], "metadata": message["metadata"]
         ])
         return await store.mutate("favorites") { current in
             var items = current.array
@@ -30,7 +30,9 @@ import Foundation
         await store.mutate("favorites", reportErrors: false) { current in
             .array(current.array.filter { item in
                 guard item["conversationId"].string == conversationID else { return true }
-                return messageID.map { item["messageId"].string != $0 } ?? false
+                return messageID.map { id in
+                item["messageId"].string != id && !item["metadata"]["sharedMedia"].array.contains(where: { $0.id == id })
+            } ?? false
             })
         }
     }

@@ -297,8 +297,11 @@ struct AlarmsView: View {
             Section { Text("Vesper manages only the alarms created here. Alarms in Apple's Clock app stay separate.")
                 .font(.caption).foregroundStyle(.secondary) }
         }
+        .scrollContentBackground(.hidden)
+        .background { Background() }
         .navigationTitle("Alarms")
         .navigationBarTitleDisplayMode(.inline)
+        .transparentNavigationTop()
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 EditButton().disabled(alarms.items.isEmpty)
@@ -325,7 +328,10 @@ struct AlarmsView: View {
                     }
                     if let error = alarms.error { Text(error).foregroundStyle(.red) }
                 }
+                .scrollContentBackground(.hidden)
+                .background { Background() }
                 .navigationTitle(editing == nil ? "Add Alarm" : "Edit Alarm")
+                .transparentNavigationTop()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingEditor = false } }
                     ToolbarItem(placement: .confirmationAction) {
@@ -356,7 +362,10 @@ struct AlarmsView: View {
                             }
                         }
                     }
+                    .scrollContentBackground(.hidden)
+                    .background { Background() }
                     .navigationTitle("Repeat")
+                    .transparentNavigationTop()
                     .toolbar { ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") { showingRepeat = false }
                     } }

@@ -41,6 +41,7 @@ struct APIClient {
     var historyURL: String
     var token: String
     var stickerSession: URLSession = .shared
+    var requestSession: URLSession = .shared
     static func validatedURL(_ base: String, path: String) throws -> URL {
         guard let origin = URL(string: base), origin.scheme == "https", origin.host != nil, origin.user == nil, origin.password == nil,
               var parts = URLComponents(url: origin, resolvingAgainstBaseURL: false) else { throw ServiceError(message: "Enter a valid HTTPS server address.") }
@@ -104,14 +105,17 @@ struct APIClient {
     func request(_ path: String, method: String = "GET", body: JSONValue? = nil, history: Bool = false) async throws -> JSONValue {
         guard !token.isEmpty else { throw ServiceError(message: "Connect your device in Settings first.") }
         let url = try Self.validatedURL(history ? historyURL : baseURL, path: path)
-        var r = URLRequest(url: url); r.httpMethod = method; r.timeoutInterval = path == "/api/memory/context" ? 4 : 30
+        var r = URLRequest(url: url); r.httpMethod = method
+        // Recall can take several seconds across the memory and delivery databases.
+        // Keep a bounded wait, but allow the measured 9-second retrieval to finish.
+        r.timeoutInterval = path == "/api/memory/context" ? 20 : 30
         r.cachePolicy = .reloadIgnoringLocalCacheData
         r.setValue(history ? "Bearer \(token)" : token, forHTTPHeaderField: history ? "Authorization" : "x-vesper-device-token")
         if let body { r.httpBody = try JSONEncoder().encode(body); r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: r)
+            (data, response) = try await requestSession.data(for: r)
         } catch let failure as URLError {
             switch failure.code {
             case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,

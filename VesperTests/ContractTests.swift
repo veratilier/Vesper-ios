@@ -54,7 +54,80 @@ private final class ChatHistoryPaginationProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class SlowRecallProtocol: URLProtocol {
+    static var timeout: TimeInterval = 0
+    private var work: DispatchWorkItem?
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "slow-recall.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.timeout = request.timeoutInterval
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let response = HTTPURLResponse(url: self.request.url!, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "application/json"])!
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: Data(#"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+        self.work = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: work)
+    }
+    override func stopLoading() { work?.cancel() }
+}
+
 final class ContractTests: XCTestCase {
+    @MainActor func testChatIssuesCollectFailuresWithoutLosingOtherDetailsOnDismiss() {
+        let chat = ChatSession()
+        chat.memoryStatus = "记忆检索超时"
+        chat.error = "HTTP 503: Upload failed"
+        chat.modelError = "Model list unavailable"
+        let record: JSONValue = .object(["id": .string("music-call"), "title": .string("music_playlist_add"),
+            "status": .string("failed"), "output": .string("HTTP 403: Catalog lookup rejected")])
+        chat.events = ["vesper-tool:" + record.pretty]
+        XCTAssertEqual(chat.issueDetails.map(\.id), ["memory", "chat", "models", "tool-music-call"])
+        XCTAssertEqual(chat.issueDetails.last?.detail, "HTTP 403: Catalog lookup rejected")
+        XCTAssertEqual(chat.issueDetails.first(where: { $0.id == "models" })?.action, .models)
+        chat.dismissIssue("memory")
+        XCTAssertEqual(chat.issueDetails.map(\.id), ["chat", "models", "tool-music-call"])
+        chat.dismissIssue("tool-music-call")
+        XCTAssertEqual(chat.issueDetails.map(\.id), ["chat", "models"])
+        XCTAssertEqual(ToolActivityRecords.cards(chat.events).first?["output"].string, "HTTP 403: Catalog lookup rejected", "Dismissing a notice must preserve tool history")
+        chat.dismissIssue("chat"); chat.dismissIssue("models")
+        XCTAssertTrue(chat.issueDetails.isEmpty)
+    }
+
+    func testMemoryRecallAllowsResponseSlowerThanOldFourSecondLimit() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SlowRecallProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        var api = APIClient(baseURL: "https://slow-recall.example", historyURL: "", token: "fixture")
+        api.requestSession = session
+        let result = try await api.request("/api/memory/context", method: "POST", body: .object([:]))
+        XCTAssertEqual(SlowRecallProtocol.timeout, 20)
+        XCTAssertNoThrow(try ChatMemoryRecall.validate(result))
+    }
+
+    func testMemoryRecallDoesNotTreatUnavailableHTTP200AsSuccess() {
+        for status in ["unavailable", "host_not_verified", ""] {
+            XCTAssertThrowsError(try ChatMemoryRecall.validate(.object(["status": .string(status)])))
+        }
+        XCTAssertThrowsError(try ChatMemoryRecall.validate(.object(["status": .string("prepared"), "deliveryId": .string("fixture")])))
+        for status in ["prepared", "delivered"] {
+            XCTAssertNoThrow(try ChatMemoryRecall.validate(.object([
+                "status": .string(status), "deliveryId": .string("fixture"), "additionalContext": .object([:])
+            ])))
+        }
+    }
+
+    func testMemoryRecallNoticeDistinguishesTimeoutAndServerFailure() {
+        XCTAssertTrue(ChatMemoryRecall.notice(for: URLError(.timedOut)).contains("超时"))
+        XCTAssertFalse(ChatMemoryRecall.notice(for: ChatMemoryRecall.Failure.unavailable).contains("超时"))
+        XCTAssertTrue(ChatMemoryRecall.notice(for: ChatMemoryRecall.Failure.hostNotVerified).contains("尚未就绪"))
+        XCTAssertEqual(ChatMemoryRecall.diagnostic(for: ServiceError(message: "private response", statusCode: 503)), "http-503")
+        XCTAssertEqual(ChatMemoryRecall.diagnostic(for: URLError(.timedOut)), "NSURLErrorDomain:-1001")
+    }
+
     private let sleepFixtureNow = Date(timeIntervalSince1970: 1_800_000_000)
     private func sleepSample(_ start: Double, _ end: Double, _ stage: SleepDetails.Stage,
                              source: String = "watch") -> SleepDetails.Sample {
@@ -269,6 +342,81 @@ final class ContractTests: XCTestCase {
         XCTAssertTrue(ChatPhaseRecovery.restore([], entries: [entry], threadID: "thread", fallbackThreadID: nil, tombstones: []).isEmpty)
         var unknown = entry; unknown["item"]["phase"] = .null
         XCTAssertEqual(ChatPhaseRecovery.restore([saved], entries: [unknown], threadID: "thread", fallbackThreadID: nil, tombstones: []), [saved])
+    }
+
+    private func sharedReply(_ id: String, media: String? = nil, caption: String = "", status: String = "delivered") -> JSONValue {
+        var value: JSONValue = .object(["id": .string(id), "conversationId": .string("room"), "role": .string("agent"), "content": .string(caption), "status": .string(status), "metadata": .object(["turnId": .string("turn"), "threadId": .string("thread")])])
+        if let media {
+            if media == "attachments" { value["metadata"][media] = .array([.object(["id": .string(id + "-file"), "type": .string("image/png"), "url": .string("https://example.com/photo.png")])]) }
+            else { value["metadata"][media] = .object(["id": .string(id + "-media"), "assetId": .string(id + "-asset")]) }
+            value["metadata"]["showTurnStatus"] = .bool(false)
+        }
+        return value
+    }
+
+    func testAssistantMediaAndCaptionShareOneRowInEitherArrivalOrder() {
+        for kind in ["sticker", "attachments", "musicCard", "locationCard"] {
+            let media = sharedReply("media", media: kind)
+            let text = sharedReply("text", caption: "For you", status: "streaming")
+            for input in [[media, text], [text, media]] {
+                let rows = ChatPresentation.displayRows(input)
+                XCTAssertEqual(rows.count, 1, kind)
+                XCTAssertEqual(rows[0].id, "text")
+                XCTAssertEqual(rows[0].messages, input, "Keep the originals for deletion and memory")
+                XCTAssertEqual(rows[0].presentedMessage["content"].string, "For you")
+                XCTAssertEqual(rows[0].presentedMessage["status"].string, "streaming")
+                XCTAssertEqual(rows[0].presentedMessage["metadata"]["sharedMedia"].array, [media])
+                XCTAssertEqual(ChatPresentation.liveHeadingID(rows, turnID: "turn"), "text")
+                XCTAssertEqual(ChatPresentationSnapshot(input).lastReplyID, "text")
+                XCTAssertEqual(ChatPresentationSnapshot(input).rowID(forMessageID: "media"), "text")
+                XCTAssertEqual(ChatPresentationSnapshot(input).rowID(forMessageID: "text"), "text")
+            }
+        }
+    }
+
+    func testAssistantMixedMediaRetainsCaptionsAndActivityOnce() {
+        var photo = sharedReply("photo", media: "attachments", caption: "文件")
+        photo["metadata"]["attachmentOnly"] = .bool(true)
+        let music = sharedReply("music", media: "musicCard", caption: "Listen with me")
+        let sticker = sharedReply("sticker", media: "sticker")
+        var activity = sharedReply("tool")
+        activity["role"] = .string("tool")
+        let text = sharedReply("text", caption: "A little thought")
+        let input = [photo, activity, music, sticker, text]
+        let rows = ChatPresentation.displayRows(input)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].messages, [photo, music, sticker, text])
+        XCTAssertEqual(rows[0].activities, [activity])
+        XCTAssertEqual(rows[0].presentedMessage["content"].string, "Listen with me\n\nA little thought")
+        XCTAssertEqual(rows[0].presentedMessage["metadata"]["attachments"].array, photo["metadata"]["attachments"].array)
+        XCTAssertEqual(photo["content"].string, "文件")
+        XCTAssertEqual(rows[0].presentedMessage["metadata"]["attachmentOnly"], .bool(false))
+    }
+
+    func testAssistantMediaGroupingRespectsConversationTurnAndMessageBoundaries() {
+        let media = sharedReply("media", media: "sticker")
+        let text = sharedReply("text", caption: "Hello")
+        for field in ["turnId", "threadId"] {
+            for value in ["", "other"] {
+                var different = text; different["metadata"][field] = .string(value)
+                XCTAssertEqual(ChatPresentation.displayRows([media, different]).count, 2)
+            }
+        }
+        var other = text; other["conversationId"] = .string("other")
+        XCTAssertEqual(ChatPresentation.displayRows([media, other]).count, 2)
+        var wake = text; wake["metadata"]["wakeRunId"] = .string("wake")
+        XCTAssertEqual(ChatPresentation.displayRows([media, wake]).count, 2)
+        var user = text; user["role"] = .string("user")
+        XCTAssertEqual(ChatPresentation.displayRows([media, user, text]).count, 3)
+        var voice = media; voice["metadata"]["voiceMessage"] = .bool(true)
+        XCTAssertEqual(ChatPresentation.displayRows([voice, text]).count, 2)
+        var second = text; second["id"] = .string("second")
+        XCTAssertEqual(ChatPresentation.displayRows([media, text, second]).count, 2)
+        var question = sharedReply("question"); question["role"] = .string("tool"); question["metadata"]["userInput"] = .object(["status": .string("pending")])
+        XCTAssertEqual(ChatPresentation.displayRows([media, question, text]).count, 2)
+        var userMedia = media; userMedia["role"] = .string("user"); userMedia["content"] = .string("My caption")
+        let row = ChatPresentation.displayRows([userMedia])[0]
+        XCTAssertEqual(row.presentedMessage, userMedia)
     }
 
     func testCommentaryIsCollapsedIntoMatchingReplyWithoutHidingFinalText() {
@@ -746,6 +894,76 @@ final class ContractTests: XCTestCase {
         while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
     }
+    func testSendPublishesLocalEchoBeforeConnectingAndConsumesComposerOnce() async throws {
+        let socket = RecoverySocket(); socket.hangMethod = "initialize"
+        let chat = session([socket], timeout: 0.05)
+        defer { chat.disconnect() }
+        chat.composer.draft = "A slow connection must not delay my message"
+        var accepted = 0
+        let draft = chat.composer.draft
+        let task = Task {
+            await chat.send(draft, onAccepted: {
+                accepted += 1
+                XCTAssertEqual(chat.messages.last?["content"].string, draft)
+                XCTAssertEqual(chat.messages.last?["status"].string, "pending")
+                XCTAssertEqual(chat.latestLocalMessageID, chat.messages.last?.id)
+                XCTAssertTrue(chat.preparingSend)
+                chat.composer.draft = ""
+            })
+        }
+        await eventually { accepted == 1 }
+        XCTAssertTrue(chat.composer.draft.isEmpty)
+        let duplicate = await chat.send("duplicate", onAccepted: { accepted += 1 })
+        XCTAssertFalse(duplicate)
+        chat.composer.draft = "Next draft"
+        _ = await task.value
+        XCTAssertEqual(accepted, 1)
+        XCTAssertEqual(chat.composer.draft, "Next draft")
+        XCTAssertEqual(chat.messages.filter { $0["content"].string == draft }.count, 1)
+    }
+
+    func testLocationOnlySendImmediatelyPublishesShareCard() async throws {
+        let socket = RecoverySocket(); socket.hangMethod = "initialize"
+        let chat = session([socket], timeout: 0.05); defer { chat.disconnect() }
+        let location: JSONValue = .object(["latitude": .number(31.27), "longitude": .number(120.74), "title": .string("Test location"), "horizontalAccuracyMeters": .number(10), "locatedAt": .string("2026-10-05T08:00:00Z")])
+        var accepted = false
+        _ = await chat.send("", location: location, onAccepted: {
+            accepted = true
+            XCTAssertEqual(chat.messages.last?["metadata"]["locationCard"], location)
+            XCTAssertEqual(chat.messages.last?["metadata"]["locationOnly"], .bool(true))
+        })
+        XCTAssertTrue(accepted)
+        XCTAssertTrue(ChatSharedLocation.context(location).contains("31.27"))
+        let before = chat.messages.count
+        let invalid = await chat.send("", location: .object(["latitude": .number(95), "longitude": .number(1)]))
+        XCTAssertFalse(invalid)
+        XCTAssertEqual(chat.messages.count, before)
+    }
+
+    func testAcceptedUserMessageKeepsItsTimestampWhileReplyRuns() async throws {
+        let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
+        try await chat.connect()
+        try socket.emit(.object(["method": .string("turn/started"), "params": .object(["turn": .object(["id": .string("active")])])]))
+        await eventually { chat.busy }
+        let user: JSONValue = .object(["role": .string("user"), "metadata": .object(["turnId": .string("active")])])
+        var reply = user; reply["role"] = .string("agent")
+        XCTAssertFalse(chat.replyIsStillRunning(user))
+        XCTAssertTrue(chat.replyIsStillRunning(reply))
+    }
+
+    func testLiveHeadingUsesCurrentTurnAndMovesFromToolToReply() {
+        func message(_ id: String, role: String = "agent", turn: String) -> JSONValue {
+            .object(["id": .string(id), "role": .string(role), "createdAt": .string("2026-10-05T08:00:00Z"), "metadata": .object(["turnId": .string(turn)])])
+        }
+        let old = message("old", turn: "previous")
+        let user = message("user", role: "user", turn: "current")
+        let tool = message("tool", role: "tool", turn: "current")
+        XCTAssertNil(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([old, user]), turnID: "current"))
+        XCTAssertEqual(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([old, user, tool]), turnID: "current"), "tool")
+        let reply = message("reply", turn: "current")
+        XCTAssertEqual(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([old, user, tool, reply]), turnID: "current"), "reply")
+    }
+
     func testStreamingBurstPublishesInBatchesWithoutLosingText() async throws {
         let socket = RecoverySocket(); let chat = session([socket]); defer { chat.disconnect() }
         try await chat.connect()

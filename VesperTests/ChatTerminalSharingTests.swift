@@ -63,10 +63,35 @@ import SwiftUI
                 .preferredColorScheme(.dark).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
             let image = try await renderFixture(AnyView(history), name: "Live terminal " + palette)
             XCTAssertGreaterThan(brightPixels(image, area: CGRect(x: 16, y: 70, width: 350, height: 280)), 250)
-            let connection = ChatConnectionSheet(message: "Chat recovery failed. Tap Retry to start another attempt.", needsRetry: true, retry: {}, close: {})
+            let connection = ChatIssueSheet(issues: [
+                ChatIssue(id: "connection", title: "聊天连接", detail: "Chat recovery failed. Tap Retry to start another attempt.", action: .connection, dismissible: false),
+                ChatIssue(id: "memory", title: "记忆", detail: "记忆检索超时；这次先用当前聊天记录回复。\n错误代码：NSURLErrorDomain:-1001")
+            ], retry: { _ in }, dismiss: { _ in }, close: {})
                 .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
             _ = try await renderFixture(AnyView(connection), name: "Connection retry " + palette)
         }
+    }
+
+    func testPermissionLayoutsAcrossThemes() async throws {
+        let original = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer {
+            if let original { UserDefaults.standard.set(original, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        for palette in ["white", "black"] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let scheme: ColorScheme = palette == "black" ? .dark : .light
+            _ = try await renderFixture(AnyView(NavigationStack { DevicePermissionsView() }.environment(\.scenePhase, .active).preferredColorScheme(scheme)), name: "Permissions " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { SystemPlannerView(reminderOnly: false) }.preferredColorScheme(scheme)), name: "Calendar permission " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { HealthView() }.preferredColorScheme(scheme)), name: "Health permission " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { WeatherPermissionsView() }.preferredColorScheme(scheme)), name: "Location permission " + palette)
+            _ = try await renderFixture(AnyView(NavigationStack { NotificationSettingsView() }.environment(\.scenePhase, .active).preferredColorScheme(scheme)), name: "Notification permission " + palette)
+        }
+    }
+
+    func testSharedLocationCardLayout() async throws {
+        let location: JSONValue = .object(["latitude": .number(31.27), "longitude": .number(120.74), "title": .string("Current location"), "horizontalAccuracyMeters": .number(12)])
+        _ = try await renderFixture(AnyView(ChatLocationCard(location: location).padding(20).frame(maxWidth: .infinity).background { Background() }), name: "Shared location card")
     }
 
     private func renderFixture(_ content: AnyView, name: String) async throws -> UIImage {

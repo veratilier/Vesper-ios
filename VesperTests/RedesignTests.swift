@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 import UIKit
 import WebKit
+import CoreLocation
 @testable import Vesper
 
 private struct DesktopPalettePreview: View {
@@ -17,11 +18,69 @@ private struct DesktopPalettePreview: View {
     }
 }
 
+private struct ControlsPalettePreview: View {
+    let page: String
+    var lyrics = false
+    let onDock: (CGRect) -> Void
+    @AppStorage("vesperPalette") private var paletteName = "white"
+    var body: some View {
+        TabView(selection: .constant(page == "Settings" ? 4 : 2)) {
+            Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+            Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+            if page != "Settings" { preview.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2) }
+            else { Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2) }
+            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+            if page == "Settings" { preview.tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
+            else { Text("Settings").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
+        }
+            .foregroundStyle((VesperPalette(rawValue: paletteName) ?? .white).ink)
+            .tint((VesperPalette(rawValue: paletteName) ?? .white).ink)
+            .preferredColorScheme(paletteName == "black" ? .dark : .light)
+    }
+    private var preview: some View {
+        NavigationStack {
+                ZStack {
+                    Background()
+                    if page == "Music" { MusicView(showingLyrics: lyrics, observeDock: onDock) }
+                    else if page == "Settings" { SettingsView() }
+                    else { ScrollView { VesperAppGrid(editing: .constant(false), open: { _ in }).padding(18) } }
+                }.navigationTitle(page).navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+        }
+    }
+}
+
+private struct SurfacePalettePreview: View {
+    let page: String
+    let catalog: MusicCatalog
+    @AppStorage("vesperPalette") private var paletteName = "white"
+    var body: some View {
+        NavigationStack {
+            if page == "Connection" { ConnectionView() }
+            else if page == "Voice" { VoiceSettingsView() }
+            else if page == "Tools" { ToolsView() }
+            else if page == "Data" { DataSettingsView() }
+            else if page == "Settings" { SettingsView() }
+            else { ZStack {
+                Background()
+                if page == "MyMusic" { MusicLibraryView(catalog: catalog, preview: true) }
+                else if page == "Contacts" { NativeChatHome() }
+                else if page == "Notes" { CollectionView(kind: .notes) }
+                else if page == "Alarms" { AlarmsView() }
+                else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
+            } }
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            .preferredColorScheme(paletteName == "black" ? .dark : .light)
+    }
+}
+
 private final class DesktopContactProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "desktop-preview.example" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let body = #"{"conversations":[{"id":"main","title":"Rowan","preview":"今天的小事，也可以慢慢说。"},{"id":"reading","title":"一起读书","preview":"留在这里的几页书。"}]}"#
+        let body = request.url?.path == "/api/mcp/connections"
+            ? #"{"connections":[{"id":"preview-mcp","name":"Vesper","url":"https://desktop-preview.example/mcp","enabled":true,"authMode":"none","tools":[]}]}"#
+            : #"{"conversations":[{"id":"main","title":"Rowan","preview":"今天的小事，也可以慢慢说。"},{"id":"reading","title":"一起读书","preview":"留在这里的几页书。"}]}"#
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
             headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
@@ -30,7 +89,164 @@ private final class DesktopContactProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class JournalLayoutProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "journal-layout.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let body: [String: Any]
+        if request.url?.path.hasSuffix("/activity") == true {
+            let month = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "month" }?.value ?? "2026-10"
+            var days: [String: Any] = [:]
+            for (index, count) in [15, 25, 40, 25, 10, 3].enumerated() {
+                days[month + String(format: "-%02d", index + 1)] = ["total": count, "user": count / 2, "agent": count - count / 2, "autonomous": 1]
+            }
+            body = ["month": month, "days": days]
+        } else {
+            body = ["conversations": [["id": "main", "title": "Rowan", "preview": "晚安，宝宝。轻轻亲一下，盖好被子。", "updatedAt": "2026-10-05T19:46:00Z"]]]
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: body)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+private struct JournalLayoutFixture: View {
+    var contacts: Bool
+    var author: JournalAuthor
+    var date: Date
+    var body: some View {
+        TabView(selection: .constant(contacts ? 1 : 2)) {
+            Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+            Group {
+                if contacts { NativeChatHome() }
+                else { Text("Chat") }
+            }.tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+            NavigationStack { JournalView(date: date, author: author).navigationTitle("Journal").navigationBarTitleDisplayMode(.inline) }
+                .tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
+            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+            Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
+        }.environment(\.scenePhase, .active)
+    }
+}
+
 @MainActor final class RedesignTests: XCTestCase {
+    func testJournalDatesKeepBeijingDaysAndClampMonthTransitions() throws {
+        let moment = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-05T16:01:00Z"))
+        XCTAssertEqual(JournalDates.label(moment), "2026-10-06")
+        XCTAssertEqual(JournalDates.mondayOffset(moment), 3, "October starts on Thursday in a Monday-first calendar")
+        let jan = try XCTUnwrap(ISO8601DateFormatter().date(from: "2028-01-31T00:00:00Z"))
+        XCTAssertEqual(JournalDates.label(JournalDates.moveMonth(jan, by: 1)), "2028-02-29")
+        XCTAssertEqual(JournalDates.days(jan).count, 31)
+        XCTAssertEqual(JournalAuthor.vera.field, "user"); XCTAssertEqual(JournalAuthor.rowan.field, "agent")
+    }
+    func testContactHeatmapAndJournalBookOnPhoneAndAllThemes() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        URLProtocol.registerClass(JournalLayoutProtocol.self)
+        defer { URLProtocol.unregisterClass(JournalLayoutProtocol.self) }
+        let store = AppStore(); store.token = "synthetic-layout"; store.historyURL = "https://journal-layout.example/history"
+        let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-06T00:00:00Z"))
+        store.documents["diary"] = .object(["2026-10-06": .object([
+            "user": .string("# 今天的小事\n\n把今天喜欢的片刻，写在左边这一页。\n\n傍晚的光，和刚好响起的那首歌。"),
+            "agent": .string("# 夜里的小记\n\n窗外已经安静了，桌上的灯还亮着。\n\n今天把一些零碎的念头留在这里，等明天再慢慢读。\n\n愿这一页，替我们收好此刻。")])])
+        let chat = ChatSession(), player = MusicPlayer()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (contacts, author, palette, width) in [(true, JournalAuthor.rowan, "white", 393), (true, .rowan, "blue", 393),
+            (true, .rowan, "black", 393), (false, .rowan, "white", 393), (false, .vera, "white", 393),
+            (false, .rowan, "black", 393), (false, .vera, "blue", 320)] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let content = JournalLayoutFixture(contacts: contacts, author: author, date: date)
+                .environmentObject(store).environmentObject(chat).environmentObject(player).environmentObject(chat.composer)
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
+            let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
+            if contacts { XCTAssertEqual(chat.conversations.count, 1); XCTAssertNil(chat.error) }
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Journal-layout-\(contacts ? "Chat" : author.rawValue)-\(palette)-\(width)"
+            attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+        chat.disconnect()
+    }
+    func testLibraryRowsAndSecondarySurfacesUseDockGlass() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        URLProtocol.registerClass(DesktopContactProtocol.self)
+        defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
+        let store = AppStore(); store.token = ""; store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example"; store.socketURL = "wss://desktop-preview.example"
+        let chat = ChatSession(); chat.configure(store)
+        store.documents["profile"] = .object(["agentName": .string("Rowan")])
+        store.documents["notes"] = .array([.object(["id": .string("glass-note"), "text": .string("今天的小事，也可以慢慢说。"), "kind": .string("agent")])])
+        store.documents["musicPlaylists"] = .array([.object(["id": .string("vesper-preview"), "name": .string("夜里，慢慢听"), "tracks": .array([.object(["id": .string("song"), "title": .string("天天")])])])])
+        let player = MusicPlayer(), catalog = MusicCatalog()
+        catalog.playlists = ["Favourite Songs", "kpop", "Recent", "深夜 R&B"].enumerated().map { .object(["id": .string("preview-\($0.offset)"), "name": .string($0.element)]) }
+        catalog.connected = true
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for palette in ["white", "blue", "black"] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            for page in ["MyMusic", "Contacts", "Notes", "Panels", "Alarms", "Connection", "Voice", "Tools", "Data", "Settings"] {
+                store.token = ["Contacts", "Tools"].contains(page) ? "preview-contact-token" : ""
+                store.error = nil; chat.error = nil
+                if page == "Contacts" { chat.configure(store) }
+                let content = SurfacePalettePreview(page: page, catalog: catalog).environmentObject(store).environmentObject(chat).environmentObject(player)
+                let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+                window.rootViewController = UIHostingController(rootView: content); window.makeKeyAndVisible()
+                try await Task.sleep(for: .milliseconds(600))
+                window.rootViewController?.view.layoutIfNeeded()
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "Surfaces-\(page)-\(palette)"; attachment.lifetime = .keepAlways; add(attachment)
+                window.isHidden = true; window.rootViewController = nil
+            }
+        }
+    }
+    func testControlGlassAndPlaybackDockRemainAboveTheTabBar() async throws {
+        let suite = "controls-layout-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(false, forKey: "music.lyricsFrostedBackground")
+        let store = AppStore(); store.token = ""
+        let player = MusicPlayer(), chat = ChatSession()
+        player.setQueue([.object(["id": .string("preview-song"), "title": .string("天天"), "artist": .string("陶喆"), "album": .string("I'm O.K."), "duration": .number(255),
+            "lyrics": .array((0..<24).map { .object(["time": .number(Double($0 * 10)), "text": .string($0.isMultiple(of: 2) ? "我想要你在我身边" : "分享生命中的一切")]) })])])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func capture(page: String, palette: String, size: CGSize, lyrics: Bool = false) async throws -> CGRect {
+            preferences.set(palette, forKey: "vesperPalette")
+            var dock = CGRect.zero
+            let content = ControlsPalettePreview(page: page, lyrics: lyrics, onDock: { dock = $0 })
+                .environmentObject(store).environmentObject(player).environmentObject(chat).defaultAppStorage(preferences)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(origin: .zero, size: size)
+            window.rootViewController = UIHostingController(rootView: content); window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(700))
+            window.rootViewController?.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let label = "Controls-\(page)-\(palette)-\(Int(size.width))-\(lyrics ? "lyrics" : "cover")"
+            let attachment = XCTAttachment(image: image); attachment.name = label; attachment.lifetime = .keepAlways; add(attachment)
+            if page == "Music" {
+                XCTAssertGreaterThan(dock.height, 90)
+                func tabBar(in view: UIView) -> UITabBar? {
+                    if let bar = view as? UITabBar, !bar.isHidden { return bar }
+                    return view.subviews.lazy.compactMap { tabBar(in: $0) }.first
+                }
+                let bar = try XCTUnwrap(tabBar(in: window))
+                let barFrame = bar.convert(bar.bounds, to: window)
+                XCTAssertLessThanOrEqual(dock.maxY, barFrame.minY, "Playback controls must clear the actual tab bar on every supported iOS version")
+            }
+            return dock
+        }
+        for palette in ["white", "blue", "black"] {
+            _ = try await capture(page: "Settings", palette: palette, size: CGSize(width: 393, height: 852))
+            _ = try await capture(page: "Collection", palette: palette, size: CGSize(width: 393, height: 852))
+        }
+        for size in [CGSize(width: 393, height: 852), CGSize(width: 320, height: 668)] {
+            let cover = try await capture(page: "Music", palette: "white", size: size)
+            let lyrics = try await capture(page: "Music", palette: "white", size: size, lyrics: true)
+            XCTAssertEqual(cover.minY, lyrics.minY, accuracy: 1, "Changing to lyrics must not move playback controls")
+            XCTAssertEqual(cover.height, lyrics.height, accuracy: 1)
+        }
+    }
     func testExistingDesktopUpdatesWhenSwitchingAllThreePalettes() async throws {
         // Isolate appearance settings from the app's real icon-changing observer.
         let suite = "desktop-theme-test-" + UUID().uuidString
@@ -424,7 +640,7 @@ private final class DesktopContactProtocol: URLProtocol {
         let catalog = NativeDeviceTools.addToCatalog(.object(["connections": .array([remote])]))
         XCTAssertEqual(catalog["connections"].array.first, remote)
         XCTAssertEqual(NativeDeviceTools.addToCatalog(catalog), catalog)
-        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 3)
+        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 5)
         let args: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_calendar"), "arguments": .object([:])])
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: args), "read_native_calendar")
         var invalid = args; invalid["toolName"] = .string("delete_event")
@@ -436,6 +652,47 @@ private final class DesktopContactProtocol: URLProtocol {
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "read_native_health", arguments: .object([:])), "read_native_health")
         XCTAssertEqual(try NativeToolCatalog.normalize([NativeDeviceTools.calendarTool, NativeDeviceTools.healthTool]).count, 2)
     }
+    func testCurrentLocationKeepsCoordinatesAccuracyAndFreshness() throws {
+        let now = Date(timeIntervalSince1970: 1791187200)
+        let location = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 31.275123, longitude: 120.742456), altitude: 0, horizontalAccuracy: 12, verticalAccuracy: -1, timestamp: now.addingTimeInterval(-2))
+        let result = try NativeChatLocation.snapshot(location, precise: true, now: now)
+        XCTAssertEqual(result["latitude"].number, 31.275123, accuracy: 0.0000001)
+        XCTAssertEqual(result["longitude"].number, 120.742456, accuracy: 0.0000001)
+        XCTAssertEqual(result["horizontalAccuracyMeters"].number, 12)
+        XCTAssertEqual(result["ageSeconds"].number, 2)
+        XCTAssertEqual(result["precisePermission"], .bool(true))
+        XCTAssertThrowsError(try NativeChatLocation.snapshot(location, precise: true, now: now.addingTimeInterval(60)))
+        let approximate = try NativeChatLocation.snapshot(location, precise: false, now: now)
+        XCTAssertEqual(approximate["precisePermission"], .bool(false))
+        let invalid = CLLocation(coordinate: location.coordinate, altitude: 0, horizontalAccuracy: -1, verticalAccuracy: -1, timestamp: now)
+        XCTAssertThrowsError(try NativeChatLocation.snapshot(invalid, precise: true, now: now))
+        let wrapped: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_location"), "arguments": .object([:])])
+        XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: wrapped), "read_native_location")
+        var unexpected = wrapped; unexpected["arguments"] = .object(["backgroundTracking": .bool(true)])
+        XCTAssertThrowsError(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: unexpected))
+    }
+
+    func testNativePlannerWriteValidatesDatesAndOldThreadDiscovery() throws {
+        let event: JSONValue = .object(["kind": .string("event"), "title": .string("Study"), "start": .string("2026-10-06T09:00:00+08:00"), "end": .string("2026-10-06T10:00:00+08:00"), "requestId": .string("fixture-event")])
+        let parsed = try SystemPlanner.writeRequest(event)
+        XCTAssertEqual(parsed.end!.timeIntervalSince(parsed.start!), 3600)
+        let wrapped: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("create_native_planner_item"), "arguments": event])
+        XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: wrapped), "create_native_planner_item")
+        XCTAssertEqual(try NativeToolCatalog.normalize([NativeDeviceTools.plannerWriteTool]).count, 1)
+        var invalid = event; invalid["end"] = event["start"]
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(invalid))
+        invalid = event; invalid["start"] = .string("tomorrow morning")
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(invalid))
+        invalid = event; invalid["requestId"] = .string("")
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(invalid))
+        let reminder: JSONValue = .object(["kind": .string("reminder"), "title": .string("Bring notebook"), "requestId": .string("fixture-reminder")])
+        XCTAssertNil(try SystemPlanner.writeRequest(reminder).start)
+        var timed = reminder; timed["start"] = event["start"]
+        XCTAssertNotNil(try SystemPlanner.writeRequest(timed).start)
+        timed["end"] = event["end"]
+        XCTAssertThrowsError(try SystemPlanner.writeRequest(timed))
+    }
+
     func testExistingChatDiscoversHealthArgumentsAndVesperAlarms() throws {
         var args: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_health"), "arguments": .object(["metrics": .array([.string("catalog")])])])
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: args), "read_native_health")
@@ -609,13 +866,16 @@ private final class DesktopContactProtocol: URLProtocol {
         let draft = ChatComposer()
         draft.draft = "unfinished main-room thought"
         draft.pendingMusic = .object(["id": .string("song")])
+        draft.pendingSticker = .object(["assetId": .string("sticker")])
         draft.switchConversation(from: "main", to: "other")
         XCTAssertEqual(draft.draft, "")
         XCTAssertNil(draft.pendingMusic)
+        XCTAssertNil(draft.pendingSticker)
         draft.draft = "another draft"
         draft.switchConversation(from: "other", to: "main")
         XCTAssertEqual(draft.draft, "unfinished main-room thought")
         XCTAssertEqual(draft.pendingMusic?["id"].string, "song")
+        XCTAssertEqual(draft.pendingSticker?["assetId"].string, "sticker")
         draft.switchConversation(from: "main", to: "main")
         XCTAssertEqual(draft.draft, "unfinished main-room thought")
     }

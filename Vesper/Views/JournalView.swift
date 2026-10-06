@@ -45,17 +45,18 @@ enum JournalDay {
     }
 }
 
-private enum JournalAuthor: String, CaseIterable, Identifiable {
+enum JournalAuthor: String, CaseIterable, Identifiable {
     case vera = "Vera", rowan = "Rowan"
     var id: String { rawValue }
     var field: String { self == .vera ? "user" : "agent" }
+    var side: String { self == .vera ? "Left page" : "Right page" }
 }
 
 struct JournalView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var selectedDate = Date()
-    @State private var author = JournalAuthor.vera
+    @State private var selectedDate: Date
+    @State private var author: JournalAuthor
     @State private var forward = true
     @State private var pickingDate = false
     @State private var editing = false
@@ -63,10 +64,16 @@ struct JournalView: View {
     @State private var draft = ""
     @State private var saveError = ""
 
+    init(date: Date = .now, author: JournalAuthor = .vera) {
+        _selectedDate = State(initialValue: date)
+        _author = State(initialValue: author)
+    }
+
     private var diary: JSONValue { store.document("diary") }
     private var selectedKey: String { JournalDay.key(selectedDate) }
     private var pageID: String { selectedKey + author.field }
     private var entry: String { diary[selectedKey][author.field].string }
+    private var entryDisplay: JournalEntryDisplay { JournalEntryDisplay(entry) }
     private var paperInk: Color { Color(red: 0.23, green: 0.22, blue: 0.19) }
     private var animation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.28) }
 
@@ -95,7 +102,7 @@ struct JournalView: View {
                 .accessibilityAction(named: "Next day") { select(JournalDay.moving(selectedDate, by: 1)) }
             }.padding(.top, 6).clipped()
         }
-        .transparentNavigationTop()
+        .transparentNavigationTop().background { Background() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: beginEditing) { Image(systemName: "square.and.pencil") }
@@ -192,7 +199,7 @@ struct JournalView: View {
         VStack(alignment: .leading, spacing: 28) {
             Text(JournalDay.label(selectedDate, format: "MMMM d, yyyy"))
                 .font(.system(.subheadline, design: .serif)).foregroundStyle(paperInk.opacity(0.68))
-            Text(author.rawValue + "’s day").font(.system(.title, design: .serif))
+            Text(entryDisplay.title ?? (author.rawValue + "’s day")).font(.system(.title, design: .serif))
                 .accessibilityAddTraits(.isHeader)
             Rectangle().fill(paperInk.opacity(0.28)).frame(width: 36, height: 0.5).accessibilityHidden(true)
             if store.loading && store.documents["diary"] == nil {
@@ -201,7 +208,7 @@ struct JournalView: View {
                 Text("Connect to Vesper to load your diary.").font(.system(.body, design: .serif))
                 Button("Retry") { Task { await store.refresh() } }.font(.subheadline)
             } else {
-                Text(entry.isEmpty ? (author == .vera ? "How did today feel?" : "No entry for this day yet.") : entry)
+                ChatMarkdownText(content: entry.isEmpty ? (author == .vera ? "How did today feel?" : "No entry for this day yet.") : entryDisplay.body)
                     .font(.system(.body, design: .serif)).lineSpacing(9)
                     .foregroundStyle(paperInk.opacity(entry.isEmpty ? 0.6 : 1))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -209,7 +216,7 @@ struct JournalView: View {
             }
             Spacer(minLength: 48)
             HStack {
-                Text(author.rawValue).font(.system(.title3, design: .serif).italic())
+                Text(author.rawValue + " · " + author.side).font(.system(.subheadline, design: .serif).italic())
                     .foregroundStyle(paperInk.opacity(0.72))
                 Spacer()
                 if author == .vera {
@@ -313,5 +320,18 @@ private struct JournalPaperEdge: Shape {
         }
         path.closeSubpath()
         return path
+    }
+}
+
+struct JournalEntryDisplay {
+    let title: String?
+    let body: String
+    init(_ text: String) {
+        let lines = text.components(separatedBy: .newlines)
+        let first = lines.first ?? ""
+        let prefix = first.prefix { $0 == "#" }
+        if (1...6).contains(prefix.count), first.dropFirst(prefix.count).first == " " {
+            title = String(first.dropFirst(prefix.count + 1)); body = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .newlines)
+        } else { title = nil; body = text }
     }
 }

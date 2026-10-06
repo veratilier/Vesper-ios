@@ -81,10 +81,6 @@ struct NativeChatHome: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
-                ChatActivityHeatmap(refreshID: activityRefreshID)
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
                 Text(welcomeLine)
                     .font(.system(.title3, design: .serif)).italic()
                     .foregroundStyle(VesperTheme.muted)
@@ -96,6 +92,10 @@ struct NativeChatHome: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("chat-contact-greeting")
+                ChatActivityHeatmap(refreshID: activityRefreshID)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
             .listStyle(.plain)
             .onAppear { contactsVisible = true; updateWelcomeLine() }

@@ -47,4 +47,50 @@ final class JournalTests: XCTestCase {
         let first = JournalDay.savingVera("First entry", for: "2026-10-06", in: .null, updatedAt: "now")
         XCTAssertEqual(first["2026-10-06"]["user"].string, "First entry")
     }
+
+    func testMoodMultiSelectionSurvivesRoundTripAndEntryEdits() throws {
+        let key = "2026-10-06"
+        let happy = JournalDay.togglingMood(.happy, for: key, author: .vera, in: .null, updatedAt: "first")
+        let both = JournalDay.togglingMood(.sweet, for: key, author: .vera, in: happy, updatedAt: "second")
+        let data = try JSONEncoder().encode(both)
+        let restored = try JSONDecoder().decode(JSONValue.self, from: data)
+        XCTAssertEqual(restored[key]["moods"]["user"].array, [.string("happy"), .string("sweet")])
+        let edited = JournalDay.savingVera("Today was lovely.", for: key, in: restored, updatedAt: "third")
+        XCTAssertEqual(edited[key]["moods"], restored[key]["moods"])
+        let removed = JournalDay.togglingMood(.happy, for: key, author: .vera, in: edited, updatedAt: "fourth")
+        XCTAssertEqual(removed[key]["moods"]["user"].array, [.string("sweet")])
+        let cleared = JournalDay.togglingMood(.sweet, for: key, author: .vera, in: removed, updatedAt: "last")
+        XCTAssertEqual(cleared[key]["moods"]["user"].array, [])
+        XCTAssertEqual(cleared[key]["user"].string, "Today was lovely.")
+        XCTAssertEqual(cleared[key]["updatedAt"].string, "last")
+    }
+
+    func testMoodEditsPreserveOtherAuthorDatesAndUnknownData() {
+        let key = "2026-10-06"
+        let diary: JSONValue = .object([
+            key: .object([
+                "user": .string("Vera's entry"), "agent": .string("Rowan's entry"),
+                "futureField": .number(7),
+                "moods": .object([
+                    "user": .array([.string("happy"), .string("future-mood")]),
+                    "agent": .array([.string("calm")]),
+                    "futureAuthor": .array([.string("quiet")])
+                ])
+            ]),
+            "2026-10-05": .object(["moods": .object(["user": .array([.string("low")])])]),
+            "metadata": .object(["version": .number(2)])
+        ])
+        let vera = JournalDay.togglingMood(.happy, for: key, author: .vera, in: diary, updatedAt: "now")
+        XCTAssertEqual(vera[key]["moods"]["user"].array, [.string("future-mood")])
+        XCTAssertEqual(vera[key]["moods"]["agent"], diary[key]["moods"]["agent"])
+        let rowan = JournalDay.togglingMood(.hopeful, for: key, author: .rowan, in: vera, updatedAt: "later")
+        XCTAssertEqual(rowan[key]["moods"]["agent"].array, [.string("calm"), .string("hopeful")])
+        XCTAssertEqual(rowan[key]["moods"]["user"], vera[key]["moods"]["user"])
+        XCTAssertEqual(rowan[key]["moods"]["futureAuthor"], diary[key]["moods"]["futureAuthor"])
+        XCTAssertEqual(rowan[key]["user"], diary[key]["user"])
+        XCTAssertEqual(rowan[key]["agent"], diary[key]["agent"])
+        XCTAssertEqual(rowan[key]["futureField"], diary[key]["futureField"])
+        XCTAssertEqual(rowan["2026-10-05"], diary["2026-10-05"])
+        XCTAssertEqual(rowan["metadata"], diary["metadata"])
+    }
 }

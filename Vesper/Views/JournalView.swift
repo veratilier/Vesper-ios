@@ -356,7 +356,9 @@ struct JournalView: View {
             .overlay(Capsule().stroke(mood.color.opacity(selected ? 0.8 : 0.35), lineWidth: selected ? 1 : 0.6))
             .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(savingMood || store.saving || store.loading)
+        // AppStore queues writes and re-reads the diary before changing it.
+        // Unrelated music/state synchronization must not block mood selection.
+        .buttonStyle(.plain).disabled(savingMood)
         .accessibilityLabel(mood.label).accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityHint(selected ? "Remove this mood" : "Add this mood; multiple moods can be selected")
     }

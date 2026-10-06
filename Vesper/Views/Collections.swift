@@ -165,7 +165,7 @@ struct ChatActivityHeatmap: View {
     private var refreshKey: String { [monthKey, store.historyURL, store.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
     private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level]) }
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 22) {
             HStack(spacing: 8) {
                 Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
                 Spacer(minLength: 4)
@@ -182,7 +182,7 @@ struct ChatActivityHeatmap: View {
             if activityError {
                 Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
             } else if !ready { ProgressView().controlSize(.small).accessibilityLabel("Loading chat statistics") }
-        }.buttonStyle(.plain).padding(18)
+        }.buttonStyle(.plain).padding(.horizontal, 18).padding(.vertical, 24)
             .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
             .accessibilityIdentifier("chat-activity-heatmap")
             .task(id: refreshKey) {
@@ -203,7 +203,7 @@ struct ChatActivityHeatmap: View {
     }
     private var cellCount: Int { ((offset + days.count + 6) / 7) * 7 }
     private var calendarGrid: some View {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 7), spacing: 5) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 7), spacing: 10) {
                 ForEach(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], id: \.self) {
                     Text($0).font(.system(size: 9, weight: .medium)).tracking(0.7).foregroundStyle(VesperTheme.muted).padding(.bottom, 5)
                 }
@@ -221,8 +221,12 @@ struct ChatActivityHeatmap: View {
             RoundedRectangle(cornerRadius: 8).fill(heatColor(ready ? JournalDates.heatLevel(count) : 0))
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
-                    Text("\(JournalDates.calendar.component(.day, from: date))").font(.system(size: 14, design: .serif))
-                        .foregroundStyle(key > JournalDates.label(.now) ? VesperTheme.muted : VesperTheme.ink)
+                    VStack(spacing: 2) {
+                        Text("\(JournalDates.calendar.component(.day, from: date))").font(.system(size: 14, design: .serif))
+                            .foregroundStyle(key > JournalDates.label(.now) ? VesperTheme.muted : VesperTheme.ink)
+                        Text(key > JournalDates.label(.now) ? " " : ready ? String(count) : "—")
+                            .font(.system(size: 9)).monospacedDigit().foregroundStyle(VesperTheme.muted)
+                    }
                 }
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(key == JournalDates.label(.now) ? VesperTheme.muted.opacity(0.7) : .white.opacity(0.25), lineWidth: 1))
         }.accessibilityLabel("\(key), \(ready ? String(count) : "unknown") chat messages")

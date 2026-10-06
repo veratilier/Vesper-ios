@@ -53,6 +53,7 @@ enum JournalDay {
             tags.removeAll { $0 == .string(mood.rawValue) }
         } else { tags.append(.string(mood.rawValue)) }
         entry["moods"][author.field] = .array(tags)
+        entry["moodUsedAt"][author.field][mood.rawValue] = .string(updatedAt)
         entry["updatedAt"] = .string(updatedAt)
         result[key] = entry
         return result
@@ -60,31 +61,68 @@ enum JournalDay {
 }
 
 enum JournalMood: String, CaseIterable, Identifiable {
-    case happy, sweet, calm, hopeful, missing, tired, low, restless
+    // Retain the original IDs so previously saved tags remain selected.
+    case happy, attached, missing, secure, satisfied, relieved, curious, sweet
+    case calm, hopeful, moved, low, hurt, lonely, anxious, uneasy, restless, angry
+    case conflicted, embarrassed, guilty, bored, numb, tired
     var id: String { rawValue }
     var label: String {
         switch self {
         case .happy: "开心"
-        case .sweet: "甜"
+        case .attached: "依恋"
+        case .missing: "想念"
+        case .secure: "安心"
+        case .satisfied: "满足"
+        case .relieved: "释然"
+        case .curious: "好奇"
+        case .sweet: "心动"
         case .calm: "平静"
         case .hopeful: "期待"
-        case .missing: "想他"
-        case .tired: "累"
+        case .moved: "感动"
         case .low: "低落"
+        case .hurt: "委屈"
+        case .lonely: "孤独"
+        case .anxious: "焦虑"
+        case .uneasy: "不安"
         case .restless: "烦躁"
+        case .angry: "愤怒"
+        case .conflicted: "纠结"
+        case .embarrassed: "尴尬"
+        case .guilty: "愧疚"
+        case .bored: "无聊"
+        case .numb: "麻木"
+        case .tired: "疲惫"
         }
     }
     var color: Color {
         switch self {
-        case .happy: Color(red: 0.79, green: 0.72, blue: 0.50)
-        case .sweet: Color(red: 0.77, green: 0.60, blue: 0.66)
-        case .calm: Color(red: 0.53, green: 0.69, blue: 0.62)
+        case .happy, .satisfied, .curious: Color(red: 0.79, green: 0.72, blue: 0.50)
+        case .sweet, .attached, .moved: Color(red: 0.77, green: 0.60, blue: 0.66)
+        case .calm, .secure, .relieved: Color(red: 0.53, green: 0.69, blue: 0.62)
         case .hopeful: Color(red: 0.49, green: 0.68, blue: 0.64)
-        case .missing: Color(red: 0.70, green: 0.59, blue: 0.71)
-        case .tired: Color(red: 0.61, green: 0.65, blue: 0.72)
-        case .low: Color(red: 0.52, green: 0.63, blue: 0.74)
-        case .restless: Color(red: 0.76, green: 0.59, blue: 0.55)
+        case .missing, .lonely, .conflicted: Color(red: 0.70, green: 0.59, blue: 0.71)
+        case .tired, .bored, .numb: Color(red: 0.61, green: 0.65, blue: 0.72)
+        case .low, .hurt, .guilty: Color(red: 0.52, green: 0.63, blue: 0.74)
+        case .restless, .angry, .anxious, .uneasy, .embarrassed: Color(red: 0.76, green: 0.59, blue: 0.55)
         }
+    }
+    static func recent(in diary: JSONValue, author: JournalAuthor) -> [JournalMood] {
+        var used: [String: String] = [:]
+        for (key, entry) in diary.object where JournalDay.date(key) != nil {
+            for (id, timestamp) in entry["moodUsedAt"][author.field].object {
+                used[id] = max(used[id] ?? "", timestamp.string)
+            }
+            for tag in entry["moods"][author.field].array {
+                if entry["moodUsedAt"][author.field][tag.string].string.isEmpty {
+                    used[tag.string] = max(used[tag.string] ?? "", entry["updatedAt"].string.isEmpty ? key : entry["updatedAt"].string)
+                }
+            }
+        }
+        let known = allCases.filter { used[$0.rawValue] != nil }.sorted {
+            if used[$0.rawValue] == used[$1.rawValue] { return $0.rawValue < $1.rawValue }
+            return used[$0.rawValue]! > used[$1.rawValue]!
+        }
+        return Array((known + allCases.filter { used[$0.rawValue] == nil }).prefix(6))
     }
 }
 
@@ -112,6 +150,9 @@ struct JournalView: View {
     @State private var draft = ""
     @State private var saveError = ""
     @State private var savingMood = false
+    @State private var showingMoods = false
+    @State private var moodSaveError = ""
+    @State private var showingMoodError = false
 
     init(date: Date = .now, author: JournalAuthor = .vera) {
         _selectedDate = State(initialValue: date)
@@ -138,11 +179,10 @@ struct JournalView: View {
         GeometryReader { geometry in
             VStack(spacing: 8) {
                 dateNavigation
-                authorSelector
                 ScrollView {
                     VStack(spacing: 12) {
                         moodSelector
-                        paper(minHeight: max(320, geometry.size.height - 244))
+                        paper(minHeight: max(320, geometry.size.height - 200))
                             // Keep page swipes off the horizontally scrolling mood strip.
                             .simultaneousGesture(DragGesture(minimumDistance: 28).onEnded { gesture in
                                 let delta = gesture.translation
@@ -188,6 +228,25 @@ struct JournalView: View {
                 if !saveError.isEmpty { Text(saveError).font(.caption).foregroundStyle(.red) }
             }.interactiveDismissDisabled(store.saving)
         }
+        .sheet(isPresented: $showingMoods) {
+            NavigationStack {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        ForEach(JournalMood.allCases) { mood in moodButton(mood) }
+                    }.padding(20)
+                }.background { Background() }
+                    .navigationTitle("情绪词库 · " + author.rawValue).navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingMoods = false } } }
+            }.presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showingMoodError) {
+            NavigationStack {
+                Text(moodSaveError).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background { Background() }
+                    .navigationTitle("Mood tags").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingMoodError = false } } }
+            }.presentationDetents([.medium])
+        }
     }
 
     private var dateNavigation: some View {
@@ -200,7 +259,25 @@ struct JournalView: View {
                     }.frame(minHeight: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Choose journal date")
                 Spacer()
-                Button("Today") { select(.now) }.font(.system(size: controlSize, weight: .regular)).frame(minWidth: 44, minHeight: 44)
+                HStack(spacing: 4) {
+                    Button("Today") { select(.now) }.font(.system(size: controlSize, weight: .regular)).frame(minWidth: 44, minHeight: 44)
+                    Button {
+                        forward = author == .vera
+                        withAnimation(animation) { author = author == .vera ? .rowan : .vera }
+                    } label: {
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: controlSize + 5, weight: .regular))
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 8))
+                                    .padding(2).background(selectionFill, in: Circle()).offset(x: 4, y: 2)
+                            }.frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel("Switch journal author")
+                        .accessibilityValue(author.rawValue)
+                        .accessibilityHint("Switch to " + (author == .vera ? "Rowan" : "Vera"))
+                }
             }.foregroundStyle(palette.ink).padding(.horizontal, 24)
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -237,37 +314,28 @@ struct JournalView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var authorSelector: some View {
-        HStack(spacing: 4) {
-            ForEach(JournalAuthor.allCases) { item in
-                Button {
-                    forward = item == .rowan
-                    withAnimation(animation) { author = item }
-                } label: {
-                    Text(item.rawValue).font(.system(size: controlSize, weight: .regular, design: .serif))
-                        .padding(.vertical, 6).frame(maxWidth: .infinity)
-                        .foregroundStyle(palette.ink)
-                        .background(author == item ? selectionFill : .clear, in: Capsule())
-                        .frame(minHeight: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityAddTraits(author == item ? .isSelected : [])
-            }
-        }.padding(.horizontal, 3).frame(maxWidth: 208)
-            .background { Capsule().fill(.ultraThinMaterial).frame(height: max(34, controlSize + 20)) }
-            .accessibilityElement(children: .contain).accessibilityLabel("Journal author")
-    }
-
     private var moodSelector: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                Text("此刻心情").font(.system(size: captionSize, weight: .regular))
+                Text(author.rawValue + " · 此刻心情").font(.system(size: captionSize, weight: .regular))
                     .tracking(2).foregroundStyle(palette.muted)
                 if savingMood { ProgressView().controlSize(.mini).accessibilityLabel("Saving mood") }
-            }.padding(.horizontal, 12).padding(.top, 10)
-            ScrollView(.horizontal, showsIndicators: false) {
+                Spacer()
+                if !moodSaveError.isEmpty {
+                    Button { showingMoodError = true } label: { Image(systemName: "exclamationmark.circle") }
+                        .accessibilityLabel("Mood save error details")
+                }
+                Button("更多") { showingMoods = true }.font(.system(size: captionSize, weight: .regular))
+                    .frame(minWidth: 44, minHeight: 32).contentShape(Rectangle())
+            }.padding(.horizontal, 12).padding(.top, 4)
+            ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
-                    ForEach(JournalMood.allCases) { mood in moodButton(mood) }
-                }.padding(.horizontal, 12)
-            }.frame(height: max(44, controlSize + 28))
+                    ForEach(JournalMood.recent(in: diary, author: author)) { mood in moodButton(mood) }
+                }.fixedSize(horizontal: true, vertical: false)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                    ForEach(JournalMood.recent(in: diary, author: author)) { mood in moodButton(mood) }
+                }
+            }.padding(.horizontal, 12)
         }
         .padding(.bottom, 3)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -348,12 +416,14 @@ struct JournalView: View {
     }
     private func toggleMood(_ mood: JournalMood) {
         let key = selectedKey, selectedAuthor = author
+        moodSaveError = ""
         savingMood = true
         Task {
             defer { savingMood = false }
-            _ = await store.mutate("diary") { current in
+            let saved = await store.mutate("diary", reportErrors: false, verifySavedValue: true) { current in
                 JournalDay.togglingMood(mood, for: key, author: selectedAuthor, in: current, updatedAt: isoNow())
             }
+            if !saved { moodSaveError = "情绪标签未能确认保存。请检查连接后再试，已保存的日记内容仍保留。" }
         }
     }
     private func save() {

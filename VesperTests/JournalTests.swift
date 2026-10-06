@@ -93,4 +93,86 @@ final class JournalTests: XCTestCase {
         XCTAssertEqual(rowan["2026-10-05"], diary["2026-10-05"])
         XCTAssertEqual(rowan["metadata"], diary["metadata"])
     }
+
+    func testMoodVocabularyAndRecentsAreLimitedAndAuthorSpecific() {
+        XCTAssertEqual(JournalMood.allCases.map(\.label), ["开心", "依恋", "想念", "安心", "满足", "释然", "好奇", "心动", "平静", "期待", "感动", "低落", "委屈", "孤独", "焦虑", "不安", "烦躁", "愤怒", "纠结", "尴尬", "愧疚", "无聊", "麻木", "疲惫"])
+        XCTAssertEqual(JournalMood.recent(in: .null, author: .vera), Array(JournalMood.allCases.prefix(6)))
+        var diary: JSONValue = .null
+        let used: [JournalMood] = [.happy, .calm, .sweet, .curious, .tired, .missing, .secure]
+        for (index, mood) in used.enumerated() {
+            diary = JournalDay.togglingMood(mood, for: "2026-10-07", author: .vera, in: diary,
+                updatedAt: "2026-10-07T01:00:0\(index)Z")
+        }
+        XCTAssertEqual(JournalMood.recent(in: diary, author: .vera), Array(used.reversed().prefix(6)))
+        XCTAssertEqual(JournalMood.recent(in: diary, author: .rowan), Array(JournalMood.allCases.prefix(6)))
+        let edited = JournalDay.savingVera("Edited later", for: "2026-10-07", in: diary, updatedAt: "2026-10-07T02:00:00Z")
+        XCTAssertEqual(JournalMood.recent(in: edited, author: .vera), JournalMood.recent(in: diary, author: .vera))
+        let deselected = JournalDay.togglingMood(.happy, for: "2026-10-07", author: .vera, in: edited, updatedAt: "2026-10-07T03:00:00Z")
+        XCTAssertEqual(JournalMood.recent(in: deselected, author: .vera).first, .happy)
+        XCTAssertFalse(deselected["2026-10-07"]["moods"]["user"].array.contains(.string("happy")))
+    }
+
+    @MainActor func testMoodSaveIsVerifiedFromTheServerAndSurvivesRefresh() async {
+        URLProtocol.registerClass(JournalMoodPersistenceProtocol.self)
+        defer { URLProtocol.unregisterClass(JournalMoodPersistenceProtocol.self) }
+        JournalMoodPersistenceProtocol.reset(dropTags: false)
+        let store = AppStore(); store.token = "synthetic-mood"; store.baseURL = "https://journal-mood-save.example"
+        let saved = await store.mutate("diary", verifySavedValue: true) {
+            JournalDay.togglingMood(.attached, for: "2026-10-07", author: .vera, in: $0, updatedAt: "now")
+        }
+        XCTAssertTrue(saved)
+        await store.refresh()
+        XCTAssertEqual(store.document("diary")["2026-10-07"]["moods"]["user"].array, [.string("attached")])
+    }
+
+    @MainActor func testMoodSaveDoesNotClaimSuccessWhenServerDropsTags() async {
+        URLProtocol.registerClass(JournalMoodPersistenceProtocol.self)
+        defer { URLProtocol.unregisterClass(JournalMoodPersistenceProtocol.self) }
+        JournalMoodPersistenceProtocol.reset(dropTags: true)
+        let store = AppStore(); store.token = "synthetic-mood"; store.baseURL = "https://journal-mood-save.example"
+        let saved = await store.mutate("diary", reportErrors: false, verifySavedValue: true) {
+            JournalDay.togglingMood(.attached, for: "2026-10-07", author: .vera, in: $0, updatedAt: "now")
+        }
+        XCTAssertFalse(saved)
+        XCTAssertEqual(store.document("diary"), .null)
+    }
+}
+
+private final class JournalMoodPersistenceProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var value: JSONValue = .null
+    private static var dropTags = false
+    static func reset(dropTags: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        value = .null; self.dropTags = dropTags
+    }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "journal-mood-save.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        let response: JSONValue
+        if request.httpMethod == "PUT" {
+            var body = request.httpBody ?? Data()
+            if body.isEmpty, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while true {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count <= 0 { break }; body.append(buffer, count: count)
+                }
+            }
+            let input = try! JSONDecoder().decode(JSONValue.self, from: body)
+            Self.value = input["value"]
+            if Self.dropTags { Self.value["2026-10-07"]["moods"] = .null }
+            response = .object(["ok": .bool(true)])
+        } else if request.url?.query == nil {
+            response = .object(["documents": .object(["diary": .object(["value": Self.value])])])
+        } else { response = .object(["value": Self.value]) }
+        Self.lock.unlock()
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONEncoder().encode(response))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

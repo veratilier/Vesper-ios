@@ -125,120 +125,295 @@ private struct CollectionCard<Content: View>: View {
     }
 }
 
-struct JournalView: View {
+/// Both the conversation calendar and journal use Beijing calendar days.
+enum JournalDates {
+    static var calendar: Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return value
+    }
+    static func label(_ date: Date, format: String = "yyyy-MM-dd") -> String {
+        let formatter = DateFormatter(); formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = format; return formatter.string(from: date)
+    }
+    static func firstDay(_ date: Date) -> Date { calendar.date(from: calendar.dateComponents([.year, .month], from: date))! }
+    static func days(_ date: Date) -> [Date] {
+        calendar.range(of: .day, in: .month, for: date)!.map { calendar.date(byAdding: .day, value: $0 - 1, to: firstDay(date))! }
+    }
+    static func mondayOffset(_ date: Date) -> Int { (calendar.component(.weekday, from: firstDay(date)) + 5) % 7 }
+    static func moveMonth(_ date: Date, by amount: Int) -> Date {
+        let month = calendar.date(byAdding: .month, value: amount, to: firstDay(date))!
+        let day = min(calendar.component(.day, from: date), calendar.range(of: .day, in: .month, for: month)!.count)
+        return calendar.date(byAdding: .day, value: day - 1, to: month)!
+    }
+    static func heatLevel(_ count: Int) -> Int { count <= 0 ? 0 : count < 10 ? 1 : count < 30 ? 2 : count < 60 ? 3 : 4 }
+}
+
+struct ChatActivityHeatmap: View {
     @EnvironmentObject private var store: AppStore
-    @State private var showCalendarInfo = false
+    @Environment(\.scenePhase) private var phase
+    var refreshID = 0
     @State private var month = Date()
     @State private var selected: String?
     @State private var activity: JSONValue = .null
     @State private var activityError = false
-    @State private var text = ""
-    @State private var editing = false
-    private var calendar: Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Asia/Shanghai")!; return c }
-    private func dateKey(_ date: Date, format: String = "yyyy-MM-dd") -> String {
-        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.dateFormat = format; return f.string(from: date)
-    }
-    private var monthKey: String { dateKey(month, format: "yyyy-MM") }
+    private var monthKey: String { JournalDates.label(month, format: "yyyy-MM") }
     private var ready: Bool { activity["month"].string == monthKey && !activityError }
-    private var firstDay: Date { calendar.date(from: calendar.dateComponents([.year, .month], from: month))! }
-    private var offset: Int { calendar.component(.weekday, from: firstDay) - 1 }
-    private var dayCount: Int { calendar.range(of: .day, in: .month, for: month)!.count }
+    private var days: [Date] { JournalDates.days(month) }
+    private var offset: Int { JournalDates.mondayOffset(month) }
+    private var refreshKey: String { [monthKey, store.historyURL, store.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
+    private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level]) }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-            monthGrid
-            if let key = selected { dayDetails(key) }
-            if activityError { Button("Chat statistics unavailable · Retry") { Task { await loadActivity() } }.font(.caption) }
-            else if !ready { ProgressView("Loading chat history…") }
-            }.padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 20)
-        }
-        .transparentNavigationTop()
-        .task(id: monthKey) { await loadActivity() }
-        .refreshable { await store.refresh(); await loadActivity() }
-        .sheet(isPresented: $editing) {
-            EditorSheet(title: selected ?? "Journal", busy: store.saving, save: save) {
-                FormField(label: "Your day", text: $text, multiline: true)
+        VStack(spacing: 16) {
+            HStack(spacing: 8) {
+                Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
+                Spacer(minLength: 4)
+                Button { moveMonth(-1) } label: { Image(systemName: "chevron.left").frame(width: 30, height: 36) }.accessibilityLabel("Previous activity month")
+                Text(JournalDates.label(month, format: "MMMM yyyy")).font(.system(size: 15, design: .serif)).italic().lineLimit(1).minimumScaleFactor(0.8)
+                Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel("Next activity month")
             }
-        }
+            calendarGrid
+            HStack(spacing: 6) {
+                Text("Less")
+                ForEach(0..<5) { level in RoundedRectangle(cornerRadius: 4).fill(heatColor(level)).frame(width: 15, height: 15) }
+                Text("More")
+            }.font(.system(size: 10, design: .serif)).foregroundStyle(VesperTheme.muted).padding(.top, 3)
+            if activityError {
+                Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
+            } else if !ready { ProgressView().controlSize(.small).accessibilityLabel("Loading chat statistics") }
+        }.buttonStyle(.plain).padding(18)
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
+            .accessibilityIdentifier("chat-activity-heatmap")
+            .task(id: refreshKey) {
+                guard phase == .active else { return }; await loadActivity()
+            }
+            .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
+                NavigationStack {
+                    VStack(alignment: .leading, spacing: 14) {
+                        let stats = activity["days"][selected ?? ""]
+                        Text(ready ? "\(Int(stats["total"].number)) chat messages" : "Counts unavailable").font(.title3)
+                        Text(ready ? "Vera \(Int(stats["user"].number)) · Rowan \(Int(stats["agent"].number))" : "Vera — · Rowan —")
+                        Text(ready ? "Autonomous notes: \(Int(stats["autonomous"].number))" : "Autonomous notes: —").foregroundStyle(VesperTheme.muted)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+                        .navigationTitle(selected ?? "Our days").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selected = nil } } }
+                }.presentationDetents([.height(280)]).presentationDragIndicator(.visible)
+            }
     }
-    private var monthGrid: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Button { moveMonth(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                Spacer(); Text(dateKey(month, format: "MMMM yyyy")).font(.headline); Spacer()
-                Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
-            }
-            GlassCard(padding: 10) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 8) {
-                    ForEach(Array(["S", "M", "T", "W", "T", "F", "S"].enumerated()), id: \.offset) { _, label in Text(label).font(.caption).foregroundStyle(VesperTheme.muted) }
-                    ForEach(0..<(offset + dayCount), id: \.self) { index in
-                        if index < offset { Color.clear.frame(height: 48) }
-                        else { dayCell(index - offset + 1) }
-                    }
+    private var cellCount: Int { ((offset + days.count + 6) / 7) * 7 }
+    private var calendarGrid: some View {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 7), spacing: 5) {
+                ForEach(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], id: \.self) {
+                    Text($0).font(.system(size: 9, weight: .medium)).tracking(0.7).foregroundStyle(VesperTheme.muted).padding(.bottom, 5)
+                }
+                ForEach(0..<cellCount, id: \.self) { slot in
+                    if slot < offset || slot >= offset + days.count {
+                        RoundedRectangle(cornerRadius: 8).fill(heatColor(0)).aspectRatio(1, contentMode: .fit).accessibilityHidden(true)
+                    } else { dayCell(days[slot - offset]) }
                 }
             }
-            HStack(spacing: 6) { Text("Less"); ForEach(0..<5) { level in RoundedRectangle(cornerRadius: 3).fill(heatColor(level)).frame(width: 16, height: 16) }; Text("More") }.font(.caption)
-            Button { showCalendarInfo = true } label: { Label("About this calendar", systemImage: "info.circle").font(.caption) }
-                .popover(isPresented: $showCalendarInfo) {
-                    Text("Beijing time · Dots mark journal entries. Autonomous notes are counted separately.")
-                        .font(.subheadline).padding(20).frame(maxWidth: 300).presentationCompactAdaptation(.popover)
-                }
-        }
     }
-    private func dayCell(_ day: Int) -> some View {
-        let key = monthKey + String(format: "-%02d", day)
+    private func dayCell(_ date: Date) -> some View {
+        let key = JournalDates.label(date)
         let count = Int(activity["days"][key]["total"].number)
-        let level = count == 0 ? 0 : count < 10 ? 1 : count < 30 ? 2 : count < 60 ? 3 : 4
         return Button { selected = key } label: {
-            VStack(spacing: 2) {
-                Text("\(day)").font(.system(size: 14, weight: .medium))
-                Text(key > dateKey(.now) ? " " : ready ? "\(count)" : "—").font(.system(size: 8)).monospacedDigit()
-                HStack(spacing: 3) {
-                    if !store.document("diary")[key]["user"].string.isEmpty { Circle().fill(VesperTheme.ink).frame(width: 3, height: 3) }
-                    if !store.document("diary")[key]["agent"].string.isEmpty { Circle().fill(Color.brown).frame(width: 3, height: 3) }
-                }.frame(height: 3)
-            }.frame(maxWidth: .infinity, minHeight: 48)
-                .background(heatColor(ready ? level : 0), in: RoundedRectangle(cornerRadius: 7))
-                .overlay { RoundedRectangle(cornerRadius: 7).stroke(key == dateKey(.now) ? VesperTheme.ink : .clear, lineWidth: 1) }
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityLabel("\(key), \(ready ? String(count) : "unknown") chat messages")
+            RoundedRectangle(cornerRadius: 8).fill(heatColor(ready ? JournalDates.heatLevel(count) : 0))
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    Text("\(JournalDates.calendar.component(.day, from: date))").font(.system(size: 14, design: .serif))
+                        .foregroundStyle(key > JournalDates.label(.now) ? VesperTheme.muted : VesperTheme.ink)
+                }
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(key == JournalDates.label(.now) ? VesperTheme.muted.opacity(0.7) : .white.opacity(0.25), lineWidth: 1))
+        }.accessibilityLabel("\(key), \(ready ? String(count) : "unknown") chat messages")
     }
-    private func dayDetails(_ key: String) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(key).font(.headline)
-            GlassCard { VStack(alignment: .leading, spacing: 8) {
-                Text(ready ? "\(Int(activity["days"][key]["total"].number)) chat messages" : "— chat messages").font(.headline)
-                Text(ready ? "Vera \(Int(activity["days"][key]["user"].number)) · Rowan \(Int(activity["days"][key]["agent"].number))" : "Counts unavailable").font(.caption)
-                Text(ready ? "Autonomous notes: \(Int(activity["days"][key]["autonomous"].number))" : "Autonomous notes: —").font(.caption)
-            } }
-            CollectionCard(paper: true) { VStack(alignment: .leading, spacing: 12) {
-                HStack { Text("Vera").font(.headline); Spacer(); Button("Write") { text = store.document("diary")[key]["user"].string; editing = true } }
-                Text(store.document("diary")[key]["user"].string.isEmpty ? "How did today feel?" : store.document("diary")[key]["user"].string).textSelection(.enabled)
-            } }
-            CollectionCard(paper: true) { VStack(alignment: .leading, spacing: 12) {
-                Text("Rowan").font(.headline)
-                Text(store.document("diary")[key]["agent"].string.isEmpty ? "No entry for this day yet." : store.document("diary")[key]["agent"].string).textSelection(.enabled)
-            } }
-        }
-    }
-    private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.06, 0.22, 0.40, 0.62, 0.85][level]) }
-    private func moveMonth(_ amount: Int) { selected = nil; month = calendar.date(byAdding: .month, value: amount, to: firstDay)!; activity = .null }
+    private func moveMonth(_ amount: Int) { selected = nil; month = JournalDates.moveMonth(month, by: amount); activity = .null; activityError = false }
     private func loadActivity() async {
         let requested = monthKey
         do {
             let result = try await store.api.request("/activity?month=\(requested)", history: true)
+            try Task.checkCancellation()
             guard result["month"].string == requested, case .object = result["days"] else { throw ServiceError(message: "Invalid activity response") }
             guard requested == monthKey else { return }; activity = result; activityError = false
-        } catch { if requested == monthKey { activityError = true } }
+        } catch is CancellationError { }
+        catch { if requested == monthKey { activityError = true } }
     }
+}
+
+enum JournalAuthor: String, CaseIterable {
+    case vera = "Vera", rowan = "Rowan"
+    var field: String { self == .vera ? "user" : "agent" }
+    var side: String { self == .vera ? "Left page" : "Right page" }
+}
+
+struct JournalView: View {
+    @EnvironmentObject private var store: AppStore
+    @AppStorage("vesperPalette") private var palette = "blue"
+    @State private var date: Date
+    @State private var author: JournalAuthor
+    @State private var text = ""
+    @State private var editing = false
+    @State private var editingKey = ""
+    init(date: Date = .now, author: JournalAuthor = .rowan) {
+        _date = State(initialValue: date); _author = State(initialValue: author)
+    }
+    private var key: String { JournalDates.label(date) }
+    private var days: [Date] { JournalDates.days(date) }
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 16) {
+                    HStack {
+                        Button { date = JournalDates.moveMonth(date, by: -1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.accessibilityLabel("Previous journal month")
+                        Spacer()
+                        Text(JournalDates.label(date, format: "MMMM yyyy")).font(.system(size: 22, design: .serif)).italic().lineLimit(1).minimumScaleFactor(0.8)
+                        Spacer()
+                        Button { date = JournalDates.moveMonth(date, by: 1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }.accessibilityLabel("Next journal month")
+                    }.buttonStyle(.plain).padding(.horizontal, 4).padding(.vertical, 3)
+                        .vesperGlass(in: RoundedRectangle(cornerRadius: 20))
+                    dateStrip(width: geometry.size.width - 40)
+                    VStack(spacing: -1) {
+                        HStack {
+                            authorTab(.vera)
+                            Spacer(minLength: 20)
+                            authorTab(.rowan)
+                        }.padding(.horizontal, 12)
+                        JournalBookPage(author: author, date: date, text: store.document("diary")[key][author.field].string,
+                                        minimumHeight: max(340, geometry.size.height - 220), edit: beginEditing)
+                    }.accessibilityIdentifier("journal-book")
+                }.padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 24)
+                    .frame(maxWidth: 720).frame(maxWidth: .infinity)
+            }.refreshable { await store.refresh() }
+        }.transparentNavigationTop().background { Background() }
+            .toolbar {
+                if author == .vera {
+                    ToolbarItem(placement: .topBarTrailing) { Button(action: beginEditing) { Image(systemName: "square.and.pencil") }.accessibilityLabel("Edit Vera’s journal") }
+                }
+            }
+            .sheet(isPresented: $editing) {
+                EditorSheet(title: "Vera · " + editingKey, busy: store.saving, save: save) {
+                    FormField(label: "Your day", text: $text, multiline: true)
+                    if let error = store.error { Text(error).font(.caption).foregroundStyle(.red) }
+                }
+            }
+    }
+    private func dateStrip(width: CGFloat) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(days, id: \.self) { day in
+                        let dayKey = JournalDates.label(day)
+                        Button { date = day } label: {
+                            VStack(spacing: 4) {
+                                Text("\(JournalDates.calendar.component(.day, from: day))").font(.system(size: 16, design: .serif))
+                                HStack(spacing: 3) {
+                                    ForEach(JournalAuthor.allCases, id: \.self) { writer in
+                                        Circle().fill(store.document("diary")[dayKey][writer.field].string.isEmpty ? .clear : VesperTheme.muted).frame(width: 3, height: 3)
+                                    }
+                                }
+                            }.frame(width: max(32, (width - 36) / 7), height: 50)
+                                .background(dayKey == key ? VesperTheme.accent.opacity(palette == "black" ? 0.24 : 0.48) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                                .vesperGlass(in: RoundedRectangle(cornerRadius: 12), interactive: true)
+                        }.buttonStyle(.plain).id(dayKey).accessibilityLabel(dayKey).accessibilityAddTraits(dayKey == key ? .isSelected : [])
+                    }
+                }.padding(.vertical, 2)
+            }.task(id: key) {
+                let day = JournalDates.calendar.component(.day, from: date)
+                let weekStart = days[((day - 1) / 7) * 7]
+                await Task.yield(); proxy.scrollTo(JournalDates.label(weekStart), anchor: .leading)
+            }
+        }.frame(height: 54)
+    }
+    private func authorTab(_ writer: JournalAuthor) -> some View {
+        Button { author = writer } label: {
+            Text(writer.rawValue).font(.system(size: 18, design: .serif))
+                .foregroundStyle(author == writer ? VesperTheme.ink : VesperTheme.muted)
+                .frame(width: 100, height: 48)
+                .background(author == writer ? VesperTheme.accent.opacity(0.38) : VesperTheme.surface, in: UnevenRoundedRectangle(topLeadingRadius: 15, topTrailingRadius: 15))
+                .overlay(UnevenRoundedRectangle(topLeadingRadius: 15, topTrailingRadius: 15).stroke(.white.opacity(0.35), lineWidth: 1))
+        }.buttonStyle(.plain).accessibilityIdentifier("journal-author-" + writer.field)
+            .accessibilityLabel(writer.rawValue + " · " + writer.side).accessibilityAddTraits(author == writer ? .isSelected : [])
+    }
+    private func beginEditing() { editingKey = key; text = store.document("diary")[key]["user"].string; editing = true }
     private func save() {
-        guard let key = selected else { return }
+        let savedKey = editingKey, draft = text
         Task {
             let saved = await store.mutate("diary") { current in
-                var result = current; var entry = current[key]; entry["user"] = .string(text); entry["updatedAt"] = .string(isoNow()); result[key] = entry; return result
+                var result = current; var entry = current[savedKey]; entry["user"] = .string(draft)
+                entry["updatedAt"] = .string(isoNow()); result[savedKey] = entry; return result
             }
             if saved { editing = false }
         }
+    }
+}
+
+struct JournalBookPage: View {
+    let author: JournalAuthor
+    let date: Date
+    let text: String
+    var minimumHeight: CGFloat = 420
+    var edit: () -> Void = {}
+    @AppStorage("vesperPalette") private var palette = "blue"
+    private var paper: Color { palette == "black" ? Color(white: 0.13) : Color(white: 0.99).opacity(0.93) }
+    private var entry: JournalEntryDisplay { JournalEntryDisplay(text) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(author.rawValue + "’s journal").font(.system(size: 11, design: .serif))
+                Spacer(minLength: 8)
+                Text(JournalDates.label(date, format: "MMMM d, yyyy")).font(.system(size: 14, design: .serif)).italic()
+            }.foregroundStyle(VesperTheme.muted)
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(author == .vera ? "How did today feel?" : "No entry for this day yet.")
+                    .font(.system(size: 18, design: .serif)).foregroundStyle(VesperTheme.muted)
+            } else {
+                VStack(alignment: .leading, spacing: 20) {
+                    if let title = entry.title { Text(title).font(.system(size: 23, weight: .semibold)).textSelection(.enabled) }
+                    if !entry.body.isEmpty {
+                        ChatMarkdownText(content: entry.body).font(.system(size: 17)).lineSpacing(8)
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            Spacer(minLength: 56)
+            HStack {
+                Text(author.rawValue + " · " + author.side).font(.system(size: 12, design: .serif)).foregroundStyle(VesperTheme.muted)
+                Spacer()
+                if author == .vera {
+                    Button(action: edit) { Image(systemName: "square.and.pencil").font(.system(size: 18)).frame(width: 44, height: 44).vesperGlass(in: Circle(), interactive: true) }
+                        .buttonStyle(.plain).accessibilityLabel("Edit Vera’s journal")
+                }
+            }.frame(minHeight: 44)
+        }.padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 20)
+            .frame(maxWidth: .infinity, minHeight: minimumHeight, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 16).fill(paper).offset(x: author == .vera ? -4 : 4, y: 5)
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(VesperTheme.muted.opacity(0.16)).offset(x: author == .vera ? -4 : 4, y: 5))
+                RoundedRectangle(cornerRadius: 16).fill(paper)
+                    .overlay { Canvas { context, size in
+                        for y in stride(from: CGFloat(92), to: size.height - 76, by: 34) {
+                            var line = Path(); line.move(to: CGPoint(x: 22, y: y)); line.addLine(to: CGPoint(x: size.width - 22, y: y))
+                            context.stroke(line, with: .color(VesperTheme.muted.opacity(0.08)), lineWidth: 0.5)
+                        }
+                    }.clipShape(RoundedRectangle(cornerRadius: 16)) }
+                    .overlay(alignment: author == .vera ? .trailing : .leading) {
+                        LinearGradient(colors: [.clear, VesperTheme.muted.opacity(0.09), .clear], startPoint: .leading, endPoint: .trailing).frame(width: 20).padding(.horizontal, 4)
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(VesperTheme.muted.opacity(0.18), lineWidth: 1))
+            }.shadow(color: .black.opacity(0.07), radius: 9, y: 5)
+    }
+}
+
+struct JournalEntryDisplay {
+    let title: String?
+    let body: String
+    init(_ text: String) {
+        let lines = text.components(separatedBy: .newlines)
+        let first = lines.first ?? ""
+        let prefix = first.prefix { $0 == "#" }
+        if (1...6).contains(prefix.count), first.dropFirst(prefix.count).first == " " {
+            title = String(first.dropFirst(prefix.count + 1)); body = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .newlines)
+        } else { title = nil; body = text }
     }
 }
 

@@ -89,7 +89,87 @@ private final class DesktopContactProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class JournalLayoutProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "journal-layout.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let body: [String: Any]
+        if request.url?.path.hasSuffix("/activity") == true {
+            let month = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "month" }?.value ?? "2026-10"
+            var days: [String: Any] = [:]
+            for (index, count) in [15, 25, 40, 25, 10, 3].enumerated() {
+                days[month + String(format: "-%02d", index + 1)] = ["total": count, "user": count / 2, "agent": count - count / 2, "autonomous": 1]
+            }
+            body = ["month": month, "days": days]
+        } else {
+            body = ["conversations": [["id": "main", "title": "Rowan", "preview": "晚安，宝宝。轻轻亲一下，盖好被子。", "updatedAt": "2026-10-05T19:46:00Z"]]]
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: body)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+private struct JournalLayoutFixture: View {
+    var contacts: Bool
+    var author: JournalAuthor
+    var date: Date
+    var body: some View {
+        TabView(selection: .constant(contacts ? 1 : 2)) {
+            Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+            Group {
+                if contacts { NativeChatHome() }
+                else { Text("Chat") }
+            }.tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+            NavigationStack { JournalView(date: date, author: author).navigationTitle("Journal").navigationBarTitleDisplayMode(.inline) }
+                .tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
+            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+            Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
+        }.environment(\.scenePhase, .active)
+    }
+}
+
 @MainActor final class RedesignTests: XCTestCase {
+    func testJournalDatesKeepBeijingDaysAndClampMonthTransitions() throws {
+        let moment = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-05T16:01:00Z"))
+        XCTAssertEqual(JournalDates.label(moment), "2026-10-06")
+        XCTAssertEqual(JournalDates.mondayOffset(moment), 3, "October starts on Thursday in a Monday-first calendar")
+        let jan = try XCTUnwrap(ISO8601DateFormatter().date(from: "2028-01-31T00:00:00Z"))
+        XCTAssertEqual(JournalDates.label(JournalDates.moveMonth(jan, by: 1)), "2028-02-29")
+        XCTAssertEqual(JournalDates.days(jan).count, 31)
+        XCTAssertEqual(JournalAuthor.vera.field, "user"); XCTAssertEqual(JournalAuthor.rowan.field, "agent")
+    }
+    func testContactHeatmapAndJournalBookOnPhoneAndAllThemes() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        URLProtocol.registerClass(JournalLayoutProtocol.self)
+        defer { URLProtocol.unregisterClass(JournalLayoutProtocol.self) }
+        let store = AppStore(); store.token = "synthetic-layout"; store.historyURL = "https://journal-layout.example/history"
+        let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-06T00:00:00Z"))
+        store.documents["diary"] = .object(["2026-10-06": .object([
+            "user": .string("# 今天的小事\n\n把今天喜欢的片刻，写在左边这一页。\n\n傍晚的光，和刚好响起的那首歌。"),
+            "agent": .string("# 夜里的小记\n\n窗外已经安静了，桌上的灯还亮着。\n\n今天把一些零碎的念头留在这里，等明天再慢慢读。\n\n愿这一页，替我们收好此刻。")])])
+        let chat = ChatSession(), player = MusicPlayer()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (contacts, author, palette, width) in [(true, JournalAuthor.rowan, "white", 393), (true, .rowan, "blue", 393),
+            (true, .rowan, "black", 393), (false, .rowan, "white", 393), (false, .vera, "white", 393),
+            (false, .rowan, "black", 393), (false, .vera, "blue", 320)] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let content = JournalLayoutFixture(contacts: contacts, author: author, date: date)
+                .environmentObject(store).environmentObject(chat).environmentObject(player).environmentObject(chat.composer)
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
+            let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
+            if contacts { XCTAssertEqual(chat.conversations.count, 1); XCTAssertNil(chat.error) }
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Journal-layout-\(contacts ? "Chat" : author.rawValue)-\(palette)-\(width)"
+            attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+        chat.disconnect()
+    }
     func testLibraryRowsAndSecondarySurfacesUseDockGlass() async throws {
         let previous = UserDefaults.standard.string(forKey: "vesperPalette")
         defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }

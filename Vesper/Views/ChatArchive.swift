@@ -21,6 +21,7 @@ struct NativeChatHome: View {
     @State private var editingContactName = false
     @State private var contactName = ""
     @State private var savingContactName = false
+    @State private var activityRefreshID = 0
     private var mainConversationID: String {
         let saved = store.document("profile")["mainConversationId"].string
         return saved.isEmpty ? (chat.conversations.first?.id ?? "") : saved
@@ -30,7 +31,7 @@ struct NativeChatHome: View {
     private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
+            Group {
             List {
                 Button { searching = true } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
@@ -78,13 +79,17 @@ struct NativeChatHome: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
+                ChatActivityHeatmap(refreshID: activityRefreshID)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 Text(welcomeLine)
                     .font(.system(.title3, design: .serif)).italic()
                     .foregroundStyle(VesperTheme.muted)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
                     .frame(maxWidth: .infinity)
-                    .frame(minHeight: max(140, geometry.size.height - CGFloat(otherConversations.count + 1) * 92 - 80))
+                    .padding(.vertical, 4)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -96,7 +101,7 @@ struct NativeChatHome: View {
             .onChange(of: phase) { _, value in
                 if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
             }
-            .refreshable { await chat.loadConversations() }
+            .refreshable { await chat.loadConversations(); activityRefreshID += 1 }
             .disabled(rowDisabled)
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }

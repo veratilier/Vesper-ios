@@ -42,7 +42,7 @@
 	<key>NSHealthShareUsageDescription</key>
 	<string>Read the Health data types you choose to share, including activity, sleep, heart, cycle, body, nutrition and vitals, to show summaries in Vesper. Summaries requested in chat are sent to the Vesper chat service.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Show local weather when you enable weather location, and add your current location to a message you choose to send.</string>
+	<string>Show local weather and share a fresh, precise location with Rowan when you request location help in chat. The coordinates, time and accuracy become part of your conversation.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Use voice input and calls when you tap the microphone.</string>
 	<key>NSAppleMusicUsageDescription</key>

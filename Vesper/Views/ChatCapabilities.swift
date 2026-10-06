@@ -3,6 +3,7 @@ import UIKit
 import Speech
 import AVFoundation
 import CoreLocation
+import MapKit
 import UniformTypeIdentifiers
 import os
 
@@ -70,7 +71,7 @@ struct ChatFile: Identifiable {
     @Published var error: String?
     @Published var loading = false
     private let manager = CLLocationManager()
-    override init() { super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyHundredMeters }
+    override init() { super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyBest }
     func locateIfAuthorized() {
         guard !loading else { return }
         if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse { locate() }
@@ -95,6 +96,87 @@ struct ChatFile: Identifiable {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         let detail = error.localizedDescription
         Task { @MainActor in self.error = detail; self.loading = false }
+    }
+}
+
+/// A fresh foreground fix for a chat request, independent of the weather cache.
+@MainActor final class NativeChatLocation: NSObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    private var pending: CheckedContinuation<JSONValue, Error>?
+    private var timeout: Task<Void, Never>?
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
+    func read() async throws -> JSONValue {
+        guard UIApplication.shared.applicationState == .active else { throw ServiceError(message: "Open Vesper on your iPhone to read a fresh location.") }
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                pending = continuation
+                timeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(25)) } catch { return }
+                    self?.finish(.failure(ServiceError(message: "A fresh location could not be obtained. Try again with a clearer GPS signal.")))
+                }
+                start()
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) }
+        }
+    }
+    private func start() {
+        guard pending != nil else { return }
+        switch manager.authorizationStatus {
+        case .notDetermined: manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse: manager.requestLocation()
+        default: finish(.failure(ServiceError(message: "Allow Location access in iPhone Settings → Apps → Vesper. Enable Precise Location for a more accurate fix.")))
+        }
+    }
+    private func finish(_ result: Result<JSONValue, Error>) {
+        guard let continuation = pending else { return }
+        pending = nil; timeout?.cancel(); timeout = nil
+        manager.stopUpdatingLocation()
+        continuation.resume(with: result)
+    }
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor [weak self] in self?.start() }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        let latest = locations.last
+        Task { @MainActor [weak self] in
+            guard let self, self.pending != nil, let latest else { return }
+            guard UIApplication.shared.applicationState == .active else {
+                self.finish(.failure(ServiceError(message: "Keep Vesper open while reading your current location."))); return
+            }
+            do {
+                let value = try Self.snapshot(latest, precise: self.manager.accuracyAuthorization == .fullAccuracy)
+                self.finish(.success(value))
+            } catch {
+                // Ignore cached/invalid fixes; request a new one within the bounded timeout.
+                self.manager.requestLocation()
+            }
+        }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let denied = (error as? CLError)?.code == .denied
+        Task { @MainActor [weak self] in
+            self?.finish(.failure(ServiceError(message: denied ? "Location access is off. Enable it in iPhone Settings." : "Current location is unavailable. Try again.")))
+        }
+    }
+    static func snapshot(_ location: CLLocation, precise: Bool, now: Date = .now) throws -> JSONValue {
+        let age = now.timeIntervalSince(location.timestamp)
+        guard CLLocationCoordinate2DIsValid(location.coordinate), location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy.isFinite, age >= -5, age <= 30 else {
+            throw ServiceError(message: "The location fix is stale or invalid.")
+        }
+        return .object(["source": .string("iPhone Core Location"),
+            "latitude": .number(location.coordinate.latitude), "longitude": .number(location.coordinate.longitude),
+            "horizontalAccuracyMeters": .number(location.horizontalAccuracy), "precisePermission": .bool(precise),
+            "locatedAt": .string(ISO8601DateFormatter().string(from: location.timestamp)),
+            "readAt": .string(ISO8601DateFormatter().string(from: now)), "ageSeconds": .number(max(0, age)),
+            "mapsURL": .string("https://maps.apple.com/?ll=\(location.coordinate.latitude),\(location.coordinate.longitude)"),
+            "note": .string("A single fresh fix, not continuous tracking. Accuracy is an uncertainty radius in meters; coordinates do not prove a building, room or street address.")])
     }
 }
 
@@ -839,5 +921,113 @@ struct CallInvitation: View {
         }.padding(28).frame(maxWidth: 320).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
             .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.6), lineWidth: 1))
             .shadow(color: .black.opacity(0.08), radius: 24, y: 12).accessibilityAddTraits(.isModal)
+    }
+}
+
+
+enum ChatSharedLocation {
+    static func valid(_ value: JSONValue) -> Bool {
+        guard case .number(let latitude) = value["latitude"], case .number(let longitude) = value["longitude"] else { return false }
+        return latitude.isFinite && longitude.isFinite && (-90...90).contains(latitude) && (-180...180).contains(longitude)
+    }
+    static func context(_ value: JSONValue) -> String {
+        "Shared location: \(value["title"].string.isEmpty ? "Current location" : value["title"].string). Latitude: \(value["latitude"].number), longitude: \(value["longitude"].number). Located at: \(value["locatedAt"].string). Accuracy radius: \(value["horizontalAccuracyMeters"].number) meters. Map: https://maps.apple.com/?ll=\(value["latitude"].number),\(value["longitude"].number). This is a shared snapshot; do not infer a live position or exact address from it."
+    }
+}
+struct ChatLocationCard: View {
+    let location: JSONValue
+    var body: some View {
+        if ChatSharedLocation.valid(location) {
+            let coordinate = CLLocationCoordinate2D(latitude: location["latitude"].number, longitude: location["longitude"].number)
+            Link(destination: URL(string: "https://maps.apple.com/?ll=\(coordinate.latitude),\(coordinate.longitude)")!) {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(location["title"].string.isEmpty ? "Current location" : location["title"].string).font(.system(size: 16, weight: .medium)).lineLimit(2)
+                        Text(String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude)).font(.caption).foregroundStyle(VesperTheme.muted)
+                    }.padding(14)
+                    ChatLocationMapPreview(coordinate: coordinate).frame(height: 120).accessibilityHidden(true)
+                    HStack {
+                        Label("Location", systemImage: "mappin.and.ellipse")
+                        Spacer()
+                        Text("±\(Int(location["horizontalAccuracyMeters"].number)) m")
+                    }.font(.caption2).foregroundStyle(VesperTheme.muted).padding(10)
+                }.frame(width: 270).foregroundStyle(VesperTheme.ink)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(VesperTheme.muted.opacity(0.18)))
+            }.buttonStyle(.plain).accessibilityLabel("Shared location. Open in Maps")
+        }
+    }
+}
+private struct ChatLocationMapPreview: View {
+    let coordinate: CLLocationCoordinate2D
+    @State private var preview: UIImage?
+    @State private var unavailable = false
+    var body: some View {
+        ZStack {
+            if let preview { Image(uiImage: preview).resizable().scaledToFill() }
+            else {
+                LinearGradient(colors: [VesperTheme.accent.opacity(0.12), VesperTheme.surface], startPoint: .topLeading, endPoint: .bottomTrailing)
+                VStack(spacing: 8) {
+                    Image(systemName: "map").font(.system(size: 35, weight: .ultraLight)).foregroundStyle(VesperTheme.muted.opacity(0.4))
+                    Text(unavailable ? "Open in Maps" : "Loading map…").font(.caption2).foregroundStyle(VesperTheme.muted)
+                }
+            }
+            if preview != nil { Image(systemName: "mappin.circle.fill").font(.system(size: 28)).foregroundStyle(.red, .white).shadow(radius: 2) }
+        }.frame(maxWidth: .infinity).clipped()
+        .task(id: "\(coordinate.latitude),\(coordinate.longitude)") {
+            preview = nil; unavailable = false
+            let options = MKMapSnapshotter.Options()
+            options.region = MKCoordinateRegion(center: coordinate, latitudinalMeters: 700, longitudinalMeters: 700)
+            options.size = CGSize(width: 270, height: 120)
+            options.scale = UIScreen.main.scale
+            let snapshotter = MKMapSnapshotter(options: options)
+            do {
+                let snapshot = try await withTaskCancellationHandler { try await snapshotter.start() } onCancel: { snapshotter.cancel() }
+                guard !Task.isCancelled else { return }
+                preview = snapshot.image
+            } catch { if !Task.isCancelled { unavailable = true } }
+        }
+    }
+}
+struct ChatLocationShareSheet: View {
+    let onSend: (JSONValue) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var location: JSONValue?
+    @State private var title = "Current location"
+    @State private var loading = false
+    @State private var error = ""
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    if let location { ChatLocationCard(location: decorated(location)) }
+                    if loading { ProgressView("Finding your location…") }
+                    if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.red) }
+                    TextField("Location name", text: $title).textFieldStyle(.roundedBorder)
+                    if let location {
+                        Text("Located at " + ChatPresentation.time(location["locatedAt"].string, full: true)).font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
+                    HStack {
+                        Button("Refresh location") { Task { await locate() } }.disabled(loading)
+                        Spacer()
+                        Button("Send location") { if let location { onSend(decorated(location)) } }
+                            .buttonStyle(PermissionActionStyle()).disabled(location == nil || loading)
+                    }
+                    Text("This sends the location shown above as a card.").font(.caption).foregroundStyle(VesperTheme.muted)
+                }.padding(20)
+            }.background { Background() }.navigationTitle("Share location").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+                .task { await locate() }
+        }.presentationDetents([.medium, .large])
+    }
+    private func decorated(_ value: JSONValue) -> JSONValue {
+        var result = value; result["title"] = .string(title.trimmingCharacters(in: .whitespacesAndNewlines)); return result
+    }
+    @MainActor private func locate() async {
+        guard !loading else { return }; loading = true; error = ""; location = nil
+        defer { loading = false }
+        do { let reader = NativeChatLocation(); location = try await reader.read() }
+        catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }

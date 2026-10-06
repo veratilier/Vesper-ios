@@ -21,6 +21,7 @@ struct NativeChatHome: View {
     @State private var editingContactName = false
     @State private var contactName = ""
     @State private var savingContactName = false
+    @State private var activityRefreshID = 0
     private var mainConversationID: String {
         let saved = store.document("profile")["mainConversationId"].string
         return saved.isEmpty ? (chat.conversations.first?.id ?? "") : saved
@@ -29,9 +30,11 @@ struct NativeChatHome: View {
     private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
     private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
-        NavigationStack {
-            GeometryReader { geometry in
-            List {
+        NavigationStack { contactsWithDialogs }
+    }
+
+    private var contactList: some View {
+        List {
                 Button { searching = true } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
                         .font(.subheadline)
@@ -78,13 +81,17 @@ struct NativeChatHome: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
+                ChatActivityHeatmap(refreshID: activityRefreshID)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 Text(welcomeLine)
                     .font(.system(.title3, design: .serif)).italic()
                     .foregroundStyle(VesperTheme.muted)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
                     .frame(maxWidth: .infinity)
-                    .frame(minHeight: max(140, geometry.size.height - CGFloat(otherConversations.count + 1) * 92 - 80))
+                    .padding(.vertical, 4)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -96,15 +103,19 @@ struct NativeChatHome: View {
             .onChange(of: phase) { _, value in
                 if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
             }
-            .refreshable { await chat.loadConversations() }
+            .refreshable { await chat.loadConversations(); activityRefreshID += 1 }
             .disabled(rowDisabled)
+    }
+
+    private var contactsWithNavigation: some View {
+        contactList
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingFavorites = true } label: { Image(systemName: "bookmark") }
-                        .accessibilityLabel("Favorite messages")
+                        .buttonStyle(.plain).accessibilityLabel("Favorite messages")
                     Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("New Chat")
+                        .buttonStyle(.plain).accessibilityLabel("New Chat")
                         .disabled(rowDisabled || chat.loadingModels)
                 }
             }
@@ -132,6 +143,10 @@ struct NativeChatHome: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
+    }
+
+    private var contactsWithDialogs: some View {
+        contactsWithNavigation
             .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) {
                     guard let item = deletingConversation else { return }
@@ -179,8 +194,6 @@ struct NativeChatHome: View {
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
             } message: { Text(chat.error ?? "") }
-            }
-        }
     }
 
     private func updateWelcomeLine() {
@@ -332,15 +345,7 @@ private extension View {
         return self
             .padding(.horizontal, 16).padding(.vertical, verticalPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                shape.fill(.ultraThinMaterial)
-                    .overlay {
-                        shape.fill(Color(red: 0.45, green: 0.66, blue: 0.86)
-                            .opacity(VesperTheme.palette == .blue ? 0.15 : 0.03))
-                    }
-            }
-            .overlay(shape.strokeBorder(.white.opacity(VesperTheme.palette == .black ? 0.24 : 0.7), lineWidth: 1))
-            .shadow(color: .black.opacity(0.09), radius: 12, y: 5)
+.vesperGlass(in: shape, interactive: true)
     }
 }
 

@@ -3,40 +3,153 @@ import UserNotifications
 import AuthenticationServices
 import CryptoKit
 import Security
+import EventKit
+import HealthKit
+
+// Opt in only on the requested settings surfaces; other pages keep their existing material.
+private struct SettingsGlassCard<Content: View>: View {
+    var padding: CGFloat = 18
+    var interactive = false
+    @ViewBuilder var content: Content
+    var body: some View {
+        content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 25), interactive: interactive)
+    }
+}
 
 struct SettingsView: View {
-    @EnvironmentObject private var store: AppStore
     var body: some View {
-        Page(title: "Settings", subtitle: "Make Vesper feel like you.") {
-            NavigationLink { ConnectionView() } label: { settingsRow("Connection", subtitle: store.connected ? "Connected to your Vesper" : "Pair this device", icon: "network") }
-            NavigationLink { UsageView() } label: { settingsRow("Usage & balances", subtitle: "GPT, ElevenLabs and MiniMax", icon: "chart.bar") }
-            NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", subtitle: "Weather, health, calendar and reminders", icon: "hand.raised") }
-            NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", subtitle: "Permissions and run history", icon: "sparkles") }
-            NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", subtitle: "ElevenLabs and MiniMax for calls", icon: "waveform") }
-            NavigationLink { ToolsView() } label: { settingsRow("Tools", subtitle: "Connected MCP services", icon: "link") }
-            NavigationLink { DataSettingsView() } label: { settingsRow("Data", subtitle: "Export and privacy", icon: "archivebox") }
-        }.buttonStyle(.plain)
+        Page(title: "Settings") {
+            SettingsGlassCard(padding: 0, interactive: true) { VStack(spacing: 0) {
+                NavigationLink { ConnectionView() } label: { settingsRow("Connection", icon: "network") }
+                separator
+                NavigationLink { UsageView() } label: { settingsRow("Usage & balances", icon: "chart.bar") }
+                separator
+                NavigationLink { DevicePermissionsView() } label: { settingsRow("Permissions", icon: "hand.raised") }
+                separator
+                NavigationLink { WakeView() } label: { settingsRow("Autonomous Wake", icon: "sparkles") }
+                separator
+                NavigationLink { VoiceSettingsView() } label: { settingsRow("Voice", icon: "waveform") }
+                separator
+                NavigationLink { ToolsView() } label: { settingsRow("Tools", icon: "link") }
+                separator
+                NavigationLink { DataSettingsView() } label: { settingsRow("Data", icon: "archivebox") }
+            } }.buttonStyle(.plain)
+        }.buttonStyle(.plain).background { Background() }.transparentNavigationTop()
     }
-    private func settingsRow(_ title: String, subtitle: String, icon: String) -> some View {
-        GlassCard { HStack(spacing: 14) { Image(systemName: icon).frame(width: 42, height: 42).background(VesperTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(title).font(.headline); Text(subtitle).font(.caption).foregroundStyle(VesperTheme.muted) }; Spacer(); Image(systemName: "chevron.right").font(.caption) } }
+    private var separator: some View { Divider().padding(.leading, 62).padding(.trailing, 16) }
+    private func settingsRow(_ title: String, icon: String) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon).font(.system(size: 19)).frame(width: 30, height: 32)
+            Text(title).font(.system(size: 17, weight: .medium))
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(VesperTheme.muted)
+        }.padding(.horizontal, 16).padding(.vertical, 14).frame(minHeight: 60)
+            .contentShape(Rectangle())
+    }
+}
+// Shared permission layout keeps the navigation title, cards and actions consistent.
+struct PermissionPage<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    @AppStorage("vesperPalette") private var palette = "blue"
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) { content }
+                .font(.system(size: 15)).padding(20).padding(.bottom, 90)
+                .frame(maxWidth: 720).frame(maxWidth: .infinity)
+        }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .foregroundStyle(VesperTheme.ink)
+            .background { Background() }.transparentNavigationTop()
+    }
+}
+struct PermissionPanel<Content: View>: View {
+    var compact = false
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 10 : 16) { content }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(compact ? 15 : 20)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.palette == .black ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1))
+    }
+}
+struct PermissionActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
+            .padding(.horizontal, 18).frame(minHeight: 44)
+            .background(VesperTheme.ink, in: Capsule()).opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+enum PermissionLabels {
+    static func calendar(_ entity: EKEntityType) -> String {
+        switch EKEventStore.authorizationStatus(for: entity) {
+        case .fullAccess: return "Allowed"
+        case .writeOnly: return "Write only"
+        case .denied: return "Off"
+        case .restricted: return "Restricted"
+        case .notDetermined: return "Not requested"
+        default: return "Check Settings"
+        }
+    }
+    static func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
     }
 }
 struct DevicePermissionsView: View {
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ObservedObject private var weather = WeatherController.shared
+    @State private var notifications = "Checking…"
+    @State private var calendar = "Checking…"
+    @State private var reminders = "Checking…"
     var body: some View {
-        List {
-            NavigationLink { NotificationSettingsView() } label: { Label("Notifications", systemImage: "bell") }
-            NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
-            NavigationLink { SystemPlannerView() } label: { Label("Calendar & Reminders", systemImage: "calendar") }
-            NavigationLink { WeatherPermissionsView() } label: { Label("Weather", systemImage: "cloud.sun") }
-        }.navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
-            .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
+        PermissionPage(title: "Permissions") {
+            Text("Choose what Vesper can access on this iPhone.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
+                card("Location", icon: "location.fill", status: weather.authorized ? "Allowed" : "Not allowed", detail: "Read your current location in chat and show local weather.") { WeatherPermissionsView() }
+                card("Health", icon: "heart.fill", status: HKHealthStore.isHealthDataAvailable() ? "Manage access" : "Unavailable", detail: "Choose which health summaries Rowan may read.") { HealthView() }
+                card("Calendar", icon: "calendar", status: calendar, detail: "Read upcoming events and add plans from chat.") { SystemPlannerView(reminderOnly: false) }
+                card("Reminders", icon: "checklist", status: reminders, detail: "Let Rowan add tasks to Apple Reminders.") { SystemPlannerView(reminderOnly: true) }
+                card("Notifications", icon: "bell.fill", status: notifications, detail: "Receive date and synced letter reminders.") { NotificationSettingsView() }
+            }
+        }.task(id: phase) {
+            guard phase == .active else { return }
+            calendar = PermissionLabels.calendar(.event); reminders = PermissionLabels.calendar(.reminder)
+            let value = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+            switch value {
+            case .authorized: notifications = "Allowed"
+            case .provisional, .ephemeral: notifications = "Limited"
+            case .denied: notifications = "Off"
+            default: notifications = "Not requested"
+            }
+        }
+    }
+    private func card<Destination: View>(_ title: String, icon: String, status: String, detail: String, @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink(destination: destination()) {
+            PermissionPanel(compact: true) {
+                HStack(alignment: .top) {
+                    Image(systemName: icon).font(.system(size: 19))
+                    Spacer(minLength: 4)
+                    Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(VesperTheme.muted).multilineTextAlignment(.trailing)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title).font(.system(size: 17, weight: .semibold))
+                    Text(detail).font(.system(size: 13)).foregroundStyle(VesperTheme.muted).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Text("Settings").font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(VesperTheme.palette == .black ? Color.black : .white)
+                    .padding(.horizontal, 16).frame(height: 34).background(VesperTheme.ink, in: Capsule())
+            }.frame(minHeight: typeSize.isAccessibilitySize ? 220 : 190)
+        }.buttonStyle(.plain)
     }
 }
 struct ConnectionView: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
         Page(title: "Connection", subtitle: "Use the same device token as your existing Vesper.") {
-            GlassCard { VStack(spacing: 16) {
+            SettingsGlassCard { VStack(spacing: 16) {
                 FormField(label: "API address", text: $store.baseURL)
                 FormField(label: "History address", text: $store.historyURL)
                 FormField(label: "Chat address", text: $store.socketURL)
@@ -46,7 +159,7 @@ struct ConnectionView: View {
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
-        }
+        }.background { Background() }.transparentNavigationTop()
     }
 }
 struct WakeView: View {
@@ -260,9 +373,9 @@ struct WakeSleepView: View {
                 Toggle("Sleep time", isOn: $enabled)
                 DatePicker("From", selection: $start, displayedComponents: .hourAndMinute)
                 DatePicker("Until", selection: $end, displayedComponents: .hourAndMinute)
-                Toggle("Save a simulated dream after sleep", isOn: $dreamEnabled)
+                Toggle("Save a dream after sleep", isOn: $dreamEnabled)
             } footer: {
-                Text("Beijing time. Automatic activity and notifications stay silent during sleep. After sleep, one simulated dream is saved to Memory → 梦. Dreams are imagination, not factual memories.")
+                Text("Beijing time. Automatic activity and notifications stay silent during sleep. After sleep, one dream is saved to Memory → 梦. Dreams are imagination, not factual memories.")
             }.disabled(!supported || busy)
             if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
         }.environment(\.timeZone, Self.zone)
@@ -504,7 +617,7 @@ struct DataSettingsView: View {
     @State private var status = ""
     var body: some View {
         Page(title: "Data", subtitle: "Your data stays with your existing Vesper services.") {
-            GlassCard { VStack(alignment: .leading, spacing: 16) {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Text("Device credentials are stored in the iOS Keychain. This app does not copy web browser credentials automatically.").font(.subheadline)
                 Button("Prepare document export") {
                     do { let url = FileManager.default.temporaryDirectory.appendingPathComponent("Vesper-documents.json"); try JSONEncoder.pretty.encode(JSONValue.object(store.documents)).write(to: url, options: [.atomic, .completeFileProtection]); exportURL = url }
@@ -514,7 +627,7 @@ struct DataSettingsView: View {
                 Text("Export includes synced documents. Chat history, media files and server memory are not included.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
             }}
-        }
+        }.background { Background() }.transparentNavigationTop()
     }
 }
 
@@ -560,7 +673,7 @@ struct VoiceSettingsView: View {
     private var configuration: JSONValue { .object(["provider": .string(provider), "baseUrl": .string(baseURL.trimmingCharacters(in: .whitespacesAndNewlines)), "apiKey": .string(apiKey.trimmingCharacters(in: .whitespacesAndNewlines)), "voiceId": .string(voiceID.trimmingCharacters(in: .whitespacesAndNewlines)), "model": .string(model), "groupId": .string(groupID), "speed": .string(String(speed))]) }
     var body: some View {
         Page(title: "Voice", subtitle: "Rowan’s voice in audio and video calls.") {
-            GlassCard { VStack(alignment: .leading, spacing: 16) {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Picker("Provider", selection: Binding(get: { provider }, set: { value in provider = value; baseURL = value == "ElevenLabs" ? "https://api.elevenlabs.io" : "https://api.minimax.chat"; model = value == "ElevenLabs" ? "eleven_multilingual_v2" : "speech-2.6-hd"; voiceID = ""; apiKey = ""; groupID = "" })) { Text("ElevenLabs").tag("ElevenLabs"); Text("MiniMax").tag("MiniMax") }
                 FormField(label: "API address", text: $baseURL)
                 Text("API key").font(.caption)
@@ -575,7 +688,7 @@ struct VoiceSettingsView: View {
                 if !status.isEmpty { Text(status).font(.caption) }
                 if let error = preview.error { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
-        }.onAppear {
+        }.background { Background() }.transparentNavigationTop().onAppear {
             let saved = VoiceConfiguration.connection(store)
             if !saved["provider"].string.isEmpty { provider = saved["provider"].string }
             if !saved["baseUrl"].string.isEmpty { baseURL = saved["baseUrl"].string }
@@ -603,12 +716,12 @@ struct ToolsView: View {
     @State private var editing: JSONValue?
     var body: some View {
         Page(title: "Tools", subtitle: "Manage the tools available to Vesper.") {
-            NavigationLink { VesperConnectorView() } label: { GlassCard { Label("Connect Rowan to Vesper", systemImage: "link.badge.plus").font(.headline) } }.buttonStyle(.plain)
+            NavigationLink { VesperConnectorView() } label: { SettingsGlassCard { Label("Connect Rowan to Vesper", systemImage: "link.badge.plus").font(.headline) } }.buttonStyle(.plain)
             Button { editing = .object(["id": .string(UUID().uuidString), "enabled": .bool(true), "authMode": .string("none")]) } label: { Label("Add MCP server", systemImage: "plus").frame(minHeight: 44) }
             if !status.isEmpty { Text(status).font(.caption) }
             ForEach(items) { item in
                 Button { editing = item } label: {
-                    GlassCard { VStack(alignment: .leading, spacing: 8) {
+                    SettingsGlassCard { VStack(alignment: .leading, spacing: 8) {
                         HStack { Text(item["name"].string).font(.headline); Spacer(); Image(systemName: "pencil") }
                         Text(item["url"].string).font(.caption).lineLimit(2)
                         Text("\(item["enabled"].bool ? "Enabled" : "Disabled") · \(item["tools"].array.count) tools · \(item["authMode"].string)").font(.caption).foregroundStyle(VesperTheme.muted)
@@ -616,7 +729,8 @@ struct ToolsView: View {
                 }.buttonStyle(.plain)
             }
             if items.isEmpty { Text("Add a server to make its tools available in new chats.").font(.caption) }
-        }.task { await load() }.refreshable { await load() }
+        }.background { Background() }.transparentNavigationTop()
+            .task { await load() }.refreshable { await load() }
             .sheet(item: $editing, onDismiss: { Task { await load() } }) { item in McpEditor(item: item, existing: items.contains { $0.id == item.id }) }
     }
     private func load() async {
@@ -788,7 +902,7 @@ private struct VesperConnectorView: View {
     private let endpoint = "https://mcp.vesper.r-vera.com/mcp"
     var body: some View {
         Page(title: "Vesper MCP", subtitle: "Let Rowan access your Vesper through a connector.") {
-            GlassCard { VStack(alignment: .leading, spacing: 16) {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Text("MCP URL").font(.caption)
                 Text(endpoint).font(.subheadline).textSelection(.enabled)
                 Button("Copy MCP URL") { UIPasteboard.general.string = endpoint; status = "URL copied" }
@@ -799,7 +913,8 @@ private struct VesperConnectorView: View {
                 Text("Use this URL and Bearer token when adding Vesper to ChatGPT. This token is separate from your device pairing token.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
             } }
-        }.confirmationDialog("Replace Vesper’s MCP access token? Existing connectors using the old token will need updating.", isPresented: $confirming, titleVisibility: .visible) {
+        }.background { Background() }.transparentNavigationTop()
+            .confirmationDialog("Replace Vesper’s MCP access token? Existing connectors using the old token will need updating.", isPresented: $confirming, titleVisibility: .visible) {
             Button("Set token") { Task { await setup() } }
         }
     }
@@ -828,36 +943,41 @@ struct NotificationSettingsView: View {
     @State private var loaded = false
     @State private var busy = false
     @State private var error = ""
-    private var statusText: String {
-        guard loaded else { return "Checking permission…" }
-        switch authorization {
-        case .notDetermined: return "Not requested"
-        case .denied: return "Notifications are off"
-        case .authorized: return "Notifications are allowed"
-        case .provisional: return "Quiet notifications are allowed"
-        case .ephemeral: return "Temporary permission"
-        @unknown default: return "Unknown permission status"
-        }
-    }
     var body: some View {
-        Page(title: "Notifications", subtitle: "Choose how Vesper can notify you.") {
-            GlassCard { VStack(alignment: .leading, spacing: 18) {
-                Text(statusText).font(.headline)
-                Text("Allows date reminders and opening reminders for letters synced to this phone, even when the app is closed. Open Vesper to sync newly received letters. Remote push for unsynced letters and new chat replies is not connected yet.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+        PermissionPage(title: "Notifications") {
+            PermissionPanel {
+                HStack {
+                    Label("Notification access", systemImage: "bell.fill").font(.headline)
+                    Spacer()
+                    Text(accessStatus).font(.caption).foregroundStyle(VesperTheme.muted)
+                }
+                Text("Receive reminders for dates and letters synced to this iPhone.").foregroundStyle(VesperTheme.muted)
                 if loaded && authorization == .notDetermined {
                     Button { Task { await requestPermission() } } label: {
                         Text(busy ? "Requesting…" : "Allow notifications")
-                            .foregroundStyle(.white).padding(.horizontal, 20).frame(minHeight: 44)
-                            .background(VesperTheme.ink, in: Capsule())
-                    }.buttonStyle(.plain).disabled(busy)
+                    }.buttonStyle(PermissionActionStyle()).disabled(busy)
                 } else if loaded {
-                    Button("Open notification settings") {
+                    Button("Open iPhone Settings") {
                         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(PermissionActionStyle())
                 }
-                if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
-            } }
+                DisclosureGroup("About this access") {
+                    Text("Synced date and letter reminders can appear when Vesper is closed. Open Vesper to sync new letters. Remote push for unsynced letters and new chat replies is not connected yet.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+                }.font(.subheadline)
+                if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(.red) }
+            }
         }.task(id: scenePhase) { if scenePhase == .active { await refreshPermission() } }
+    }
+    private var accessStatus: String {
+        guard loaded else { return "Checking…" }
+        switch authorization {
+        case .authorized: return "Allowed"
+        case .provisional, .ephemeral: return "Limited"
+        case .denied: return "Off"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
     }
     @MainActor private func refreshPermission() async {
         authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus

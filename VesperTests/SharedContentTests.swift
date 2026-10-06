@@ -4,6 +4,28 @@ import SafariServices
 @testable import Vesper
 
 @MainActor final class SharedContentTests: XCTestCase {
+    func testMusicStatusUsesTheDeviceQueueInsteadOfAnOldServerQueue() {
+        let live: JSONValue = .object(["track": .object(["id": .string("apple-1")]), "queueLength": .number(5)])
+        let result = ChatMusicContext.liveStatus(live, server: .object(["queueLength": .number(1)]))
+        XCTAssertEqual(result["queueLength"], .number(5))
+        XCTAssertEqual(result["playback"]["track"]["trackId"].string, "apple-1")
+    }
+    func testMusicSeekClampsToDurationAndRejectsUnknownOrInvalidTimes() throws {
+        XCTAssertEqual(try MusicPlayer.seekPosition(45, duration: 180), 45)
+        XCTAssertEqual(try MusicPlayer.seekPosition(500, duration: 180), 180)
+        XCTAssertEqual(try MusicPlayer.seekPosition(0, duration: 180), 0)
+        for value in [-1, Double.nan, Double.infinity] { XCTAssertThrowsError(try MusicPlayer.seekPosition(value, duration: 180)) }
+        for duration in [0, -1, Double.nan, Double.infinity] { XCTAssertThrowsError(try MusicPlayer.seekPosition(45, duration: duration)) }
+    }
+    func testMusicCommandRejectsMissingOrStalePlaybackInsteadOfClaimingSuccess() async {
+        let player = MusicPlayer()
+        let result = await player.applyControl(.object(["id": .string("seek-fixture"), "action": .string("seek"), "trackId": .string("missing"), "positionSeconds": .number(30)]))
+        XCTAssertEqual(result["applied"], .bool(false))
+        XCTAssertFalse(result["error"].string.isEmpty)
+        let retried = await player.applyControl(.object(["id": .string("seek-fixture"), "action": .string("seek")]))
+        XCTAssertEqual(retried, result)
+    }
+
     func testMarkdownAndBareLinksKeepDestinations() {
         let text = "[Expo](https://github.com/expo/expo) https://github.com/expo/expo.\n[https://example.com](https://example.org/path?q=1)"
         XCTAssertEqual(ChatMarkdownText.render(text).runs.compactMap { $0.link?.absoluteString },
@@ -237,5 +259,36 @@ extension SharedContentTests {
         XCTAssertEqual(VesperGridOrder.move(.notes, to: .notes, in: pages), pages)
         XCTAssertEqual(VesperGridOrder.move(.home, to: .notes, in: pages), pages)
         XCTAssertEqual(VesperGridOrder.move(.notes, to: .home, in: pages), pages)
+    }
+}
+
+
+extension SharedContentTests {
+    func testMusicCardPublicCoverAndLookupKeepLibraryIdentity() {
+        let library: JSONValue = .object(["id": .string("apple-i.local"), "appleMusicId": .string("i.local"),
+            "source": .string("appleMusic"), "cover": .string("musicKit://artwork/library/asset"), "title": .string("Library song")])
+        XCTAssertEqual(ChatMusicShare.coverURL(library), "", "Native library artwork must use MusicKit, not AsyncImage")
+        let publicTrack: JSONValue = .object(["id": .string("apple-123"), "appleMusicId": .string("123"),
+            "cover": .string("http://is1-ssl.mzstatic.com/cover.jpg"), "title": .string("Song"), "duration": .number(180)])
+        let merged = ChatMusicShare.mergingMetadata(library, lookup: publicTrack)
+        XCTAssertEqual(merged.id, library.id)
+        XCTAssertEqual(merged["appleMusicId"], library["appleMusicId"])
+        XCTAssertEqual(merged["title"].string, "Song")
+        XCTAssertEqual(merged["duration"].number, 180)
+        XCTAssertEqual(ChatMusicShare.coverURL(merged), "https://is1-ssl.mzstatic.com/cover.jpg")
+        XCTAssertEqual(ChatMusicShare.mergingMetadata(publicTrack, lookup: .object([:]))["cover"], publicTrack["cover"])
+        XCTAssertEqual(ChatMusicShare.coverURL(.object(["cover": .string("https://user:secret@example.com/a")])), "")
+    }
+}
+
+
+extension SharedContentTests {
+    func testStickerCaptionReachesTheModelWithItsImageDescription() {
+        let sticker: JSONValue = .object(["assetId": .string("asset"), "name": .string("Smile"), "description": .string("A happy smile")])
+        let combined = ChatStickerInput.context(text: "今天好开心😌", sticker: sticker)
+        XCTAssertTrue(combined.hasPrefix("今天好开心😌\n"))
+        XCTAssertTrue(combined.contains("A happy smile"))
+        XCTAssertTrue(combined.contains("assetId: asset"))
+        XCTAssertTrue(ChatStickerInput.context(text: "", sticker: sticker).hasPrefix("Shared sticker:"))
     }
 }

@@ -129,6 +129,7 @@ enum WeatherService {
     @Published private(set) var enabled: Bool
     @Published private(set) var authorization: CLAuthorizationStatus
     @Published private(set) var loading = false
+    @Published private(set) var precise = false
     @Published var snapshot: WeatherSnapshot?
     @Published private(set) var error: String?
     private let manager: CLLocationManager
@@ -141,6 +142,7 @@ enum WeatherService {
         manager = locationManager
         let status = locationManager.authorizationStatus
         authorization = status
+        precise = locationManager.accuracyAuthorization == .fullAccuracy
         // Keep existing weather access for a device that already granted location.
         enabled = UserDefaults.standard.object(forKey: "weatherLocationEnabled") as? Bool
             ?? (status == .authorizedWhenInUse || status == .authorizedAlways)
@@ -161,6 +163,7 @@ enum WeatherService {
     }
     func refresh(force: Bool = false) {
         authorization = manager.authorizationStatus
+        precise = manager.accuracyAuthorization == .fullAccuracy
         guard enabled else { return }
         guard authorized else {
             snapshot = nil
@@ -175,6 +178,7 @@ enum WeatherService {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
             self.authorization = self.manager.authorizationStatus
+            self.precise = self.manager.accuracyAuthorization == .fullAccuracy
             self.generation = UUID(); self.request?.cancel(); self.request = nil
             self.loading = false
             if !self.authorized { self.snapshot = nil; self.fetchedAt = nil }
@@ -212,22 +216,45 @@ struct WeatherPermissionsView: View {
     @ObservedObject private var weather = WeatherController.shared
     @Environment(\.scenePhase) private var phase
     var body: some View {
-        List {
-            Section {
-                Toggle("Use location for weather", isOn: Binding(get: { weather.enabled }, set: { weather.setEnabled($0) }))
-                    .accessibilityIdentifier("weather-location-permission")
-                Text(status).font(.subheadline).foregroundStyle(VesperTheme.muted)
-                if weather.enabled && !weather.authorized {
-                    if weather.authorization == .notDetermined {
-                        Button("Allow location") { weather.setEnabled(true) }
-                    } else { Button("Open iPhone Settings") { openSettings() } }
+        PermissionPage(title: "Location") {
+            PermissionPanel {
+                HStack {
+                    Label("Location access", systemImage: "location.fill").font(.headline)
+                    Spacer()
+                    Text(accessStatus).font(.caption).foregroundStyle(VesperTheme.muted)
                 }
-            } footer: {
-                Text("Uses your approximate location while Vesper is open. Coordinates rounded to about 1 km are sent to Open-Meteo to fetch weather. Turning this off stops weather location requests.")
+                Text("Show local weather and let Rowan read a fresh location when you ask in chat.").foregroundStyle(VesperTheme.muted)
+                if weather.authorization == .notDetermined {
+                    Button("Allow location") { weather.setEnabled(true) }.buttonStyle(PermissionActionStyle())
+                } else {
+                    Button("Open iPhone Settings") { openSettings() }.buttonStyle(PermissionActionStyle())
+                }
+                DisclosureGroup("About this access") {
+                    Text("Current-location requests use the best accuracy available and send the coordinates, timestamp and error range to your chat. Weather requests send coordinates rounded to about 1 km to Open-Meteo. Keep Vesper open for a fresh reading.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+                }.font(.subheadline)
             }
-        }.navigationTitle("Weather access").navigationBarTitleDisplayMode(.inline)
-            .scrollContentBackground(.hidden).background { Background() }.transparentNavigationTop()
-            .onChange(of: phase) { _, value in if value == .active { weather.refresh() } }
+            PermissionPanel {
+                HStack {
+                    Text("Precise location").font(.headline)
+                    Spacer()
+                    Text(weather.authorized ? (weather.precise ? "On" : "Off") : "Not available").font(.caption).foregroundStyle(VesperTheme.muted)
+                }
+                Text("Enable Precise Location in iPhone Settings → Apps → Vesper → Location. Each chat reading includes its actual accuracy in meters.").font(.footnote).foregroundStyle(VesperTheme.muted)
+                Button("Change access") { openSettings() }.buttonStyle(PermissionActionStyle())
+            }
+            PermissionPanel {
+                Toggle("Use location for weather", isOn: Binding(get: { weather.enabled }, set: { weather.setEnabled($0) }))
+                    .font(.subheadline).accessibilityIdentifier("weather-location-permission")
+                Text(status).font(.footnote).foregroundStyle(VesperTheme.muted)
+            }
+        }.task(id: phase) { if phase == .active { weather.refresh() } }
+    }
+    private var accessStatus: String {
+        if weather.authorized { return "Allowed" }
+        if weather.authorization == .notDetermined { return "Not requested" }
+        if weather.authorization == .restricted { return "Restricted" }
+        return "Off"
     }
     private var status: String {
         if !weather.enabled { return "Weather location is off." }

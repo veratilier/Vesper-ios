@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import QuickLook
 
 private struct ChatScrollUpdate: Equatable {
+    let visible: Bool
     let conversationID: String
     let messageCount: Int
     let lastMessageID: String?
@@ -100,23 +101,44 @@ private struct AttachmentQuickLook: UIViewControllerRepresentable {
 }
 
 
-struct ChatConnectionSheet: View {
-    let message: String
-    let needsRetry: Bool
-    let retry: () -> Void
+struct ChatIssueSheet: View {
+    let issues: [ChatIssue]
+    let retry: (ChatIssue.Action) -> Void
+    let dismiss: (String) -> Void
     let close: () -> Void
     @AppStorage("vesperPalette") private var palette = "blue"
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(message).foregroundStyle(VesperTheme.ink)
-                Button(needsRetry ? "Retry" : "Check status", action: retry)
-                    .buttonStyle(.borderedProminent)
-                    .tint(VesperTheme.ink)
-                    .foregroundStyle(palette == "black" ? Color.black : Color.white)
-                Spacer()
-            }.padding().navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if issues.isEmpty { Text("没有待处理的问题。") }
+                    ForEach(issues) { issue in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(issue.title).font(.headline)
+                            Text(issue.detail).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 16) {
+                                if issue.action != .none {
+                                    Button(issue.action == .models ? "Reload models" : "Retry") { retry(issue.action) }
+                                        .buttonStyle(.borderedProminent).tint(VesperTheme.ink)
+                                        .foregroundStyle(palette == "black" ? Color.black : Color.white)
+                                }
+                                if issue.dismissible {
+                                    Button { dismiss(issue.id) } label: {
+                                        Text("Dismiss").font(.body.weight(.medium))
+                                            .foregroundStyle(VesperTheme.ink)
+                                            .padding(.horizontal, 18).frame(minHeight: 44)
+                                            .background(VesperTheme.ink.opacity(0.08), in: Capsule())
+                                            .background(.thinMaterial, in: Capsule())
+                                            .overlay(Capsule().stroke(VesperTheme.ink.opacity(0.18), lineWidth: 1))
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        if issue.id != issues.last?.id { Divider() }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+            }.navigationTitle("Details").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done", action: close).foregroundStyle(VesperTheme.ink)
@@ -129,8 +151,17 @@ struct ChatConnectionSheet: View {
 
 struct ChatView: View {
     @Environment(\.scenePhase) private var phase
+    @Environment(\.vesperChatTabSelected) private var chatTabSelected
     @ObservedObject private var inbox = ChatInbox.shared
     @State private var chatVisible = false
+    @State private var incomingFrames: [String: CGRect] = [:]
+    @State private var scrollFrame = CGRect.zero
+    @State private var composerFrame = CGRect.zero
+
+    @MainActor init(onMenu: @escaping () -> Void = {}, restoreLatest: Bool = true, native: Bool = false, inbox: ChatInbox? = nil) {
+        self.onMenu = onMenu; self.restoreLatest = restoreLatest; self.native = native
+        self.inbox = inbox ?? .shared
+    }
 
     var onMenu: () -> Void = {}
     var restoreLatest = true
@@ -139,7 +170,6 @@ struct ChatView: View {
     @EnvironmentObject private var chat: ChatSession
     @StateObject private var voiceRecorder = VoiceMessageRecorder()
     @StateObject private var speech = SpeechInput()
-    @StateObject private var location = ChatLocation()
     @State private var speechBase = ""
     @State private var avatarRole = "user"
     @State private var avatarPicker = false
@@ -165,7 +195,9 @@ struct ChatView: View {
     @State private var filePicker = false
     @State private var musicPicker = false
     @State private var stickerPicker = false
+    @State private var attachmentPanelHeight: CGFloat = 220
     private var pendingMusic: JSONValue? { get { draftStore.pendingMusic } nonmutating set { draftStore.pendingMusic = newValue } }
+    private var pendingSticker: JSONValue? { get { draftStore.pendingSticker } nonmutating set { draftStore.pendingSticker = newValue } }
     @State private var nearBottom = true
     @State private var followsLatest = true
     @State private var positionedConversationID: String?
@@ -175,7 +207,7 @@ struct ChatView: View {
     @State private var viewportHeight: CGFloat = 0
     @State private var locationPicker = false
     @State private var confirmNew = false
-    @State private var deleting: JSONValue?
+    @State private var deleting: [JSONValue]?
     @State private var selectedPhotos: [PhotosPickerItem] = []
     private var images: [Data] { get { draftStore.images } nonmutating set { draftStore.images = newValue } }
     private var files: [ChatFile] { get { draftStore.files } nonmutating set { draftStore.files = newValue } }
@@ -184,7 +216,6 @@ struct ChatView: View {
     private var chatContent: some View {
         VStack(spacing: 0) {
             header.zIndex(1)
-            if !chat.memoryStatus.isEmpty { Text(chat.memoryStatus).font(.caption2).foregroundStyle(VesperTheme.muted).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
@@ -201,12 +232,15 @@ struct ChatView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading).padding(14)
                                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                                     }.buttonStyle(.plain).id(message.id)
+                                        .background(incomingReadFrame(row))
                                 } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
-                                else if row.activity { AssistantMessageHeading(message: message, activities: row.activities) }
-                                else { messageRow(message, activities: row.activities).id(message.id) }
+                                else if row.activity { AssistantMessageHeading(message: message, activities: row.activities, liveEvents: message.id == chat.liveHeadingID ? chat.events : [], isLive: message.id == chat.liveHeadingID) }
+                                else { messageRow(row).id(row.id).background(incomingReadFrame(row)) }
                             }
                         }
-                        if chat.busy {
+                        if chat.preparingSend {
+                            Text("Sending…").font(.system(size: 12)).foregroundStyle(VesperTheme.muted).frame(height: 44)
+                        } else if chat.waitingForReply && chat.liveHeadingID == nil {
                             AssistantMessageHeading(message: .object(["status": .string(chat.busy ? "streaming" : "delivered"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events)
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -214,6 +248,12 @@ struct ChatView: View {
                     .background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
                     .opacity(positionedConversationID == chat.conversationID || chat.messages.isEmpty ? 1 : 0)
                 }.scrollDismissesKeyboard(.interactively)
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
+                    scrollFrame = frame; markDisplayedMessages()
+                }
+                .onPreferenceChange(ChatIncomingFrames.self) { frames in
+                    incomingFrames = frames; markDisplayedMessages()
+                }
                 .defaultScrollAnchor(followsLatest ? .bottom : nil)
                 .coordinateSpace(name: "chat-scroll")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
@@ -237,7 +277,20 @@ struct ChatView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         composer
-                        if drawer { attachmentDrawer.transition(.move(edge: .bottom).combined(with: .opacity)) }
+                            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
+                                composerFrame = frame; markDisplayedMessages()
+                            }
+                        if stickerPicker {
+                            StickerLibraryView(compact: true, onBack: { stickerPicker = false; drawer = true }) { sticker in
+                                pendingSticker = sticker
+                                stickerPicker = false; drawer = false
+                            }
+                            .frame(height: attachmentPanelHeight).background(.regularMaterial)
+                        } else if drawer {
+                            attachmentDrawer
+                                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { attachmentPanelHeight = $0 }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
                     }
                     .overlay(alignment: .top) {
                         if !nearBottom && !chat.messages.isEmpty {
@@ -276,7 +329,8 @@ struct ChatView: View {
         }
     }
     private var scrollUpdate: ChatScrollUpdate {
-        ChatScrollUpdate(conversationID: chat.conversationID,
+        ChatScrollUpdate(visible: chatVisible && chatTabSelected,
+                         conversationID: chat.conversationID,
                          messageCount: chat.messages.count,
                          lastMessageID: chat.messages.last?.id,
                          lastContent: chat.messages.last?["content"].string ?? "",
@@ -286,6 +340,7 @@ struct ChatView: View {
                          followsLatest: followsLatest)
     }
     @MainActor private func positionLatest(using proxy: ScrollViewProxy) async {
+        guard chatVisible, chatTabSelected else { return }
         let conversationID = chat.conversationID
         let sentLocally = observedLocalMessageID != chat.latestLocalMessageID
         if sentLocally { chat.jumpMessageID = nil }
@@ -297,7 +352,7 @@ struct ChatView: View {
             guard !Task.isCancelled, chat.conversationID == conversationID,
                   chat.jumpMessageID == target else { return }
             // Keep the highlight, but consume the scroll request only once.
-            proxy.scrollTo(target, anchor: .center)
+            proxy.scrollTo(chat.presentation.rowID(forMessageID: target), anchor: .center)
             positionedConversationID = conversationID
             positionedJumpMessageID = target
             return
@@ -320,23 +375,34 @@ struct ChatView: View {
         followsLatest = true
     }
     private func markDisplayedMessages() {
-        guard chatVisible, phase == .active else { return }
-        let messages = chat.messages.filter { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }
-        let ids = Set(messages.flatMap { [$0.id,$0["metadata"]["itemId"].string] }.filter { !$0.isEmpty })
+        guard chatVisible, chatTabSelected, phase == .active, positionedConversationID == chat.conversationID else { return }
+        var viewport = scrollFrame
+        if composerFrame.height > 0 { viewport.size.height = max(0, min(viewport.maxY, composerFrame.minY) - viewport.minY) }
+        let ids = ChatReadVisibility.displayedIDs(frames: incomingFrames, viewport: viewport)
         inbox.markDisplayed(conversation: chat.conversationID, messageIDs: ids)
+    }
+    @ViewBuilder private func incomingReadFrame(_ row: ChatPresentation.Row) -> some View {
+        if !row.activity, let message = row.messages.first, !ChatPresentation.isUser(message) {
+            GeometryReader { geometry in
+                Color.clear.preference(key: ChatIncomingFrames.self, value: Dictionary(
+                    row.messages.flatMap { [$0.id, $0["metadata"]["itemId"].string] }.filter { !$0.isEmpty }
+                        .map { ($0, geometry.frame(in: .global)) }, uniquingKeysWith: { first, _ in first }))
+            }
+        }
     }
     private var observedChatContent: some View {
         chatContent
         .onAppear { chatVisible = true; markDisplayedMessages() }
         .onDisappear { chatVisible = false }
-        .onChange(of: chat.messages) { _, _ in markDisplayedMessages() }
         .onChange(of: inbox.incoming) { _, _ in markDisplayedMessages() }
         .onChange(of: phase) { _, _ in markDisplayedMessages() }
+        .onChange(of: chatTabSelected) { _, _ in markDisplayedMessages() }
+        .onChange(of: positionedConversationID) { _, _ in markDisplayedMessages() }
     }
     private var photoContent: some View {
         observedChatContent
         .task { chat.configure(store); if restoreLatest { await chat.loadConversations(); if chat.messages.isEmpty && !chat.conversations.contains(where: { $0.id == chat.conversationID }) { await chat.openMainRoom() } } }
-        .onChange(of: focused) { _, value in if value { drawer = false } }
+        .onChange(of: focused) { _, value in if value { drawer = false; stickerPicker = false } }
         .onChange(of: speech.text) { _, text in draft = speechBase + (speechBase.isEmpty || text.isEmpty ? "" : " ") + text }
         .onChange(of: voiceRecorder.error) { _, error in if let error { chat.error = error } }
         .onChange(of: speech.error) { _, error in if let error { chat.error = error } }
@@ -395,13 +461,10 @@ struct ChatView: View {
         }
         .sheet(isPresented: $locationPicker) { locationSheet }
         .sheet(isPresented: $musicPicker) { musicSheet }
-        .sheet(isPresented: $stickerPicker) { NavigationStack { StickerLibraryView { sticker in
-            Task { if await chat.send("", sticker: sticker) { stickerPicker = false; drawer = false } }
-        } } }
         .sheet(isPresented: $history) { historySheet }
         .confirmationDialog("Start a new chat and clear this draft?", isPresented: $confirmNew) { Button("New chat", role: .destructive) { newChat() } }
         .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("Delete", role: .destructive) { if let message = deleting { Task { await chat.deleteMessage(message) } }; deleting = nil }
+            Button("Delete", role: .destructive) { if let messages = deleting { Task { await chat.deleteMessages(messages) } }; deleting = nil }
         }
     }
     private var modelSheet: some View {
@@ -450,8 +513,7 @@ struct ChatView: View {
                         }
                     }
                     if chat.loadingModels { ProgressView("Loading models…") }
-                    if let error = chat.modelError {
-                        Text(error).font(.caption).foregroundStyle(.secondary)
+                    if chat.modelError != nil {
                         Button("Retry") { Task { await chat.loadModels() } }.disabled(chat.loadingModels)
                     }
                 }.navigationTitle("Model").navigationBarTitleDisplayMode(.inline)
@@ -462,14 +524,15 @@ struct ChatView: View {
     var body: some View {
         attachmentContent
         .sheet(isPresented: $connectionDetails) {
-            ChatConnectionSheet(
-                message: chat.connectionNeedsRetry ? (chat.connectionIssue ?? "Chat disconnected.") :
-                    chat.unconfirmedSend ? "Send unconfirmed; check server history before sending again." :
-                    "\(chat.connectionStage.rawValue) · attempt \(chat.recoveryAttempts)/5",
-                needsRetry: chat.connectionNeedsRetry,
-                retry: { chat.retryConnection(); connectionDetails = false },
+            ChatIssueSheet(
+                issues: chat.issueDetails,
+                retry: { action in
+                    if action == .models { Task { await chat.loadModels() } }
+                    else { chat.retryConnection() }
+                },
+                dismiss: { chat.dismissIssue($0) },
                 close: { connectionDetails = false })
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $memoryRecallVisible) { MemoryRecallView(conversationID: chat.conversationID) }
@@ -489,21 +552,21 @@ struct ChatView: View {
                 }.padding() }.navigationTitle("Approval")
             }.interactiveDismissDisabled()
         }
-        .alert("Chat", isPresented: Binding(get: { chat.error != nil }, set: { if !$0 { chat.error = nil } })) { Button("OK") { chat.error = nil } } message: { Text(chat.error ?? "") }
     }
     @Environment(\.dismiss) private var dismissChat
     private var header: some View {
         HStack(spacing: 5) {
             if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
             else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
-            if chat.reconnecting || chat.connectionNeedsRetry || chat.unconfirmedSend {
+            if !chat.issueDetails.isEmpty {
                 Button { connectionDetails = true } label: {
                     Group {
-                        if chat.reconnecting { ProgressView().controlSize(.small) }
+                        if chat.issueDetails.allSatisfy(\.progress) { ProgressView().controlSize(.small) }
                         else { Image(systemName: "exclamationmark.circle") }
                     }.frame(width: 28, height: 40)
                 }
-                .accessibilityLabel(chat.reconnecting ? "Chat reconnecting, details" : "Chat connection needs attention, details")
+                .accessibilityLabel("查看问题详情")
+                .accessibilityIdentifier("chat-issue-details")
             }
             Spacer()
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
@@ -545,21 +608,32 @@ struct ChatView: View {
             Image(systemName: "person.fill").font(.system(size: 19)).foregroundStyle(VesperTheme.muted)
         }
     }
-    private func messageRow(_ message: JSONValue, activities: [JSONValue]) -> some View {
-        ChatMessageRow(message: message, activities: activities,
-                       liveEvents: !chat.busy && message.id == chat.presentation.lastReplyID ? chat.events : [],
+    private func messageRow(_ row: ChatPresentation.Row) -> some View {
+        let message = row.presentedMessage
+        return ChatMessageRow(message: message, mediaMessages: row.messages.filter(ChatPresentation.hasMedia), activities: row.activities,
+                       liveEvents: message.id == chat.liveHeadingID || (!chat.busy && message.id == chat.presentation.lastReplyID) ? chat.events : [],
+                       isLive: message.id == chat.liveHeadingID,
                        replyIsRunning: chat.replyIsStillRunning(message),
                        favorite: isFavorite(message), saving: store.saving, busy: chat.busy,
-                       highlighted: chat.jumpMessageID == message.id,
+                       highlighted: row.messages.contains { $0.id == chat.jumpMessageID },
                        onFavorite: { Task { await favorite(message) } },
-                       onRemember: { Task { await remember(message) } },
-                       onDelete: { deleting = message })
+                       onRemember: { Task { await remember(row.messages.first { $0.id == row.id } ?? message) } },
+                       onDelete: { deleting = row.messages })
             .equatable()
     }
     private var composer: some View {
         VStack(spacing: 4) {
             if let track = pendingMusic {
                 HStack { ChatMusicCard(track: track); Button { pendingMusic = nil } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Remove music") }
+            }
+            if let sticker = pendingSticker {
+                HStack(spacing: 12) {
+                    StickerArtwork(sticker: sticker).frame(width: 64, height: 64).allowsHitTesting(false)
+                    Text("Add a message, then send").font(.caption).foregroundStyle(VesperTheme.muted)
+                    Spacer()
+                    Button { pendingSticker = nil } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Remove sticker")
+                }.padding(.horizontal, 4)
             }
             if voiceRecorder.recording {
                 HStack { Image(systemName: "waveform"); Text("Recording"); if let start = voiceRecorder.startedAt { Text(start, style: .timer).monospacedDigit() }; Spacer(); Button("Cancel") { voiceRecorder.cancel() } }.font(.caption)
@@ -579,14 +653,14 @@ struct ChatView: View {
             ForEach(files) { file in HStack { Label(file.name, systemImage: "doc").lineLimit(1); Spacer(); Button { files.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark") }.disabled(chat.busy) }.font(.caption) }
             ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
-                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { drawer.toggle() } } label: { Image(systemName: drawer ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
+                Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
+                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,
-                                   hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil,
+                                   hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
                                    blocked: voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
                                    action: send)
                 }
@@ -598,7 +672,7 @@ struct ChatView: View {
             drawerItem("Album", "photo") { photoPicker = true }
             drawerItem("Camera", "camera.fill") { if UIImagePickerController.isSourceTypeAvailable(.camera) { cameraPicker = true } else { chat.error = "Camera unavailable on this device." } }
             drawerItem("Call", "phone.fill") { openCall() }
-            drawerItem("Location", "mappin.circle.fill") { locationPicker = true; location.locate() }
+            drawerItem("Location", "mappin.circle.fill") { locationPicker = true }
             drawerItem("File", "folder.fill") { filePicker = true }
             drawerItem("Music", "music.note") { musicPicker = true }
             drawerItem("Stickers", "face.smiling") { stickerPicker = true }
@@ -608,26 +682,15 @@ struct ChatView: View {
         Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
     }
     private var locationSheet: some View {
-        NavigationStack { VStack(spacing: 20) {
-            if location.loading { ProgressView("Finding your location…") }
-            if let coordinate = location.coordinate {
-                Text("\(coordinate.latitude), \(coordinate.longitude)").font(.caption)
-                Button("Add location to message") { draft += (draft.isEmpty ? "" : "\n") + "My location: https://maps.apple.com/?ll=\(coordinate.latitude),\(coordinate.longitude)"; locationPicker = false }
-            }
-            if let error = location.error { Text(error); Button("Retry") { location.locate() } }
-            Text("Your location is shared only when you send the message.").font(.caption).foregroundStyle(.secondary)
-        }.padding().navigationTitle("Location").toolbar { Button("Done") { locationPicker = false } } }.presentationDetents([.medium])
+        ChatLocationShareSheet { location in
+            Task { _ = await chat.send("", location: location, onAccepted: { locationPicker = false; drawer = false }) }
+        }
     }
     private var musicSheet: some View {
-        NavigationStack { List {
-            ForEach(store.document("music").array.filter { $0["source"].string == "appleMusic" }) { track in
-                Button {
-                    pendingMusic = .object(Dictionary(uniqueKeysWithValues: ["id", "title", "artist", "album", "cover", "artwork", "appleMusicId", "appleMusicURL", "source", "duration"].map { ($0, track[$0]) }))
-                    musicPicker = false; drawer = false
-                } label: { Label(track["title"].string, systemImage: "music.note") }
-            }
-            if store.document("music").array.allSatisfy({ $0["source"].string != "appleMusic" }) { Text("Add songs from Apple Music first.") }
-        }.navigationTitle("Music").toolbar { Button("Done") { musicPicker = false } } }.presentationDetents([.medium, .large])
+        ChatMusicSharePicker { track in
+            pendingMusic = track
+            musicPicker = false; drawer = false
+        }
     }
     private var historySheet: some View {
         NavigationStack {
@@ -694,21 +757,34 @@ struct ChatView: View {
         let title = chat.conversations.first(where: { $0.id == chat.conversationID })?["title"].string ?? "Chat"
         _ = await ChatFavorites.save(message, conversationID: chat.conversationID, title: title, in: store)
     }
-    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil } } }
-    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; NativeCallPresentation.shared.open(initiator: "user") }
+    private func newChat() { voiceRecorder.cancel(); speech.stop(); Task { if await chat.createConversation() { draft = ""; images = []; files = []; pendingMusic = nil; pendingSticker = nil } } }
+    private func openCall() { voiceRecorder.cancel(); speech.stop(); focused = false; drawer = false; stickerPicker = false; NativeCallPresentation.shared.open(initiator: "user") }
     private func send() {
-        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; drawer = false
-        Task { if await chat.send(sending, images: outgoing, files: outgoingFiles, music: music) { if draft == sending { draft = "" }; images = []; files = []; selectedPhotos = []; pendingMusic = nil; voiceRecorder.cancel() } }
+        speech.stop(); let sending = draft; let outgoing = images; let outgoingFiles = files + (voiceRecorder.file.map { [$0] } ?? []); let music = pendingMusic; let sticker = pendingSticker; drawer = false; stickerPicker = false
+        let conversation = chat.conversationID
+        Task {
+            var accepted = false
+            let sent = await chat.send(sending, images: outgoing, files: outgoingFiles, music: music, sticker: sticker, onAccepted: {
+                accepted = true
+                draft = ""; images = []; files = []; selectedPhotos = []; pendingMusic = nil; pendingSticker = nil; voiceRecorder.cancel()
+            })
+            // An ambiguous send remains in the transcript for reconciliation, never auto-resend it.
+            if accepted && !sent && !chat.unconfirmedSend && chat.conversationID == conversation && draft.isEmpty && images.isEmpty && files.isEmpty && pendingMusic == nil && pendingSticker == nil {
+                draft = sending; images = outgoing; files = outgoingFiles; pendingMusic = music; pendingSticker = sticker
+            }
+        }
     }
 
 }
 
 
 // Value inputs isolate old rows from token, composer and scroll-state updates.
-private struct ChatMessageRow: View, Equatable {
+struct ChatMessageRow: View, Equatable {
     let message: JSONValue
+    let mediaMessages: [JSONValue]
     let activities: [JSONValue]
     let liveEvents: [String]
+    let isLive: Bool
     let replyIsRunning: Bool
     let favorite: Bool
     let saving: Bool
@@ -718,42 +794,28 @@ private struct ChatMessageRow: View, Equatable {
     let onRemember: () -> Void
     let onDelete: () -> Void
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message && lhs.activities == rhs.activities && lhs.liveEvents == rhs.liveEvents &&
+        lhs.isLive == rhs.isLive && lhs.message == rhs.message && lhs.mediaMessages == rhs.mediaMessages && lhs.activities == rhs.activities && lhs.liveEvents == rhs.liveEvents &&
         lhs.replyIsRunning == rhs.replyIsRunning && lhs.favorite == rhs.favorite &&
         lhs.saving == rhs.saving && lhs.busy == rhs.busy && lhs.highlighted == rhs.highlighted
     }
     var body: some View {
         let user = ChatPresentation.isUser(message)
-        let attachments = message["metadata"]["attachments"].array
-        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
-        let otherAttachments = attachments.filter { !$0["type"].string.hasPrefix("image/") }
+        let media = ChatPresentation.hasMedia(message) || !mediaMessages.isEmpty
         return HStack(alignment: .top, spacing: 0) {
             if user { Spacer(minLength: 42) }
             VStack(alignment: user ? .trailing : .leading, spacing: 8) {
-                if !user && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents) }
-                if !photos.isEmpty {
-                    ChatPhotoStack(photos: photos)
-                        .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
-                }
-                if !otherAttachments.isEmpty {
-                    ScrollView(.horizontal) { HStack { ForEach(Array(otherAttachments.enumerated()), id: \.offset) { _, attachment in
-                        if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
-                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" { ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) } }
-                    } }.modifier(AttachmentRowAlignment(single: otherAttachments.count == 1, user: user)) }.defaultScrollAnchor(user ? .trailing : .leading)
-                }
-                if message["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(message["metadata"]["musicCard"])) }
-                else if message["status"].string != "streaming" {
+                if !user && (!media || isLive || replyIsRunning) && (ChatTranscript.isWake(message) || message["metadata"]["showTurnStatus"] != .bool(false)) { AssistantMessageHeading(message: message, activities: activities, liveEvents: liveEvents, isLive: isLive) }
+                ForEach(mediaMessages) { item in sharedContent(item, user: user) }
+                if message["metadata"]["musicCard"] == .null && !mediaMessages.contains(where: { $0["metadata"]["musicCard"] != .null }) && message["status"].string != "streaming" {
                     ForEach(ChatMusicShare.links(in: message["content"].string)) { track in ChatMusicLinkCard(track: track) }
                 }
-                if message["metadata"]["sticker"] != .null { StickerArtwork(sticker: message["metadata"]["sticker"]).frame(width: 150, height: 150) }
                 if message["metadata"]["call"] != .null { CallRecordButton(message: message) }
-                if message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
+                if message["metadata"]["locationOnly"] != .bool(true) && message["metadata"]["musicOnly"] != .bool(true) && message["metadata"]["voiceMessage"] != .bool(true) && message["metadata"]["call"] == .null && !message["content"].string.isEmpty && !(message["metadata"]["attachmentOnly"] == .bool(true) && !message["metadata"]["attachments"].array.isEmpty) {
                     ChatMarkdownText(content: message["content"].string).font(.system(size: 15)).lineSpacing(4).multilineTextAlignment(user ? .trailing : .leading)
                 }
-                if message["status"].string == "error" { Text("Send not confirmed").font(.caption).foregroundStyle(.red) }
                 if message["status"].string != "streaming" && !replyIsRunning {
                     HStack(spacing: 12) {
-                        if user { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
+                        if user || media { Text(ChatPresentation.time(message["createdAt"].string)).font(.caption2) }
                         Button { UIPasteboard.general.string = message["content"].string } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("Copy message")
                         Button { onFavorite() } label: { Image(systemName: favorite ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Favorite message").disabled(saving)
                         Button { onRemember() } label: { Image(systemName: "brain") }.accessibilityLabel("Keep in Memory").disabled(busy)
@@ -764,6 +826,30 @@ private struct ChatMessageRow: View, Equatable {
             if !user { Spacer(minLength: 20) }
         }
     }
+    @ViewBuilder private func sharedContent(_ item: JSONValue, user: Bool) -> some View {
+        let attachments = item["metadata"]["attachments"].array
+        let photos = attachments.filter { $0["type"].string.hasPrefix("image/") }
+        let files = attachments.filter { !$0["type"].string.hasPrefix("image/") }
+        if !photos.isEmpty {
+            ChatPhotoStack(photos: photos).frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+        }
+        if !files.isEmpty {
+            ScrollView(.horizontal) {
+                HStack {
+                    ForEach(Array(files.enumerated()), id: \.offset) { _, attachment in
+                        if attachment["type"].string.hasPrefix("audio/") { VoiceMessageBar(attachment: attachment) }
+                        else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
+                            ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
+                        }
+                    }
+                }.modifier(AttachmentRowAlignment(single: files.count == 1, user: user))
+            }.defaultScrollAnchor(user ? .trailing : .leading)
+        }
+        if item["metadata"]["locationCard"] != .null { ChatLocationCard(location: item["metadata"]["locationCard"]) }
+        if item["metadata"]["musicCard"] != .null { ChatMusicCard(track: ChatMusicShare.normalized(item["metadata"]["musicCard"])) }
+        if item["metadata"]["sticker"] != .null { StickerArtwork(sticker: item["metadata"]["sticker"]).frame(width: 150, height: 150) }
+    }
+
 }
 
 private struct ChatHeaderButton: ButtonStyle {
@@ -776,9 +862,12 @@ private struct ChatHeaderButton: ButtonStyle {
 final class ChatPresentationSnapshot {
     let rows: [ChatPresentation.Row]
     let lastReplyID: String?
+    func rowID(forMessageID id: String) -> String {
+        rows.first { $0.messages.contains { $0.id == id } }?.id ?? id
+    }
     init(_ messages: [JSONValue]) {
         rows = ChatPresentation.displayRows(messages)
-        lastReplyID = messages.last { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) && !ChatPresentation.isLetterReminder($0) }?.id
+        lastReplyID = rows.last { !$0.activity && !$0.messages.contains(where: ChatPresentation.isUser) && !$0.messages.contains(where: ChatPresentation.isLetterReminder) }?.id
     }
 }
 
@@ -788,6 +877,58 @@ enum ChatPresentation {
         let activity: Bool
         var messages: [JSONValue]
         var activities: [JSONValue] = []
+        var presentedMessage: JSONValue {
+            var primary = messages.first { $0.id == id } ?? .null
+            guard messages.count > 1 else { return primary }
+            primary["content"] = .string(messages.map(ChatPresentation.caption).filter { !$0.isEmpty }.joined(separator: "\n\n"))
+            for flag in ["attachmentOnly", "musicOnly", "locationOnly"] { primary["metadata"][flag] = .bool(false) }
+            // A display snapshot; original records stay in messages for memory and deletion.
+            primary["metadata"]["sharedMedia"] = .array(messages.filter(ChatPresentation.hasMedia))
+            primary["metadata"]["attachments"] = .array(messages.flatMap { $0["metadata"]["attachments"].array })
+            return primary
+        }
+    }
+    static func hasMedia(_ message: JSONValue) -> Bool {
+        let meta = message["metadata"]
+        return !meta["attachments"].array.isEmpty || ["sticker", "musicCard", "locationCard"].contains { meta[$0] != .null }
+    }
+    private static func caption(_ message: JSONValue) -> String {
+        let meta = message["metadata"]
+        if ["attachmentOnly", "musicOnly", "locationOnly", "voiceMessage"].contains(where: { meta[$0] == .bool(true) }) { return "" }
+        return message["content"].string
+    }
+    private static func canCombine(_ row: Row, with next: Row) -> Bool {
+        let all = row.messages + next.messages
+        guard !row.activity, !next.activity, !(row.activities + next.activities).contains(where: { $0["metadata"]["userInput"] != .null }), all.contains(where: hasMedia),
+              all.filter({ !hasMedia($0) }).count <= 1,
+              let first = all.first else { return false }
+        let turn = first["metadata"]["turnId"].string, thread = first["metadata"]["threadId"].string
+        guard !turn.isEmpty, !thread.isEmpty else { return false }
+        return all.allSatisfy {
+            let meta = $0["metadata"]
+            return !isUser($0) && !isActivity($0) && !isLetterReminder($0) && !ChatTranscript.isWake($0)
+                && meta["call"] == .null && meta["voiceMessage"] != .bool(true)
+                && meta["userInput"] == .null
+                && meta["turnId"].string == turn && meta["threadId"].string == thread
+                && $0["conversationId"].string == first["conversationId"].string
+        }
+    }
+    private static func combinedMediaRows(_ rows: [Row]) -> [Row] {
+        var result: [Row] = []
+        for row in rows {
+            if let last = result.last, canCombine(last, with: row) {
+                let messages = last.messages + row.messages
+                let primary = messages.first { !hasMedia($0) } ?? messages[0]
+                result[result.count - 1] = Row(id: primary.id, activity: false, messages: messages, activities: last.activities + row.activities)
+            } else { result.append(row) }
+        }
+        return result
+    }
+    static func liveHeadingID(_ rows: [Row], turnID: String) -> String? {
+        rows.last { row in
+            guard let message = row.messages.first(where: { $0.id == row.id }), !isUser(message), !isLetterReminder(message) else { return false }
+            return message["metadata"]["turnId"].string == turnID && message["metadata"]["showTurnStatus"] != .bool(false)
+        }?.id
     }
     static func isUser(_ message: JSONValue) -> Bool {
         let role = message["role"].string.lowercased()
@@ -805,7 +946,7 @@ enum ChatPresentation {
         if message["metadata"]["phase"].string == "commentary" { return true }
         if ["system", "tool", "function"].contains(message["role"].string) { return true }
         let block = message["metadata"]["blockType"].string
-        return !block.isEmpty && !["agentMessage", "assistantMessage", "outputMessage", "text", "message", "musicCard", "sticker"].contains(block)
+        return !block.isEmpty && !["agentMessage", "assistantMessage", "outputMessage", "text", "message", "musicCard", "locationCard", "sticker"].contains(block)
     }
     static func rows(_ messages: [JSONValue]) -> [Row] {
         var result: [Row] = []
@@ -858,13 +999,14 @@ enum ChatPresentation {
             if let target = exact ?? nearby { attached[target, default: []].append(message) }
             else { orphans.insert(index) }
         }
-        return messages.indices.compactMap { index in
+        let rows: [Row] = messages.indices.compactMap { index in
             if isActivity(messages[index]) {
                 guard orphans.contains(index) else { return nil }
                 return Row(id: messages[index].id, activity: true, messages: [messages[index]], activities: [messages[index]])
             }
             return Row(id: messages[index].id, activity: false, messages: [messages[index]], activities: attached[index] ?? [])
         }
+        return combinedMediaRows(rows)
     }
     private static let timeLabels: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>(); cache.countLimit = 4096; return cache
@@ -1107,6 +1249,7 @@ private struct AssistantMessageHeading: View {
     let message: JSONValue
     var activities: [JSONValue] = []
     var liveEvents: [String] = []
+    var isLive = false
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1115,8 +1258,8 @@ private struct AssistantMessageHeading: View {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
                     let time = ChatPresentation.time(ChatTranscript.timestamp(message), full: true)
-                    if !time.isEmpty { Text(time) } else if message["status"].string != "streaming" { Text("Thinking") }
-                    if message["status"].string == "streaming" { Text("Thinking…") }
+                    if isLive || message["status"].string == "streaming" { Text("Thinking…") }
+                    else if !time.isEmpty { Text(time) } else { Text("Thinking") }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -1184,5 +1327,31 @@ private struct ChatBottomPosition: PreferenceKey {
     static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
         // Siblings without a measurement must not overwrite the content position with zero.
         if let next = nextValue() { value = next }
+    }
+}
+
+private struct ChatTabSelectedKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    var vesperChatTabSelected: Bool {
+        get { self[ChatTabSelectedKey.self] }
+        set { self[ChatTabSelectedKey.self] = newValue }
+    }
+}
+private struct ChatIncomingFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+enum ChatReadVisibility {
+    static func displayedIDs(frames: [String: CGRect], viewport: CGRect) -> Set<String> {
+        guard viewport.width > 0, viewport.height > 0 else { return [] }
+        return Set(frames.compactMap { id, frame in
+            let visible = frame.intersection(viewport)
+            // Lazy rows can be laid out outside the viewport. Require a readable
+            // portion above the composer, rather than merely being loaded.
+            return frame.width > 0 && frame.height > 0 && visible.width > 0
+                && visible.height >= min(frame.height, 40) ? id : nil
+        })
     }
 }

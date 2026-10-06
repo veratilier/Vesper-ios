@@ -2,12 +2,12 @@ import SwiftUI
 
 struct LetterColors {
     var palette: VesperPalette
-    var paper: Color { palette == .black ? Color(white: 0.16) : palette == .blue ? Color(red: 0.91, green: 0.95, blue: 0.97) : Color(red: 0.97, green: 0.95, blue: 0.90) }
-    var shade: Color { palette == .black ? Color(white: 0.09) : palette == .blue ? Color(red: 0.65, green: 0.77, blue: 0.82) : Color(red: 0.82, green: 0.78, blue: 0.69) }
+    var paper: Color { palette == .black ? Color(white: 0.16) : palette == .blue ? Color(red: 0.91, green: 0.95, blue: 0.97) : Color(white: 0.98) }
+    var shade: Color { palette == .black ? Color(white: 0.09) : palette == .blue ? Color(red: 0.65, green: 0.77, blue: 0.82) : Color(white: 0.82) }
     var metal: [Color] { palette == .black ? [Color(white: 0.17), Color(white: 0.44), Color(white: 0.24), Color(white: 0.11)] : palette == .blue ? [Color(red: 0.50, green: 0.67, blue: 0.74), Color(white: 0.96), Color(red: 0.73, green: 0.83, blue: 0.87), Color(red: 0.46, green: 0.62, blue: 0.69)] : [Color(white: 0.67), Color(white: 0.99), Color(white: 0.85), Color(white: 0.59)] }
-    var ink: Color { palette == .black ? Color(white: 0.92) : Color(red: 0.24, green: 0.23, blue: 0.20) }
-    var line: Color { palette == .black ? Color(white: 0.48) : Color(red: 0.69, green: 0.68, blue: 0.62) }
-    var fold: Color { palette == .black ? Color(white: 0.12) : palette == .blue ? Color(red: 0.84, green: 0.90, blue: 0.93) : Color(red: 0.93, green: 0.91, blue: 0.85) }
+    var ink: Color { palette.ink }
+    var line: Color { palette == .black ? Color(white: 0.48) : palette == .blue ? Color(red: 0.60, green: 0.70, blue: 0.75) : Color(white: 0.72) }
+    var fold: Color { palette == .black ? Color(white: 0.12) : palette == .blue ? Color(red: 0.84, green: 0.90, blue: 0.93) : Color(white: 0.92) }
 }
 struct LetterFlap: Shape {
     func path(in rect: CGRect) -> Path { Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: rect.width, y: 0)); p.addLine(to: CGPoint(x: rect.midX, y: rect.height * 0.64)); p.closeSubpath() } }
@@ -35,7 +35,7 @@ struct LetterEnvelope: View {
                     .overlay(LetterPocket().stroke(colors.line.opacity(0.25), lineWidth: 0.6))
                 LetterFlap().fill(LinearGradient(colors: [colors.paper, colors.fold], startPoint: .top, endPoint: .bottom)).shadow(color: .black.opacity(0.13), radius: 1, y: 2)
                 Image("LetterPaper").resizable().scaledToFill().frame(width: g.size.width, height: g.size.height).clipped()
-                    .opacity(0.24).blendMode(.multiply).accessibilityHidden(true)
+                    .saturation(0).opacity(0.12).blendMode(.multiply).accessibilityHidden(true)
                 if showTitle {
                     VStack(spacing: 6) {
                         Text(title).font(.custom("Georgia-Italic", size: 14)).lineLimit(2)
@@ -97,11 +97,20 @@ struct LetterStack: View {
                         .overlay(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4).stroke(colors.line.opacity(0.75), lineWidth: 0.8))
                         .offset(x: -9, y: -2)
                 }
+                .overlay(alignment: .bottomLeading) {
+                    HStack(spacing: 6) {
+                        Text(letter.readLabel)
+                        if letter.isKept { Image(systemName: "bookmark.fill") }
+                    }.font(.custom("Georgia", size: 10)).foregroundStyle(colors.ink)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(colors.paper.opacity(0.9), in: Capsule())
+                        .overlay(Capsule().stroke(colors.line.opacity(0.4), lineWidth: 0.5)).padding(8)
+                }
         }.buttonStyle(.plain).frame(width: cardWidth, height: cardWidth / 1.7)
             .rotationEffect(.degrees(front ? -3 : restingAngle), anchor: .bottom)
             .offset(x: (width - cardWidth) / 2 + (slot.isMultiple(of: 2) ? -2 : 2), y: base - lift)
             .zIndex(front ? 100 : Double(90 - slot)).animation(motion, value: front).animation(motion, value: selectedID)
-            .accessibilityLabel(letter.displayTitle + ", " + letter.author).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
+            .accessibilityLabel(([letter.displayTitle, letter.author, letter.readLabel] + letter.keepLabels).joined(separator: ", ")).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
     }
     private func sweep(_ point: CGPoint) {
         guard !visible.isEmpty else { return }

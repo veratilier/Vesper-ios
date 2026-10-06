@@ -291,13 +291,21 @@ enum SleepDetails {
         }
         return values
     }
+    @Published var needsAuthorizationRequest = true
+    func checkAuthorizationRequest() async {
+        guard available else { return }
+        do {
+            let status = try await health.statusForAuthorizationRequest(toShare: [], read: types)
+            needsAuthorizationRequest = status != .unnecessary
+        } catch { self.error = error.localizedDescription }
+    }
     func connect() async {
         guard !busy else { return }
         if let accessError { error = accessError; return }
         busy = true; error = ""; defer { busy = false }
         do {
             try await health.requestAuthorization(toShare: [], read: types)
-            await read(requestedIDs: HealthMetric.defaultIDs)
+            await checkAuthorizationRequest()
         } catch { self.error = error.localizedDescription }
     }
     func refresh(requestedIDs: [String] = HealthMetric.defaultIDs) async {
@@ -464,20 +472,66 @@ enum SleepDetails {
 
 struct HealthView: View {
     @StateObject private var reader = HealthReader()
+    @Environment(\.scenePhase) private var phase
+    @State private var showingAccessGuide = false
     var body: some View {
-        Page(title: "Health", subtitle: "A little care for your day.") {
-            GlassCard { VStack(alignment: .leading, spacing: 14) {
-                Text("Choose which Health data Vesper may read. Rowan can request authorized summaries through the native Health tool in chat. Only requested summaries are sent to the Vesper chat service and become part of the conversation.").font(.subheadline)
-                Button { Task { await reader.connect() } } label: { Text("Choose Health permissions").foregroundStyle(.white).padding(14).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(reader.busy || !reader.available)
-                Button("Read all Health categories on this iPhone") { Task { await reader.refresh(requestedIDs: ["all"]) } }.disabled(reader.busy || !reader.available)
-                Button("Read latest sleep details") { Task { await reader.refresh(requestedIDs: ["sleep_details"]) } }.disabled(reader.busy || !reader.available)
-                if !reader.available { Text("HealthKit is not available on this device.") }
-                Text("No readable data can mean no recorded samples or no read permission. Vesper cannot tell which; change access in the Health app.").font(.caption).foregroundStyle(VesperTheme.muted)
+        PermissionPage(title: "Health") {
+            PermissionPanel {
+                Label("Health access", systemImage: "heart.fill").font(.headline)
+                Text("Choose the categories Vesper may read. Rowan can use the summaries you request in chat.").foregroundStyle(VesperTheme.muted)
+                Button("Change access") {
+                    Task {
+                        await reader.checkAuthorizationRequest()
+                        if reader.needsAuthorizationRequest { await reader.connect() }
+                        else { showingAccessGuide = true }
+                    }
+                }.buttonStyle(PermissionActionStyle()).disabled(reader.busy || !reader.available)
+                if !reader.needsAuthorizationRequest {
+                    Text("Change existing permissions in Apple Health. This button shows the steps.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted)
+                }
+                DisclosureGroup("About your data") {
+                    Text("Only requested summaries are sent to the chat service. Apple does not reveal whether read access was denied: no data may also mean no recorded samples. Manage access in the Health app.")
+                        .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+                }.font(.subheadline)
+                if !reader.available { Text("Health is unavailable on this device.").font(.footnote) }
+            }
+            PermissionPanel {
+                Text("Read a summary").font(.headline)
+                Button("Latest sleep details") { Task { await reader.refresh(requestedIDs: ["sleep_details"]) } }.disabled(reader.busy || !reader.available)
+                Divider()
+                Button("All Health categories") { Task { await reader.refresh(requestedIDs: ["all"]) } }.disabled(reader.busy || !reader.available)
                 if reader.busy { ProgressView() }
-                if !reader.error.isEmpty { Text(reader.error).font(.caption).foregroundStyle(.red) }
-            } }
-            ForEach(Array(reader.rows.enumerated()), id: \.offset) { _, row in GlassCard { VStack(alignment: .leading, spacing: 8) { Text(row.0).font(.caption).foregroundStyle(VesperTheme.muted); Text(row.1).font(.title3) }.frame(maxWidth: .infinity, alignment: .leading) } }
-            if let updated = reader.updated { Text("Read at " + updated.formatted()).font(.caption); Button("Refresh") { Task { await reader.refresh(requestedIDs: reader.requestedIDs) } }.disabled(reader.busy) }
+                if !reader.error.isEmpty { Text(reader.error).font(.footnote).foregroundStyle(.red) }
+            }
+            if !reader.rows.isEmpty {
+                Text("Latest results").font(.headline).padding(.top, 8)
+                PermissionPanel {
+                    ForEach(Array(reader.rows.enumerated()), id: \.offset) { index, row in
+                        if index > 0 { Divider() }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(row.0).font(.subheadline).foregroundStyle(VesperTheme.muted)
+                            Text(row.1).font(.system(size: 15)).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let updated = reader.updated { Text("Read at " + updated.formatted()).font(.caption).foregroundStyle(VesperTheme.muted) }
+                }
+            }
+        }
+        .task(id: phase) { if phase == .active { await reader.checkAuthorizationRequest() } }
+        .sheet(isPresented: $showingAccessGuide) {
+            NavigationStack {
+                PermissionPage(title: "Change Health access") {
+                    PermissionPanel {
+                        Text("Manage in Apple Health").font(.headline)
+                        Text("1. Open the Health app.\n2. Tap your profile picture.\n3. Open Apps and Services → Vesper.\n4. Turn the categories you want on or off.").lineSpacing(6)
+                        Text("You can also find Health permissions in iPhone Settings → Privacy & Security → Health → Vesper.")
+                            .font(.footnote).foregroundStyle(VesperTheme.muted)
+                        Text("Apple’s permission manager cannot be embedded here. Requesting access again will not reopen choices you already made.")
+                            .font(.footnote).foregroundStyle(VesperTheme.muted)
+                    }
+                }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingAccessGuide = false } } }
+            }.presentationDetents([.medium, .large])
         }
     }
 }

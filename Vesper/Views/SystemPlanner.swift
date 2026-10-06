@@ -52,6 +52,83 @@ import EventKitUI
                         "from": .string(ISO8601DateFormatter().string(from: start)), "until": .string(ISO8601DateFormatter().string(from: end)),
                         "timeZone": .string(TimeZone.current.identifier), "events": .array(Array(events.prefix(100))), "hasMore": .bool(events.count > 100)])
     }
+    struct WriteRequest {
+        let kind: String
+        let title: String
+        let start: Date?
+        let end: Date?
+        let notes: String
+        let requestID: String
+    }
+    nonisolated static func writeRequest(_ args: JSONValue) throws -> WriteRequest {
+        guard case .object(let fields) = args,
+              Set(fields.keys).isSubset(of: ["kind", "title", "start", "end", "notes", "requestId"]),
+              ["event", "reminder"].contains(args["kind"].string),
+              !args["title"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !args["requestId"].string.isEmpty else {
+            throw ServiceError(message: "Provide kind (event or reminder), a title and a stable requestId.")
+        }
+        func date(_ key: String) throws -> Date? {
+            if args[key] == .null { return nil }
+            let raw = args[key].string
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let value = formatter.date(from: raw) ?? ISO8601DateFormatter().date(from: raw) else {
+                throw ServiceError(message: "Use an ISO 8601 date/time with timezone for " + key + ".")
+            }
+            return value
+        }
+        let start = try date("start"), end = try date("end")
+        if args["kind"].string == "event" {
+            guard let start, let end, end > start else { throw ServiceError(message: "Events require start and end; end must be after start.") }
+        } else if end != nil { throw ServiceError(message: "Reminders use start for the due date, without end.") }
+        return WriteRequest(kind: args["kind"].string, title: args["title"].string, start: start, end: end,
+                            notes: args["notes"].string, requestID: args["requestId"].string)
+    }
+    func createFromChat(_ args: JSONValue) async throws -> JSONValue {
+        let request = try Self.writeRequest(args)
+        let entity: EKEntityType = request.kind == "event" ? .event : .reminder
+        if EKEventStore.authorizationStatus(for: entity) == .notDetermined {
+            let granted: Bool
+            if entity == .event { granted = try await store.requestFullAccessToEvents() }
+            else { granted = try await store.requestFullAccessToReminders() }
+            guard granted else { throw ServiceError(message: "Access was not granted. Enable it in iPhone Settings → Apps → Vesper.") }
+        }
+        guard EKEventStore.authorizationStatus(for: entity) == .fullAccess else {
+            throw ServiceError(message: "Allow Calendar or Reminders access in Vesper Settings → Permissions → Calendar & Reminders.")
+        }
+        // A repeated tool request returns the existing receipt rather than creating another item.
+        let key = "vesper.planner.write." + request.requestID
+        if let data = UserDefaults.standard.data(forKey: key), let saved = try? JSONDecoder().decode(JSONValue.self, from: data) {
+            guard saved["arguments"] == args else { throw ServiceError(message: "This requestId belongs to a different write; use a new ID for a new item.") }
+            return saved["receipt"]
+        }
+        try Task.checkCancellation()
+        let item: EKCalendarItem
+        if entity == .event {
+            guard let calendar = store.defaultCalendarForNewEvents, calendar.allowsContentModifications else { throw ServiceError(message: "Choose a writable default calendar in iPhone Settings.") }
+            let event = EKEvent(eventStore: store)
+            event.calendar = calendar; event.title = request.title; event.notes = request.notes
+            event.startDate = request.start!; event.endDate = request.end!
+            try store.save(event, span: .thisEvent, commit: true); item = event
+        } else {
+            guard let calendar = store.defaultCalendarForNewReminders(), calendar.allowsContentModifications else { throw ServiceError(message: "Choose a writable default Reminders list in iPhone Settings.") }
+            let reminder = EKReminder(eventStore: store)
+            reminder.calendar = calendar; reminder.title = request.title; reminder.notes = request.notes
+            if let due = request.start {
+                reminder.dueDateComponents = Calendar.current.dateComponents([.calendar, .timeZone, .year, .month, .day, .hour, .minute, .second], from: due)
+                reminder.addAlarm(EKAlarm(absoluteDate: due))
+            }
+            try store.save(reminder, commit: true); item = reminder
+        }
+        let receipt: JSONValue = .object(["saved": .bool(true), "id": .string(item.calendarItemIdentifier),
+            "kind": .string(request.kind), "title": .string(request.title), "calendar": .string(item.calendar.title),
+            "start": args["start"], "end": args["end"], "timeZone": .string(TimeZone.current.identifier)])
+        let saved: JSONValue = .object(["arguments": args, "receipt": receipt])
+        if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: key) }
+        await refresh()
+        return receipt
+    }
     func create(title: String, reminder: Bool, date: Date, end: Date) async -> Bool {
         do {
             guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ServiceError(message: "Enter a title.") }
@@ -76,6 +153,8 @@ import EventKitUI
 }
 
 struct SystemPlannerView: View {
+    var reminderOnly: Bool? = nil
+    @Environment(\.scenePhase) private var phase
     @StateObject private var planner = SystemPlanner.shared
     @State private var selectedEvent: EKEvent?
     @State private var selectedReminder: EKReminder?
@@ -88,30 +167,52 @@ struct SystemPlannerView: View {
     @State private var end = Date().addingTimeInterval(3600)
     @State private var saving = false
     var body: some View {
-        List {
-            Section("Permissions") {
-                Button("Allow Calendar access") { Task { await planner.authorize(reminders: false) } }
-                Button("Allow Reminders access") { Task { await planner.authorize(reminders: true) } }
-                Text("These are your iPhone calendars and reminder lists. When you ask Rowan to read your calendar, a seven-day event summary is sent to the chat service and becomes part of the conversation. Reminders are not shared by this tool.").font(.caption)
-            }
-            if let error = planner.error { Text(error).foregroundStyle(.red).font(.caption) }
-            Section("Calendar · next 7 days") {
-                ForEach(planner.events, id: \.calendarItemIdentifier) { item in
-                    Button { selectedEvent = item; editingEvent = true } label: { VStack(alignment: .leading) { Text(item.title ?? "Event"); Text(item.startDate.formatted()).font(.caption); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) } }.disabled(!item.calendar.allowsContentModifications)
-                }
-                if planner.events.isEmpty { Text("No events available.").foregroundStyle(.secondary) }
-            }
-            Section("Incomplete reminders") {
-                ForEach(planner.reminders, id: \.calendarItemIdentifier) { item in
-                    HStack { Button { Task { await planner.complete(item) } } label: { Image(systemName: "circle") }.accessibilityLabel("Complete reminder")
-                        Button { selectedReminder = item; editingReminder = true } label: { VStack(alignment: .leading) { Text(item.title ?? "Reminder"); Text(item.calendar.title).font(.caption).foregroundStyle(.secondary) } }.disabled(!item.calendar.allowsContentModifications)
+        PermissionPage(title: reminderOnly == true ? "Reminders" : reminderOnly == false ? "Calendar" : "Calendar & Reminders") {
+            if reminderOnly != true { accessPanel(reminders: false) }
+            if reminderOnly != false { accessPanel(reminders: true) }
+            if let error = planner.error { Text(error).foregroundStyle(.red).font(.footnote) }
+            if reminderOnly != true {
+                HStack { Text("Next 7 days").font(.headline); Spacer(); Text("\(planner.events.count)").foregroundStyle(VesperTheme.muted) }.padding(.top, 8)
+                PermissionPanel {
+                    if planner.events.isEmpty { Text("No events available.").foregroundStyle(VesperTheme.muted) }
+                    ForEach(Array(planner.events.enumerated()), id: \.element.calendarItemIdentifier) { index, item in
+                        if index > 0 { Divider() }
+                        Button { selectedEvent = item; editingEvent = true } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.title ?? "Event").font(.system(size: 16, weight: .medium))
+                                    Text(item.startDate.formatted()).font(.footnote).foregroundStyle(VesperTheme.muted)
+                                    Text(item.calendar.title).font(.caption).foregroundStyle(VesperTheme.muted)
+                                }
+                                Spacer()
+                                Image(systemName: item.calendar.allowsContentModifications ? "chevron.right" : "lock").font(.caption).foregroundStyle(VesperTheme.muted)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain).disabled(!item.calendar.allowsContentModifications)
                     }
                 }
-                if planner.reminders.isEmpty { Text("No reminders available.").foregroundStyle(.secondary) }
             }
-        }.navigationTitle("Calendar & Reminders").navigationBarTitleDisplayMode(.inline)
-        .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add event or reminder") }
-        .task { await planner.refresh() }.refreshable { await planner.refresh() }
+            if reminderOnly != false {
+                HStack { Text("Incomplete reminders").font(.headline); Spacer(); Text("\(planner.reminders.count)").foregroundStyle(VesperTheme.muted) }.padding(.top, 8)
+                PermissionPanel {
+                    if planner.reminders.isEmpty { Text("No reminders available.").foregroundStyle(VesperTheme.muted) }
+                    ForEach(Array(planner.reminders.enumerated()), id: \.element.calendarItemIdentifier) { index, item in
+                        if index > 0 { Divider() }
+                        HStack(spacing: 12) {
+                            Button { Task { await planner.complete(item) } } label: { Image(systemName: "circle").frame(width: 44, height: 44) }
+                                .accessibilityLabel("Complete reminder").disabled(!item.calendar.allowsContentModifications)
+                            Button { selectedReminder = item; editingReminder = true } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.title ?? "Reminder").font(.system(size: 16, weight: .medium))
+                                    Text(item.calendar.title).font(.caption).foregroundStyle(VesperTheme.muted)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.disabled(!item.calendar.allowsContentModifications)
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .toolbar { Button { reminder = reminderOnly ?? false; adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add event or reminder") }
+        .task(id: phase) { if phase == .active { await planner.refresh() } }.refreshable { await planner.refresh() }
         .sheet(isPresented: $editingEvent, onDismiss: { Task { await planner.refresh() } }) {
             if let selectedEvent { EventEditor(event: selectedEvent, store: planner.store) }
         }
@@ -135,6 +236,29 @@ struct SystemPlannerView: View {
             }
         }
     }
+    private func accessPanel(reminders: Bool) -> some View {
+        let entity: EKEntityType = reminders ? .reminder : .event
+        let status = EKEventStore.authorizationStatus(for: entity)
+        return PermissionPanel {
+            HStack {
+                Label(reminders ? "Reminders access" : "Calendar access", systemImage: reminders ? "checklist" : "calendar").font(.headline)
+                Spacer()
+                Text(PermissionLabels.calendar(entity)).font(.caption).foregroundStyle(VesperTheme.muted)
+            }
+            Text(reminders ? "Rowan can create tasks in your default Apple Reminders list when you ask." : "Rowan can read the next seven days and create events in your default calendar when you ask.")
+                .foregroundStyle(VesperTheme.muted)
+            if status == .notDetermined || status == .writeOnly {
+                Button("Allow access") { Task { await planner.authorize(reminders: reminders) } }.buttonStyle(PermissionActionStyle())
+            } else {
+                Button("Open iPhone Settings") { PermissionLabels.openSettings() }.buttonStyle(PermissionActionStyle())
+            }
+            DisclosureGroup("About this access") {
+                Text("Requested details and saved-item confirmations become part of your chat. Creation runs on the connected iPhone. Existing items below can be managed manually.")
+                    .font(.footnote).foregroundStyle(VesperTheme.muted).padding(.top, 8)
+            }.font(.subheadline)
+        }
+    }
+
 }
 
 struct EventEditor: UIViewControllerRepresentable {

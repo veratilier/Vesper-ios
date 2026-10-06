@@ -21,6 +21,21 @@ enum VesperTheme {
     static var surface: Color { palette.surface }
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
+extension View {
+    @ViewBuilder func vesperGlass<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+        }
+        #else
+        self.background(.ultraThinMaterial, in: shape)
+            .overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+        #endif
+    }
+}
 struct AppearancePicker: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     @AppStorage("vesperPalette") private var palette = "blue"

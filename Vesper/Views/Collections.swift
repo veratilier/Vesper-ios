@@ -174,11 +174,6 @@ struct ChatActivityHeatmap: View {
                 Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel("Next activity month")
             }
             calendarGrid
-            HStack(spacing: 6) {
-                Text("Less")
-                ForEach(0..<5) { level in RoundedRectangle(cornerRadius: 4).fill(heatColor(level)).frame(width: 15, height: 15) }
-                Text("More")
-            }.font(.system(size: 10, design: .serif)).foregroundStyle(VesperTheme.muted).padding(.top, 3)
             if activityError {
                 Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
             } else if !ready { ProgressView().controlSize(.small).accessibilityLabel("Loading chat statistics") }

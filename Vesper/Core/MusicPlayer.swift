@@ -41,6 +41,58 @@ import SwiftUI
     private var lyricTask: Task<Void, Never>?
     private var lyricCache: [String: [JSONValue]] = [:]
 
+    private let preferences: UserDefaults
+    private var lastSavedPlayback: PlaybackSnapshot?
+    private static let playbackKey = "music.playbackResume.v1"
+
+    private struct PlaybackSnapshot: Codable, Equatable {
+        var tracks: [JSONValue]
+        var trackID: String
+        var position: Double
+        var duration: Double
+        var mode: String
+    }
+
+    init(preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        guard let data = preferences.data(forKey: Self.playbackKey),
+              let saved = try? JSONDecoder().decode(PlaybackSnapshot.self, from: data),
+              let selected = saved.tracks.first(where: { $0.id == saved.trackID }),
+              !selected.id.isEmpty else { return }
+        var seen = Set<String>()
+        tracks = saved.tracks.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+        track = selected
+        duration = saved.duration.isFinite ? max(0, saved.duration) : 0
+        position = Self.resumePosition(saved.position, duration: duration)
+        mode = ["order", "repeat", "single", "random"].contains(saved.mode) ? saved.mode : "order"
+        lyrics = selected["lyrics"].array
+        // Restore the UI immediately; only prepare Apple playback when Play is pressed.
+        lastSavedPlayback = saved
+    }
+
+    private static func resumePosition(_ value: Double, duration: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return duration > 0 ? min(max(0, value), duration) : max(0, value)
+    }
+
+    func savePlaybackState(force: Bool = true) {
+        guard !track.id.isEmpty, tracks.contains(where: { $0.id == track.id }) else {
+            preferences.removeObject(forKey: Self.playbackKey)
+            lastSavedPlayback = nil
+            return
+        }
+        let saved = PlaybackSnapshot(tracks: tracks, trackID: track.id,
+            position: Self.resumePosition(position, duration: duration),
+            duration: duration.isFinite ? max(0, duration) : 0, mode: mode)
+        if !force, let previous = lastSavedPlayback,
+           previous.tracks == saved.tracks, previous.trackID == saved.trackID,
+           previous.duration == saved.duration, previous.mode == saved.mode,
+           abs(previous.position - saved.position) < 5 { return }
+        guard let data = try? JSONEncoder().encode(saved) else { return }
+        preferences.set(data, forKey: Self.playbackKey)
+        lastSavedPlayback = saved
+    }
+
     func configure(_ store: AppStore) {
         self.store = store
         store.musicPlayer = self
@@ -92,15 +144,17 @@ import SwiftUI
             native.stop()
             loadedTrackID = ""
             synchronize()
-        } else if track != .null {
+        } else if track != .null, !loadedTrackID.isEmpty {
             select(track, autoplay: wasPlaying, resumePosition: resumePosition)
         }
+        savePlaybackState()
     }
     func remove(_ id: String) { setQueue(tracks.filter { $0.id != id }) }
     func cycleMode() {
         let modes = ["order", "repeat", "single", "random"]
         mode = modes[((modes.firstIndex(of: mode) ?? 0) + 1) % modes.count]
         applyPlaybackMode()
+        savePlaybackState()
     }
     private func applyPlaybackMode() {
         native.repeatMode = mode == "single" ? .one : mode == "repeat" ? .all : .none
@@ -145,8 +199,8 @@ import SwiftUI
         loadLyrics(for: value)
         if !tracks.contains(where: { $0.id == value.id }) { tracks.append(value) }
         playing = false
-        position = 0
         duration = value["duration"].number
+        position = Self.resumePosition(resumePosition, duration: duration)
         error = nil
         synchronize()
         guard value["source"].string == "appleMusic",
@@ -233,7 +287,10 @@ import SwiftUI
     func start(_ value: JSONValue) { select(value) }
     func play() {
         guard !resolving, track != .null else { return }
-        if loadedTrackID != track.id || loadedQueue.isEmpty { select(track); return }
+        if loadedTrackID != track.id || loadedQueue.isEmpty {
+            select(track, autoplay: true, resumePosition: position)
+            return
+        }
         native.play(); synchronize()
     }
     func pause() {
@@ -242,6 +299,7 @@ import SwiftUI
         resolving = false
         native.pause()
         synchronize()
+        savePlaybackState()
     }
     func toggle() { (resolving || playing) ? pause() : play() }
     func next(_ delta: Int) {
@@ -265,10 +323,13 @@ import SwiftUI
         return min(value, duration)
     }
     func seek(_ value: Double) {
-        guard !resolving, loadedTrackID == track.id, !loadedTrackID.isEmpty,
+        guard !resolving, track != .null,
               let target = try? Self.seekPosition(value, duration: duration) else { return }
-        native.currentPlaybackTime = target
-        synchronize()
+        if loadedTrackID == track.id, !loadedTrackID.isEmpty {
+            native.currentPlaybackTime = target
+            synchronize()
+        } else { position = target }
+        savePlaybackState()
     }
     func applyControl(_ command: JSONValue) async -> JSONValue {
         guard !command.id.isEmpty else { return .object(["applied": .bool(false), "error": .string("Missing music command ID.")]) }
@@ -335,9 +396,17 @@ import SwiftUI
         return !candidate.isEmpty && candidate.allSatisfy(\.isNumber) ? candidate : nil
     }
     func synchronize() {
+        // An unprepared system player reports zero (or a stale previous song).
+        // Neither may overwrite a restored position or an in-flight selection.
+        guard !resolving, !loadedTrackID.isEmpty, !loadedQueue.isEmpty else {
+            playing = false
+            savePlaybackState(force: false)
+            syncPlayback()
+            return
+        }
         playing = native.playbackState == .playing
         let index = native.indexOfNowPlayingItem
-        if !resolving, !loadedTrackID.isEmpty, loadedQueue.indices.contains(index) {
+        if loadedQueue.indices.contains(index) {
             let value = loadedQueue[index]
             if track.id != value.id {
                 track = value; loadedTrackID = value.id
@@ -348,7 +417,8 @@ import SwiftUI
             duration = length > 0 ? length : value["duration"].number
         }
         let elapsed = native.currentPlaybackTime
-        position = track["source"].string == "appleMusic" && elapsed.isFinite ? max(0, elapsed) : 0
+        if elapsed.isFinite { position = Self.resumePosition(elapsed, duration: duration) }
+        savePlaybackState(force: false)
         syncPlayback()
     }
     var liveContext: JSONValue {

@@ -775,6 +775,84 @@ private struct MiniMusicNavigationFixture: View {
         XCTAssertLessThan(elapsed, .seconds(5))
     }
 
+    func testMusicResumeSurvivesRelaunchAndUnpreparedPlayerPolling() throws {
+        let suite = "music-resume-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        func song(_ id: String) -> JSONValue {
+            .object(["id": .string(id), "source": .string("appleMusic"), "appleMusicId": .string(id),
+                     "title": .string("Song " + id), "artist": .string("Artist"), "duration": .number(240),
+                     "lyrics": .array([.object(["time": .number(0), "text": .string("Fixture")])])])
+        }
+        let queue = [song("101"), song("102")]
+        let first = MusicPlayer(preferences: preferences)
+        first.setQueue(queue)
+        first.track = queue[1]
+        first.position = 83.5
+        first.duration = 240
+        first.cycleMode()
+        first.savePlaybackState()
+
+        let reopened = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(reopened.tracks, queue)
+        XCTAssertEqual(reopened.track, queue[1])
+        XCTAssertEqual(reopened.position, 83.5)
+        XCTAssertEqual(reopened.mode, "repeat")
+        XCTAssertFalse(reopened.playing)
+        XCTAssertFalse(reopened.resolving)
+        reopened.synchronize()
+        reopened.synchronize()
+        XCTAssertEqual(reopened.position, 83.5, "An empty native player must not reset restored progress")
+        XCTAssertNil(reopened.error)
+        reopened.seek(112)
+        let afterSeek = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(afterSeek.position, 112, "Seeking before preparation must update the resume point")
+        afterSeek.play()
+        XCTAssertTrue(afterSeek.resolving)
+        XCTAssertEqual(afterSeek.position, 112, "Play must prepare the song at its restored position, not zero")
+        afterSeek.synchronize()
+        XCTAssertEqual(afterSeek.position, 112, "Polling during preparation must preserve the resume point")
+        afterSeek.pause()
+        XCTAssertEqual(MusicPlayer(preferences: preferences).position, 112)
+    }
+
+    func testMusicResumePreservesQueueEditsAndClearsRemovedCurrentSong() throws {
+        let suite = "music-queue-resume-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let a: JSONValue = .object(["id": .string("a"), "duration": .number(120)])
+        let b: JSONValue = .object(["id": .string("b"), "duration": .number(180)])
+        let player = MusicPlayer(preferences: preferences)
+        player.setQueue([a]); player.seek(40)
+        player.setQueue([b], append: true)
+        XCTAssertEqual(player.position, 40)
+        XCTAssertFalse(player.resolving, "Editing a restored queue must not request music authorization")
+        XCTAssertEqual(MusicPlayer(preferences: preferences).tracks, [a, b])
+        player.remove("a")
+        let replacement = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(replacement.track, b)
+        XCTAssertEqual(replacement.position, 0)
+        replacement.setQueue([])
+        let empty = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(empty.track, .null)
+        XCTAssertTrue(empty.tracks.isEmpty)
+        XCTAssertEqual(empty.position, 0)
+    }
+
+    func testMusicResumeClampsPositionAndIgnoresCorruptStorage() throws {
+        let suite = "music-invalid-resume-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(Data("invalid".utf8), forKey: "music.playbackResume.v1")
+        XCTAssertEqual(MusicPlayer(preferences: preferences).track, .null)
+        let player = MusicPlayer(preferences: preferences)
+        player.setQueue([.object(["id": .string("a"), "duration": .number(120)])])
+        player.position = 999; player.savePlaybackState()
+        XCTAssertEqual(MusicPlayer(preferences: preferences).position, 120)
+        player.position = .nan; player.savePlaybackState()
+        XCTAssertEqual(MusicPlayer(preferences: preferences).position, 0)
+    }
+
     func testAppleMusicQueueIncludesFollowingSongsAndSkipsLegacyCards() {
         func song(_ id: String) -> JSONValue { .object(["id": .string("apple-" + id), "source": .string("appleMusic"), "appleMusicId": .string(id)]) }
         let queue = [song("one"), .object(["id": .string("legacy"), "neteaseId": .string("123")]), song("two"), song("one"), song("three"), song("")]

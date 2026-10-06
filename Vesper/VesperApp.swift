@@ -394,6 +394,9 @@ struct RootView: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
+        .onChange(of: phase) { _, value in
+            if value != .active { player.synchronize(); player.savePlaybackState() }
+        }
         .task(id: phase) {
             guard phase == .active else { return }
             player.configure(store)

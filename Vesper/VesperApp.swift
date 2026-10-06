@@ -262,6 +262,7 @@ struct RootView: View {
         ZStack(alignment: .leading) {
         if !opening {
             navigationSurface.accessibilityHidden(sidebar)
+                .environment(\.vesperChatTabSelected, destination == .chat && !sidebar && !callPresentation.presented)
         }
         if sidebar {
             Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { withAnimation { sidebar = false } }.accessibilityLabel("Close sidebar").accessibilityAddTraits(.isButton)
@@ -350,9 +351,10 @@ struct RootView: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
-        .task(id: store.historyURL + "\n" + store.token) {
+        .task(id: store.historyURL + "\n" + store.token + "\n" + String(phase == .active)) {
+            guard phase == .active else { return }
             while !Task.isCancelled {
-                if phase == .active { await chatInbox.sync(store.api) }
+                await chatInbox.sync(store.api)
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
             }
         }

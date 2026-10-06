@@ -2236,15 +2236,17 @@ struct ChatInboxCover: Decodable, Equatable {
         hasUpdates = incoming.contains { !seen.contains(key($0.conversationId,$0.messageId)) }
     }
     func markDisplayed(conversation: String, messageIDs: Set<String>) {
-        guard !account.isEmpty else { return }
-        for id in messageIDs { seen.insert(key(conversation,id)) }
+        guard !account.isEmpty, !messageIDs.isEmpty else { return }
+        var changed = false
+        for id in messageIDs { if seen.insert(key(conversation,id)).inserted { changed = true } }
         for cover in incoming where cover.conversationId == conversation {
             if messageIDs.contains(cover.messageId) || cover.itemId.map(messageIDs.contains) == true {
-                seen.insert(key(conversation,cover.messageId))
+                if seen.insert(key(conversation,cover.messageId)).inserted { changed = true }
             }
         }
-        preferences.set(Array(seen), forKey: "vesperChatSeen-" + account)
-        hasUpdates = incoming.contains { !seen.contains(key($0.conversationId,$0.messageId)) }
+        if changed { preferences.set(Array(seen), forKey: "vesperChatSeen-" + account) }
+        let unread = incoming.contains { !seen.contains(key($0.conversationId,$0.messageId)) }
+        if hasUpdates != unread { hasUpdates = unread }
     }
     func clear() { account = ""; seen = []; incoming = []; hasUpdates = false }
     func sync(_ api: APIClient) async {

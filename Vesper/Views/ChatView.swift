@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import QuickLook
 
 private struct ChatScrollUpdate: Equatable {
+    let visible: Bool
     let conversationID: String
     let messageCount: Int
     let lastMessageID: String?
@@ -150,8 +151,17 @@ struct ChatIssueSheet: View {
 
 struct ChatView: View {
     @Environment(\.scenePhase) private var phase
+    @Environment(\.vesperChatTabSelected) private var chatTabSelected
     @ObservedObject private var inbox = ChatInbox.shared
     @State private var chatVisible = false
+    @State private var incomingFrames: [String: CGRect] = [:]
+    @State private var scrollFrame = CGRect.zero
+    @State private var composerFrame = CGRect.zero
+
+    @MainActor init(onMenu: @escaping () -> Void = {}, restoreLatest: Bool = true, native: Bool = false, inbox: ChatInbox? = nil) {
+        self.onMenu = onMenu; self.restoreLatest = restoreLatest; self.native = native
+        self.inbox = inbox ?? .shared
+    }
 
     var onMenu: () -> Void = {}
     var restoreLatest = true
@@ -222,9 +232,10 @@ struct ChatView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading).padding(14)
                                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                                     }.buttonStyle(.plain).id(message.id)
+                                        .background(incomingReadFrame(row))
                                 } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
                                 else if row.activity { AssistantMessageHeading(message: message, activities: row.activities, liveEvents: message.id == chat.liveHeadingID ? chat.events : [], isLive: message.id == chat.liveHeadingID) }
-                                else { messageRow(row).id(row.id) }
+                                else { messageRow(row).id(row.id).background(incomingReadFrame(row)) }
                             }
                         }
                         if chat.preparingSend {
@@ -237,6 +248,12 @@ struct ChatView: View {
                     .background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
                     .opacity(positionedConversationID == chat.conversationID || chat.messages.isEmpty ? 1 : 0)
                 }.scrollDismissesKeyboard(.interactively)
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
+                    scrollFrame = frame; markDisplayedMessages()
+                }
+                .onPreferenceChange(ChatIncomingFrames.self) { frames in
+                    incomingFrames = frames; markDisplayedMessages()
+                }
                 .defaultScrollAnchor(followsLatest ? .bottom : nil)
                 .coordinateSpace(name: "chat-scroll")
                 .background(GeometryReader { geometry in Color.clear.onAppear { viewportHeight = geometry.size.height }.onChange(of: geometry.size.height) { _, value in viewportHeight = value } })
@@ -260,6 +277,9 @@ struct ChatView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         composer
+                            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
+                                composerFrame = frame; markDisplayedMessages()
+                            }
                         if stickerPicker {
                             StickerLibraryView(compact: true, onBack: { stickerPicker = false; drawer = true }) { sticker in
                                 pendingSticker = sticker
@@ -309,7 +329,8 @@ struct ChatView: View {
         }
     }
     private var scrollUpdate: ChatScrollUpdate {
-        ChatScrollUpdate(conversationID: chat.conversationID,
+        ChatScrollUpdate(visible: chatVisible && chatTabSelected,
+                         conversationID: chat.conversationID,
                          messageCount: chat.messages.count,
                          lastMessageID: chat.messages.last?.id,
                          lastContent: chat.messages.last?["content"].string ?? "",
@@ -319,6 +340,7 @@ struct ChatView: View {
                          followsLatest: followsLatest)
     }
     @MainActor private func positionLatest(using proxy: ScrollViewProxy) async {
+        guard chatVisible, chatTabSelected else { return }
         let conversationID = chat.conversationID
         let sentLocally = observedLocalMessageID != chat.latestLocalMessageID
         if sentLocally { chat.jumpMessageID = nil }
@@ -353,18 +375,29 @@ struct ChatView: View {
         followsLatest = true
     }
     private func markDisplayedMessages() {
-        guard chatVisible, phase == .active else { return }
-        let messages = chat.messages.filter { !ChatPresentation.isUser($0) && !ChatPresentation.isActivity($0) }
-        let ids = Set(messages.flatMap { [$0.id,$0["metadata"]["itemId"].string] }.filter { !$0.isEmpty })
+        guard chatVisible, chatTabSelected, phase == .active, positionedConversationID == chat.conversationID else { return }
+        var viewport = scrollFrame
+        if composerFrame.height > 0 { viewport.size.height = max(0, min(viewport.maxY, composerFrame.minY) - viewport.minY) }
+        let ids = ChatReadVisibility.displayedIDs(frames: incomingFrames, viewport: viewport)
         inbox.markDisplayed(conversation: chat.conversationID, messageIDs: ids)
+    }
+    @ViewBuilder private func incomingReadFrame(_ row: ChatPresentation.Row) -> some View {
+        if !row.activity, let message = row.messages.first, !ChatPresentation.isUser(message) {
+            GeometryReader { geometry in
+                Color.clear.preference(key: ChatIncomingFrames.self, value: Dictionary(
+                    row.messages.flatMap { [$0.id, $0["metadata"]["itemId"].string] }.filter { !$0.isEmpty }
+                        .map { ($0, geometry.frame(in: .global)) }, uniquingKeysWith: { first, _ in first }))
+            }
+        }
     }
     private var observedChatContent: some View {
         chatContent
         .onAppear { chatVisible = true; markDisplayedMessages() }
         .onDisappear { chatVisible = false }
-        .onChange(of: chat.messages) { _, _ in markDisplayedMessages() }
         .onChange(of: inbox.incoming) { _, _ in markDisplayedMessages() }
         .onChange(of: phase) { _, _ in markDisplayedMessages() }
+        .onChange(of: chatTabSelected) { _, _ in markDisplayedMessages() }
+        .onChange(of: positionedConversationID) { _, _ in markDisplayedMessages() }
     }
     private var photoContent: some View {
         observedChatContent
@@ -1294,5 +1327,31 @@ private struct ChatBottomPosition: PreferenceKey {
     static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
         // Siblings without a measurement must not overwrite the content position with zero.
         if let next = nextValue() { value = next }
+    }
+}
+
+private struct ChatTabSelectedKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    var vesperChatTabSelected: Bool {
+        get { self[ChatTabSelectedKey.self] }
+        set { self[ChatTabSelectedKey.self] = newValue }
+    }
+}
+private struct ChatIncomingFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+enum ChatReadVisibility {
+    static func displayedIDs(frames: [String: CGRect], viewport: CGRect) -> Set<String> {
+        guard viewport.width > 0, viewport.height > 0 else { return [] }
+        return Set(frames.compactMap { id, frame in
+            let visible = frame.intersection(viewport)
+            // Lazy rows can be laid out outside the viewport. Require a readable
+            // portion above the composer, rather than merely being loaded.
+            return frame.width > 0 && frame.height > 0 && visible.width > 0
+                && visible.height >= min(frame.height, 40) ? id : nil
+        })
     }
 }

@@ -226,7 +226,13 @@ private struct JournalLayoutFixture: View {
             let attachment = XCTAttachment(image: image); attachment.name = label; attachment.lifetime = .keepAlways; add(attachment)
             if page == "Music" {
                 XCTAssertGreaterThan(dock.height, 90)
-                XCTAssertLessThanOrEqual(dock.maxY, size.height - 88, "Playback controls must clear the floating tab bar")
+                func tabBar(in view: UIView) -> UITabBar? {
+                    if let bar = view as? UITabBar, !bar.isHidden { return bar }
+                    return view.subviews.lazy.compactMap { tabBar(in: $0) }.first
+                }
+                let bar = try XCTUnwrap(tabBar(in: window))
+                let barFrame = bar.convert(bar.bounds, to: window)
+                XCTAssertLessThanOrEqual(dock.maxY, barFrame.minY, "Playback controls must clear the actual tab bar on every supported iOS version")
             }
             return dock
         }

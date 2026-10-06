@@ -198,7 +198,7 @@ struct ChatActivityHeatmap: View {
     }
     private var cellCount: Int { ((offset + days.count + 6) / 7) * 7 }
     private var calendarGrid: some View {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 7), spacing: 10) {
+            ChatActivityCalendarLayout(weekCount: cellCount / 7) {
                 ForEach(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], id: \.self) {
                     Text($0).font(.system(size: 9, weight: .medium)).tracking(0.7).foregroundStyle(VesperTheme.muted).padding(.bottom, 5)
                 }
@@ -236,6 +236,37 @@ struct ChatActivityHeatmap: View {
             guard requested == monthKey else { return }; activity = result; activityError = false
         } catch is CancellationError { }
         catch { if requested == monthKey { activityError = true } }
+    }
+}
+
+private struct ChatActivityCalendarLayout: Layout {
+    let weekCount: Int
+    private let columnSpacing: CGFloat = 5
+    private let rowSpacing: CGFloat = 10
+    private let headingHeight: CGFloat = 14
+
+    // Give List one deterministic height, including during its estimated-size pass.
+    // LazyVGrid's square shapes can alternate between row heights on older iOS.
+    private func cellWidth(_ width: CGFloat) -> CGFloat {
+        max(0, (width - columnSpacing * 6) / 7)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        let height = headingHeight + CGFloat(weekCount) * (cellWidth(width) + rowSpacing)
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let cell = cellWidth(bounds.width)
+        for (index, view) in subviews.enumerated() {
+            let column = index % 7
+            let row = index / 7
+            let height = row == 0 ? headingHeight : cell
+            let y = row == 0 ? bounds.minY : bounds.minY + headingHeight + rowSpacing + CGFloat(row - 1) * (cell + rowSpacing)
+            view.place(at: CGPoint(x: bounds.minX + CGFloat(column) * (cell + columnSpacing), y: y),
+                       anchor: .topLeading, proposal: ProposedViewSize(width: cell, height: height))
+        }
     }
 }
 

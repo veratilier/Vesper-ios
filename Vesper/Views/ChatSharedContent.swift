@@ -94,15 +94,25 @@ struct ChatLongPress: ViewModifier {
     let id: String
     let actions: () -> [ChatMessageAction]
     @EnvironmentObject private var menu: ChatActionMenu
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var frame = CGRect.zero
+    private var isSelected: Bool { menu.selection?.id == id }
     func body(content: Content) -> some View {
         content
-            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
+                // Keep the menu anchored to the resting position throughout the lift.
+                if !isSelected { frame = $0 }
+            }
             .contentShape(Rectangle())
             .onLongPressGesture(minimumDuration: 0.45) { menu.show(id: id, frame: frame, actions: actions()) }
             .accessibilityActions {
                 ForEach(actions()) { action in Button(action.title, action: action.run) }
             }
+            .shadow(color: .black.opacity(isSelected ? 0.12 : 0), radius: isSelected ? 8 : 0, y: isSelected ? 4 : 0)
+            .scaleEffect(isSelected && !reduceMotion ? 1.012 : 1)
+            .offset(y: isSelected && !reduceMotion ? -2 : 0)
+            .zIndex(isSelected ? 1 : 0)
+            .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.18), value: isSelected)
     }
 }
 
@@ -116,9 +126,10 @@ struct ChatActionOverlay: View {
                 let x = min(max(selection.frame.midX - origin.x, width / 2 + 12), geometry.size.width - width / 2 - 12)
                 let above = selection.frame.minY - origin.y - 42
                 let y = above >= 36 ? above : min(selection.frame.maxY - origin.y + 42, geometry.size.height - 40)
-                Color.black.opacity(0.08).contentShape(Rectangle())
+                Color.black.opacity(0.025).contentShape(Rectangle())
                     .onTapGesture { menu.selection = nil }
                     .accessibilityLabel("关闭消息菜单").accessibilityAddTraits(.isButton)
+                    .transition(.opacity)
                 HStack(spacing: 0) {
                     ForEach(selection.actions) { action in
                         Button {
@@ -136,11 +147,13 @@ struct ChatActionOverlay: View {
                 .frame(width: width)
                 .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
                 .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.65)))
-                .shadow(color: .black.opacity(0.16), radius: 14, y: 5)
+                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .position(x: x, y: y)
                 .accessibilityIdentifier("chat-message-actions")
+                .transition(.opacity)
             }
         }
+        .animation(.easeOut(duration: 0.18), value: menu.selection?.id)
     }
 }
 

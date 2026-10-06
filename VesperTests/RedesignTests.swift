@@ -161,8 +161,17 @@ private struct JournalLayoutFixture: View {
                 .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
             let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
             let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            if contacts {
+                // Wait for the view's asynchronous load, not a fixed rendering delay.
+                // Cold CI simulators can take longer to start SwiftUI tasks and URLSession.
+                let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+                while chat.conversations.isEmpty && chat.error == nil && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                XCTAssertEqual(chat.conversations.count, 1, "The contact fixture must finish loading before its snapshot")
+                XCTAssertNil(chat.error)
+            }
             try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
-            if contacts { XCTAssertEqual(chat.conversations.count, 1); XCTAssertNil(chat.error) }
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
             let attachment = XCTAttachment(image: image); attachment.name = "Journal-layout-\(contacts ? "Chat" : author.rawValue)-\(palette)-\(width)"
             attachment.lifetime = .keepAlways; add(attachment)

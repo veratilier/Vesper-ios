@@ -130,7 +130,84 @@ private struct JournalLayoutFixture: View {
     }
 }
 
+@MainActor private final class MiniMusicNavigationState: ObservableObject {
+    @Published var detail = false
+}
+private struct MiniMusicNavigationFixture: View {
+    @ObservedObject var state: MiniMusicNavigationState
+    let dockChanged: (Bool, CGRect) -> Void
+    var body: some View {
+        TabView {
+            NavigationStack {
+                ZStack {
+                    Background()
+                    VStack {
+                        NavigationLink(isActive: $state.detail) { Text("Detail page").navigationTitle("Detail") } label: { Text("Open detail") }
+                        Spacer()
+                    }.padding(20)
+                }.safeAreaInset(edge: .bottom, spacing: 4) {
+                    MiniMusicPlayer(openMusic: { state.detail = true })
+                        .background { GeometryReader { geometry in
+                            Color.clear.onAppear { dockChanged(true, geometry.frame(in: .global)) }
+                                .onChange(of: geometry.frame(in: .global)) { _, frame in dockChanged(true, frame) }
+                                .onDisappear { dockChanged(false, .zero) }
+                        } }
+                }.navigationTitle("Home").navigationBarTitleDisplayMode(.inline)
+            }.tabItem { Label("Home", systemImage: "house") }
+            Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }
+            Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }
+            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }
+            Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }
+        }
+    }
+}
+
 @MainActor final class RedesignTests: XCTestCase {
+    func testMiniMusicDockClearsTabBarAndHidesForDetailNavigation() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        let player = MusicPlayer()
+        player.setQueue([.object(["id": .string("fixture-song"), "title": .string("夜里，慢慢听"), "artist": .string("Rowan · A song for Vera")])])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func tabBar(in view: UIView) -> UITabBar? {
+            if let bar = view as? UITabBar, !bar.isHidden { return bar }
+            return view.subviews.lazy.compactMap { tabBar(in: $0) }.first
+        }
+        for (palette, width) in [("white",393),("blue",320),("black",393)] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let state = MiniMusicNavigationState()
+            var visible = false, dock = CGRect.zero
+            let content = MiniMusicNavigationFixture(state: state) { visible = $0; dock = $1 }
+                .environmentObject(player).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+                .preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
+            let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
+            XCTAssertTrue(visible)
+            let originalDock = dock
+            let bar = try XCTUnwrap(tabBar(in: host.view))
+            XCTAssertLessThanOrEqual(dock.maxY, bar.convert(bar.bounds, to: window).minY + 1)
+            XCTAssertGreaterThan(dock.minY, window.bounds.height - 180)
+            XCTAssertGreaterThanOrEqual(dock.height,48)
+            XCTAssertLessThanOrEqual(dock.height,65)
+            func capture(_ position: String) {
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "Mini-music-\(palette)-\(width)-\(position)"
+                attachment.lifetime = .keepAlways; add(attachment)
+            }
+            capture("root")
+            state.detail = true
+            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            XCTAssertFalse(visible, "The player must disappear when a detail page is pushed")
+            capture("detail")
+            state.detail = false
+            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            XCTAssertTrue(visible, "Popping back should restore the mini player")
+            XCTAssertEqual(dock.minY,originalDock.minY,accuracy:1)
+            capture("returned")
+        }
+    }
     func testJournalDatesKeepBeijingDaysAndClampMonthTransitions() throws {
         let moment = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-05T16:01:00Z"))
         XCTAssertEqual(JournalDates.label(moment), "2026-10-06")

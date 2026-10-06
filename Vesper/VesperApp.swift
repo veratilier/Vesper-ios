@@ -202,7 +202,7 @@ struct RootView: View {
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
-                    NativeChatHome().tabItem { Label("Chat", systemImage: "bubble.left") }.badge(chatInbox.hasUpdates ? " " : nil as String?).tag(1)
+                    NativeChatHome(onOpenMusic: { navigate(.music) }).tabItem { Label("Chat", systemImage: "bubble.left") }.badge(chatInbox.hasUpdates ? " " : nil as String?).tag(1)
                     appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
                     shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.badge(letterInbox.hasUpdates ? " " : nil as String?).tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
@@ -224,7 +224,8 @@ struct RootView: View {
                     VesperAppGrid(editing: $libraryEditing) { page in libraryPath.append(page) }
                         .padding(18)
                 }
-            }.transparentNavigationTop().navigationTitle("Collection")
+            }.safeAreaInset(edge: .bottom, spacing: 4) { musicDock }
+                .transparentNavigationTop().navigationTitle("Collection")
                 .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -415,6 +416,7 @@ struct RootView: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
+    private var musicDock: some View { MiniMusicPlayer(openMusic: { navigate(.music) }) }
     private var nativeVesperDestination: Destination { vesperPage }
     private func navigate(_ page: Destination) {
         destination = page
@@ -434,6 +436,9 @@ struct RootView: View {
                 Background()
                 if page == .home && navigationStyle != "native" { VStack(spacing: 0) { homeHeader; content(page) } }
                 else { content(page) }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 4) {
+                if navigationStyle == "native" && [.home, .letters, .settings].contains(page) { musicDock }
             }
             .transparentNavigationTop()
             .navigationBarTitleDisplayMode(.inline)
@@ -459,7 +464,7 @@ struct RootView: View {
     }
     @ViewBuilder private func content(_ page: Destination) -> some View {
         switch page {
-        case .home: HomeView(navigate: { navigate($0) })
+        case .home: HomeView(navigate: { navigate($0) }, showsInlineMusic: navigationStyle != "native")
         case .chat: ChatView(onMenu: { withAnimation { sidebar = true } }, native: navigationStyle == "native")
         case .desire: DesireView()
         case .journal: JournalView()

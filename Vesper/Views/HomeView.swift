@@ -42,6 +42,7 @@ struct HomeView: View {
     @State private var refreshingUsage = false
     @ObservedObject private var weather = WeatherController.shared
     let navigate: (Destination) -> Void
+    var showsInlineMusic = true
     private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
 
     var body: some View {
@@ -68,7 +69,7 @@ struct HomeView: View {
                             }.frame(maxWidth: .infinity).frame(height: photoHeight)
                         }
                     }
-                    musicRow
+                    if showsInlineMusic { musicRow }
                     if !store.connected {
                         Button("Connect Vesper in Settings") { navigate(.settings) }
                             .font(.footnote).foregroundStyle(palette.muted)
@@ -440,5 +441,47 @@ struct DesireTide: View {
                 context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: size.height - 14))
             }
         }
+    }
+}
+
+
+/// Installed on navigation roots only: pushed detail pages do not inherit the dock.
+struct MiniMusicPlayer: View {
+    @EnvironmentObject private var player: MusicPlayer
+    @AppStorage("vesperPalette") private var paletteName = "blue"
+    let openMusic: () -> Void
+    private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: openMusic) {
+                HStack(spacing: 9) {
+                    Group {
+                        if let artwork = player.currentArtwork ?? player.artwork(for: player.track) {
+                            MusicKit.ArtworkImage(artwork, width: 34, height: 34)
+                        } else { Artwork(url: player.track["cover"].string) }
+                    }.frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 7))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string)
+                            .font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        if !player.track["artist"].string.isEmpty {
+                            Text(player.track["artist"].string).font(.system(size: 11)).lineLimit(1)
+                                .foregroundStyle(palette.muted)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Open Music, " + player.track["title"].string)
+            Button { player.toggle() } label: {
+                Image(systemName: player.playing ? "pause.fill" : "play.fill")
+                    .font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
+            }.accessibilityLabel(player.playing ? "Pause" : "Play").disabled(player.tracks.isEmpty)
+            Button { player.next(1) } label: {
+                Image(systemName: "forward.end.fill").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
+            }.accessibilityLabel("Next song").disabled(player.tracks.isEmpty)
+        }.buttonStyle(.plain).foregroundStyle(palette.ink)
+            .padding(.horizontal, 10).padding(.vertical, 2)
+            .vesperGlass(in: Capsule(), interactive: true)
+            .padding(.horizontal, 20).padding(.bottom, 8)
+            .task(id: player.track["appleMusicId"].string) { await player.ensureArtwork(for: player.track) }
+            .accessibilityIdentifier("mini-music-player")
     }
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NativeChatHome: View {
     var onMenu: (() -> Void)? = nil
+    var onOpenMusic: (() -> Void)? = nil
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var phase
@@ -109,6 +110,9 @@ struct NativeChatHome: View {
 
     private var contactsWithNavigation: some View {
         contactList
+            .safeAreaInset(edge: .bottom, spacing: 4) {
+                if let onOpenMusic { MiniMusicPlayer(openMusic: onOpenMusic) }
+            }
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {

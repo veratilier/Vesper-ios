@@ -445,43 +445,125 @@ struct DesireTide: View {
 }
 
 
-/// Installed on navigation roots only: pushed detail pages do not inherit the dock.
+/// On newer iOS the system owns the capsule, spacing and collapsed tab-bar placement.
+struct NativeMusicAccessory: ViewModifier {
+    let visible: Bool
+    let openMusic: () -> Void
+    var namespace: Namespace.ID? = nil
+    static var isSupported: Bool {
+        #if compiler(>=6.2.3)
+        if #available(iOS 26.1, *) { return true }
+        #endif
+        return false
+    }
+    @ViewBuilder func body(content: Content) -> some View {
+        #if compiler(>=6.2.3)
+        if #available(iOS 26.1, *) {
+            content.tabViewBottomAccessory(isEnabled: visible) { SystemMiniMusicPlayer(openMusic: openMusic, namespace: namespace) }
+                .tabBarMinimizeBehavior(.onScrollDown)
+        } else { content }
+        #else
+        content
+        #endif
+    }
+}
+#if compiler(>=6.2.3)
+@available(iOS 26.1, *)
+private struct SystemMiniMusicPlayer: View {
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    let openMusic: () -> Void
+    var namespace: Namespace.ID?
+    var body: some View {
+        MiniMusicPlayer(openMusic: openMusic, systemAccessory: true, compact: placement == .inline, namespace: namespace)
+    }
+}
+#endif
+
 struct MiniMusicPlayer: View {
     @EnvironmentObject private var player: MusicPlayer
     @AppStorage("vesperPalette") private var paletteName = "blue"
     let openMusic: () -> Void
+    var systemAccessory = false
+    var compact = false
+    var namespace: Namespace.ID? = nil
     private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
     var body: some View {
+        Group {
+            if systemAccessory { controls }
+            else {
+                controls.vesperGlass(in: Capsule(), interactive: true)
+                    .padding(.horizontal, 20).padding(.bottom, 8)
+            }
+        }
+        .modifier(MusicPlayerTransition(namespace: namespace, source: true))
+        .simultaneousGesture(DragGesture(minimumDistance: 16).onEnded { gesture in
+            if gesture.translation.height < -35 && abs(gesture.translation.height) > abs(gesture.translation.width) * 1.5 { openMusic() }
+        })
+        .task(id: player.track["appleMusicId"].string) { await player.ensureArtwork(for: player.track) }
+        .accessibilityIdentifier("mini-music-player")
+        .accessibilityAction(named: "Expand player", openMusic)
+    }
+    private var controls: some View {
         HStack(spacing: 4) {
             Button(action: openMusic) {
                 HStack(spacing: 9) {
                     Group {
                         if let artwork = player.currentArtwork ?? player.artwork(for: player.track) {
-                            MusicKit.ArtworkImage(artwork, width: 34, height: 34)
+                            MusicKit.ArtworkImage(artwork, width: compact ? 28 : 32, height: compact ? 28 : 32)
                         } else { Artwork(url: player.track["cover"].string) }
-                    }.frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 7))
+                    }.frame(width: compact ? 28 : 32, height: compact ? 28 : 32).clipShape(RoundedRectangle(cornerRadius: 6))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string)
                             .font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                        if !player.track["artist"].string.isEmpty {
+                        if !compact && !player.track["artist"].string.isEmpty {
                             Text(player.track["artist"].string).font(.system(size: 11)).lineLimit(1)
                                 .foregroundStyle(palette.muted)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("Open Music, " + player.track["title"].string)
+            }.buttonStyle(.plain).accessibilityLabel("Open Music, " + (player.track["title"].string.isEmpty ? "Choose a song" : player.track["title"].string))
             Button { player.toggle() } label: {
                 Image(systemName: player.playing ? "pause.fill" : "play.fill")
                     .font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
             }.accessibilityLabel(player.playing ? "Pause" : "Play").disabled(player.tracks.isEmpty)
-            Button { player.next(1) } label: {
-                Image(systemName: "forward.end.fill").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
-            }.accessibilityLabel("Next song").disabled(player.tracks.isEmpty)
+            if !compact {
+                Button { player.next(1) } label: {
+                    Image(systemName: "forward.fill").font(.system(size: 19, weight: .semibold)).frame(width: 44, height: 44)
+                }.accessibilityLabel("Next song").disabled(player.tracks.isEmpty)
+            }
         }.buttonStyle(.plain).foregroundStyle(palette.ink)
-            .padding(.horizontal, 10).padding(.vertical, 2)
-            .vesperGlass(in: Capsule(), interactive: true)
-            .padding(.horizontal, 20).padding(.bottom, 8)
-            .task(id: player.track["appleMusicId"].string) { await player.ensureArtwork(for: player.track) }
-            .accessibilityIdentifier("mini-music-player")
+            .padding(.leading, compact ? 10 : 18).padding(.trailing, 10).padding(.vertical, 2)
+    }
+}
+
+private struct MusicPlayerTransition: ViewModifier {
+    var namespace: Namespace.ID?
+    let source: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        #if compiler(>=6.0)
+        if #available(iOS 18.0, *), let namespace {
+            if source { content.matchedTransitionSource(id: "now-playing", in: namespace) }
+            else { content.navigationTransition(.zoom(sourceID: "now-playing", in: namespace)) }
+        } else { content }
+        #else
+        content
+        #endif
+    }
+}
+
+struct MusicPlayerSheet: View {
+    var namespace: Namespace.ID? = nil
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            MusicView().background { Background() }
+                .navigationTitle("Music").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Minimize player")
+                } }
+        }.presentationDetents([.large]).presentationDragIndicator(.visible)
+            .presentationCornerRadius(32)
+            .modifier(MusicPlayerTransition(namespace: namespace, source: false))
     }
 }

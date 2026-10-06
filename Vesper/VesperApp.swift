@@ -181,6 +181,9 @@ struct RootView: View {
     @ObservedObject private var letterInbox = LetterInbox.shared
     @ObservedObject private var chatInbox = ChatInbox.shared
     @State private var nativeTab = 0
+    @State private var musicRootTabs: Set<Int> = []
+    @State private var showingMusicPlayer = false
+    @Namespace private var musicTransition
     @State private var libraryPath: [Destination] = []
     @State private var libraryEditing = false
     @State private var vesperPage: Destination = .desire
@@ -202,11 +205,12 @@ struct RootView: View {
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
-                    NativeChatHome(onOpenMusic: { navigate(.music) }).tabItem { Label("Chat", systemImage: "bubble.left") }.badge(chatInbox.hasUpdates ? " " : nil as String?).tag(1)
+                    NativeChatHome(onOpenMusic: { showingMusicPlayer = true }, onRootVisibilityChange: { updateMusicRoot(1, visible: $0) }).tabItem { Label("Chat", systemImage: "bubble.left") }.badge(chatInbox.hasUpdates ? " " : nil as String?).tag(1)
                     appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
                     shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.badge(letterInbox.hasUpdates ? " " : nil as String?).tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
-                }.onChange(of: nativeTab) { _, tab in
+                }.modifier(NativeMusicAccessory(visible: musicRootTabs.contains(nativeTab) && (nativeTab != 2 || libraryPath.isEmpty), openMusic: { showingMusicPlayer = true }, namespace: musicTransition))
+                .onChange(of: nativeTab) { _, tab in
                     switch tab {
                     case 0: destination = .home
                     case 1: destination = .chat
@@ -224,7 +228,8 @@ struct RootView: View {
                     VesperAppGrid(editing: $libraryEditing) { page in libraryPath.append(page) }
                         .padding(18)
                 }
-            }.safeAreaInset(edge: .bottom, spacing: 4) { musicDock }
+            }.safeAreaInset(edge: .bottom, spacing: 4) { if !NativeMusicAccessory.isSupported { musicDock } }
+                .onAppear { updateMusicRoot(2, visible: true) }.onDisappear { updateMusicRoot(2, visible: false) }
                 .transparentNavigationTop().navigationTitle("Collection")
                 .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.rawValue).navigationBarTitleDisplayMode(.inline) }
                 .toolbar {
@@ -400,6 +405,7 @@ struct RootView: View {
     }
     var body: some View {
         lifecycle
+        .sheet(isPresented: $showingMusicPlayer) { MusicPlayerSheet(namespace: musicTransition) }
         .task(id: sidebar) {
             guard sidebar else { return }
             while !Task.isCancelled {
@@ -416,7 +422,14 @@ struct RootView: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
-    private var musicDock: some View { MiniMusicPlayer(openMusic: { navigate(.music) }) }
+    private var musicDock: some View { MiniMusicPlayer(openMusic: { showingMusicPlayer = true }, namespace: musicTransition) }
+    private func updateMusicRoot(_ tab: Int, visible: Bool) {
+        if visible { musicRootTabs.insert(tab) } else { musicRootTabs.remove(tab) }
+    }
+    private func updateMusicRoot(_ page: Destination, visible: Bool) {
+        let tabs: [Destination: Int] = [.home: 0, .letters: 3, .settings: 4]
+        if let tab = tabs[page] { updateMusicRoot(tab, visible: visible) }
+    }
     private var nativeVesperDestination: Destination { vesperPage }
     private func navigate(_ page: Destination) {
         destination = page
@@ -438,8 +451,10 @@ struct RootView: View {
                 else { content(page) }
             }
             .safeAreaInset(edge: .bottom, spacing: 4) {
-                if navigationStyle == "native" && [.home, .letters, .settings].contains(page) { musicDock }
+                if navigationStyle == "native" && !NativeMusicAccessory.isSupported && [.home, .letters, .settings].contains(page) { musicDock }
             }
+            .onAppear { updateMusicRoot(page, visible: true) }
+            .onDisappear { updateMusicRoot(page, visible: false) }
             .transparentNavigationTop()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(page == .chat || (page == .home && navigationStyle != "native") ? .hidden : .visible, for: .navigationBar)

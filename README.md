@@ -27,7 +27,7 @@ app installed until the native version has passed your device checks.
 | Notes | Read, add, edit, delete with confirmation |
 | Reminders | Read, add, edit, complete, delete with confirmation |
 | Dates | Add/edit dates, yearly repeat, countdown |
-| Journal | Calendar, user entry editing, agent entry reading |
+| Journal | Textured paper, Beijing date strip and date picker, Vera/Rowan reading, user entry editing |
 | Music | Existing cloud library, AVPlayer playback, seek, previous/next, background audio and system media controls |
 | Desire | Independent Vesper state, six-value flower, history |
 | Album | Existing photos, category filter, full-size viewer and sharing |

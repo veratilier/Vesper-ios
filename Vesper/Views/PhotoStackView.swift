@@ -6,11 +6,12 @@ import UIKit
 /// Required Notice: PhotoStack by Wren036 (https://github.com/Wren036/PhotoStack).
 struct ChatPhotoStack: View {
     let photos: [JSONValue]
+    var alignment: HorizontalAlignment = .leading
     @State private var front = 0
     @State private var showingPhoto = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: alignment, spacing: 8) {
             if photos.count > 1 {
                 Label("\(photos.count) Photos", systemImage: "square.grid.2x2.fill")
                     .font(.system(size: 13, weight: .semibold)).foregroundStyle(VesperTheme.accent)
@@ -19,13 +20,7 @@ struct ChatPhotoStack: View {
                     .frame(maxWidth: 320).frame(height: 226)
                     .accessibilityIdentifier("chat-photo-stack")
             } else if let photo = photos.first {
-                AsyncImage(url: URL(string: photo["url"].string)) { image in
-                    image.resizable().scaledToFit().frame(maxWidth: 276, maxHeight: 320)
-                } placeholder: {
-                    ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
-                        .frame(maxWidth: 240).frame(height: 200)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 20))
+                ChatSinglePhoto(url: photo["url"].string, alignment: alignment)
                 .onTapGesture { front = 0; showingPhoto = true }
                 .accessibilityLabel("Photo")
                 .accessibilityAddTraits(.isButton)
@@ -47,6 +42,43 @@ struct ChatPhotoStack: View {
                     .preferredColorScheme(.dark)
             }
         }
+    }
+}
+
+/// Use the decoded dimensions so a tall image has no invisible horizontal margins.
+private struct ChatSinglePhoto: View {
+    let url: String
+    let alignment: HorizontalAlignment
+    @State private var image: UIImage?
+    @State private var availableWidth: CGFloat = 276
+    var body: some View {
+        let size = Self.fittedSize(image?.size, width: availableWidth)
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().frame(width: size.width, height: size.height)
+            } else {
+                ZStack { VesperTheme.accent.opacity(0.16); Image(systemName: "photo").foregroundStyle(VesperTheme.muted) }
+                    .frame(width: size.width, height: size.height)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .frame(maxWidth: 276, alignment: alignment == .trailing ? .trailing : .leading)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { availableWidth = $0 }
+        .task(id: url) {
+            image = nil
+            guard let source = URL(string: url), ["https", "http"].contains(source.scheme?.lowercased() ?? "") else { return }
+            do {
+                let (data, response) = try await URLSession.shared.data(from: source)
+                try Task.checkCancellation()
+                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { return }
+                image = UIImage(data: data)
+            } catch { }
+        }
+    }
+    static func fittedSize(_ original: CGSize?, width: CGFloat) -> CGSize {
+        guard let original, original.width > 0, original.height > 0 else { return CGSize(width: min(width, 240), height: 200) }
+        let scale = min(min(width, 276) / original.width, 320 / original.height)
+        return CGSize(width: original.width * scale, height: original.height * scale)
     }
 }
 

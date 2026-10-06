@@ -909,15 +909,25 @@ struct ChatMessageRow: View, Equatable {
         else { UIPasteboard.general.string = part["content"].string }
     }
     @ViewBuilder private func sharedContent(_ item: JSONValue, user: Bool) -> some View {
-        ForEach(Array(item["metadata"]["attachments"].array.enumerated()), id: \.offset) { index, attachment in
+        let attachments = item["metadata"]["attachments"].array
+        let photoIndices = attachments.indices.filter { attachments[$0]["type"].string.hasPrefix("image/") }
+        ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
             let label = attachment["transcript"].string.isEmpty ? attachment["name"].string : attachment["transcript"].string
             let part = ChatBubbles.part(item, key: "attachment-\(index)", text: label.isEmpty ? "附件" : label,
                                        metadata: .object(["attachments": .array([attachment])]))
             Group {
                 if attachment["type"].string.hasPrefix("image/") {
-                    ChatPhotoStack(photos: [attachment]).modifier(ChatLongPress(id: part.id, actions: { actions(part) }))
+                    if index == photoIndices.first {
+                        let photos = photoIndices.map { attachments[$0] }
+                        let album = ChatBubbles.part(item, key: "attachment-\(index)", text: photos.count > 1 ? "\(photos.count) Photos" : label,
+                                                    metadata: .object(["attachments": .array(photos)]))
+                        ChatPhotoStack(photos: photos, alignment: user ? .trailing : .leading)
+                            .modifier(ChatLongPress(id: part.id, actions: { actions(album) }))
+                            .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
+                    }
                 } else if attachment["type"].string.hasPrefix("audio/") {
-                    VoiceMessageBar(attachment: attachment, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item.id, attachmentIndex: index, text: text) } })
+                    VoiceMessageBar(attachment: attachment, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item.id, attachmentIndex: index, text: text) } },
+                                    onTranslation: { source, text in Task { await chat.saveVoiceTranslation(messageID: item.id, attachmentIndex: index, source: source, text: text) } })
                 } else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
                     ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
                         .modifier(ChatLongPress(id: part.id, actions: { actions(part) }))

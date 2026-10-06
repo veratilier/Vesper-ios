@@ -1432,6 +1432,16 @@ enum ChatUserInput {
         messages[index] = record
         do { try await persist(record) } catch { self.error = "转写已完成，但保存失败：" + error.localizedDescription }
     }
+    func saveVoiceTranslation(messageID: String, attachmentIndex: Int, source: String, text: String) async {
+        guard let index = messages.firstIndex(where: { $0.id == messageID }), !source.isEmpty, !text.isEmpty else { return }
+        var record = messages[index]
+        var attachments = record["metadata"]["attachments"].array
+        guard attachments.indices.contains(attachmentIndex), attachments[attachmentIndex]["type"].string.hasPrefix("audio/") else { return }
+        attachments[attachmentIndex]["translation"] = .object(["sourceText": .string(source), "target": .string("zh-Hans"), "text": .string(text)])
+        record["metadata"]["attachments"] = .array(attachments)
+        messages[index] = record
+        do { try await persist(record) } catch { self.error = "翻译已完成，但保存失败：" + error.localizedDescription }
+    }
     private func persist(_ message: JSONValue) async throws {
         try checkCallback()
         let targetConversation = conversationID

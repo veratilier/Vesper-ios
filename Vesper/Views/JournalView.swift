@@ -228,9 +228,9 @@ struct JournalView: View {
         .sheet(isPresented: $showingMoods) {
             NavigationStack {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                        ForEach(JournalMood.allCases) { mood in moodButton(mood) }
-                    }.padding(20)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 6), spacing: 4) {
+                        ForEach(JournalMood.allCases) { mood in moodButton(mood, compact: true) }
+                    }.padding(.horizontal, 20).padding(.vertical, 12)
                 }.background { Background() }
                     .navigationTitle("情绪词库 · " + author.rawValue).navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingMoods = false } } }
@@ -341,14 +341,14 @@ struct JournalView: View {
         return Button { toggleMood(mood) } label: {
             HStack(spacing: 4) {
                 if selected && !compact { Image(systemName: "checkmark").font(.system(size: captionSize - 2, weight: .medium)) }
-                Text(mood.label).font(.system(size: controlSize - (compact ? 2 : 1), weight: .regular))
+                Text(mood.label).font(.system(size: controlSize - (compact ? 2 : 1), weight: selected ? .semibold : .regular))
                     .lineLimit(1).minimumScaleFactor(0.7)
             }
-            .foregroundStyle(palette.ink)
+            .foregroundStyle(selected ? (palette == .black ? Color.black : Color.white) : palette.ink)
             .frame(maxWidth: compact ? .infinity : nil)
             .padding(.horizontal, compact ? 4 : 10).padding(.vertical, 6)
-            .background(mood.color.opacity(selected ? 0.42 : 0.15), in: Capsule())
-            .overlay(Capsule().stroke(mood.color.opacity(selected ? 0.8 : 0.35), lineWidth: selected ? 1 : 0.6))
+            .background(selected ? palette.ink : mood.color.opacity(0.13), in: Capsule())
+            .overlay(Capsule().stroke(selected ? palette.ink : mood.color.opacity(0.3), lineWidth: selected ? 1.2 : 0.6))
             .frame(minWidth: compact ? 0 : 44, minHeight: 44).contentShape(Rectangle())
         }
         // AppStore queues writes and re-reads the diary before changing it.

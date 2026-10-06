@@ -40,7 +40,7 @@ struct LettersView: View {
                             Button("Vera’s mailbox") { mailbox = "Vera" }
                             Button("Rowan’s mailbox") { mailbox = "Rowan" }
                         } label: {
-                            Image(systemName: "tray.2").frame(width: 44, height: 44).background(.thinMaterial, in: Circle())
+                            Image(systemName: "tray.2").frame(width: 44, height: 44).vesperMaterial(.thinMaterial, in: Circle())
                         }.accessibilityLabel("Switch mailbox").accessibilityIdentifier("switch-letter-mailbox")
                     }
                     Spacer()
@@ -111,7 +111,7 @@ struct LettersView: View {
                     Text("Open").font(.custom("Georgia", size: 16)).padding(.horizontal, 20).frame(minHeight: 44)
                         .foregroundStyle(colors.paper).background(colors.ink, in: Capsule())
                 }.buttonStyle(.plain).disabled(model.saving).accessibilityIdentifier("open-selected-letter")
-            }.foregroundStyle(colors.ink).padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            }.foregroundStyle(colors.ink).padding(14).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
                 .padding(.horizontal, 22).padding(.bottom, 8)
         }
     }

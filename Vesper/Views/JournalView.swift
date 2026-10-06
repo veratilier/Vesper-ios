@@ -267,7 +267,7 @@ struct JournalView: View {
                                 Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 8))
                                     .padding(2).background(selectionFill, in: Circle()).offset(x: 4, y: 2)
                             }.frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .vesperMaterial(.ultraThinMaterial, in: Circle())
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                         .accessibilityLabel("Switch journal author")
@@ -331,7 +331,7 @@ struct JournalView: View {
             }.padding(.horizontal, 12)
         }
         .padding(.bottom, 3)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.ink.opacity(0.08), lineWidth: 0.6))
         .accessibilityElement(children: .contain).accessibilityLabel(author.rawValue + " mood tags")
     }

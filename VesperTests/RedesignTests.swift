@@ -162,7 +162,75 @@ private struct MiniMusicNavigationFixture: View {
     }
 }
 
+private struct GlassOpacityFixture: View {
+    let framesChanged: (String, CGRect) -> Void
+    var body: some View {
+        ZStack {
+            HStack(spacing: 0) {
+                ForEach(0..<20) { index in
+                    Rectangle().fill(index.isMultiple(of: 2) ? Color.cyan : Color.blue)
+                }
+            }.ignoresSafeArea()
+            VStack(spacing: 24) {
+                marker("glass").vesperGlass(in: RoundedRectangle(cornerRadius: 22))
+                marker("material").vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+            }
+        }
+    }
+    private func marker(_ id: String) -> some View {
+        ZStack {
+            Rectangle().fill(.black).frame(width: 20, height: 20)
+            VStack { Text(id).foregroundStyle(.black); Spacer() }.padding(12)
+        }.frame(width: 260, height: 110).background {
+            GeometryReader { geometry in
+                Color.clear.onAppear { framesChanged(id, geometry.frame(in: .global)) }
+                    .onChange(of: geometry.frame(in: .global)) { _, frame in framesChanged(id, frame) }
+            }
+        }
+    }
+}
+
 @MainActor final class RedesignTests: XCTestCase {
+    func testGlassTransparencyChangesOnlySurface() async throws {
+        let suite = "glass-opacity-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set("white", forKey: "vesperPalette")
+        var frames: [String: CGRect] = [:]
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        func content() -> some View {
+            GlassOpacityFixture { frames[$0] = $1 }.defaultAppStorage(preferences)
+                .preferredColorScheme(.light)
+        }
+        let host = UIHostingController(rootView: content())
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        func capture(_ name: String) async throws -> UIImage {
+            try await Task.sleep(for: .milliseconds(500)); host.view.layoutIfNeeded()
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            return image
+        }
+        func pixels(_ image: UIImage, rect: CGRect) throws -> [UInt8] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let crop = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in image.draw(at: CGPoint(x: -rect.minX, y: -rect.minY)) }
+            return Array(try XCTUnwrap(crop.cgImage?.dataProvider?.data) as Data)
+        }
+        let original = try await capture("Glass-default")
+        preferences.set(1.0, forKey: "glassTransparency")
+        let clear = try await capture("Glass-transparent")
+        for id in ["glass", "material"] {
+            let frame = try XCTUnwrap(frames[id])
+            let ink = CGRect(x: frame.midX - 4, y: frame.midY - 4, width: 8, height: 8)
+            XCTAssertEqual(try pixels(original, rect: ink), try pixels(clear, rect: ink), "Foreground must not fade with its glass surface")
+            let background = CGRect(x: frame.minX + 30, y: frame.midY, width: 30, height: 20)
+            XCTAssertNotEqual(try pixels(original, rect: background), try pixels(clear, rect: background), "The visible surface must actually respond to the preference")
+        }
+
+    }
+
     func testWallpaperPersistsDownsampledPhotoAndRejectsBadReplacement() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

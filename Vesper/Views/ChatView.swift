@@ -129,7 +129,7 @@ struct ChatIssueSheet: View {
                                             .foregroundStyle(VesperTheme.ink)
                                             .padding(.horizontal, 18).frame(minHeight: 44)
                                             .background(VesperTheme.ink.opacity(0.08), in: Capsule())
-                                            .background(.thinMaterial, in: Capsule())
+                                            .vesperMaterial(.thinMaterial, in: Capsule())
                                             .overlay(Capsule().stroke(VesperTheme.ink.opacity(0.18), lineWidth: 1))
                                     }.buttonStyle(.plain)
                                 }
@@ -230,7 +230,7 @@ struct ChatView: View {
                                         Label(message["content"].string, systemImage: "envelope.open")
                                             .font(.system(size: 14, design: .serif)).foregroundStyle(VesperTheme.muted)
                                             .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-                                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                            .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                                     }.buttonStyle(.plain).id(message.id)
                                         .background(incomingReadFrame(row))
                                 } else if row.activity && row.activities.allSatisfy({ $0["metadata"]["userInput"] != .null }) { QuestionToolRow(message: message) }
@@ -285,7 +285,7 @@ struct ChatView: View {
                                 pendingSticker = sticker
                                 stickerPicker = false; drawer = false
                             }
-                            .frame(height: attachmentPanelHeight).background(.regularMaterial)
+                            .frame(height: attachmentPanelHeight).vesperMaterial(.regularMaterial)
                         } else if drawer {
                             attachmentDrawer
                                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { attachmentPanelHeight = $0 }
@@ -303,7 +303,7 @@ struct ChatView: View {
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(VesperTheme.ink)
                                     .frame(width: 40, height: 40)
-                                    .background(.regularMaterial, in: Circle())
+                                    .vesperMaterial(.regularMaterial, in: Circle())
                                     .overlay(Circle().stroke(VesperTheme.muted.opacity(0.3), lineWidth: 1))
                             }
                             .buttonStyle(.plain).accessibilityLabel("回到最新消息")
@@ -665,7 +665,7 @@ struct ChatView: View {
                                    action: send)
                 }
             }
-        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
+        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
     }
     private var attachmentDrawer: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 20) {
@@ -676,7 +676,7 @@ struct ChatView: View {
             drawerItem("File", "folder.fill") { filePicker = true }
             drawerItem("Music", "music.note") { musicPicker = true }
             drawerItem("Stickers", "face.smiling") { stickerPicker = true }
-        }.padding(20).background(.regularMaterial)
+        }.padding(20).vesperMaterial(.regularMaterial)
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
         Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
@@ -1063,14 +1063,14 @@ private struct ChatQuestionSheet: View {
                                 } label: {
                                     Label("Other answer", systemImage: other.contains(question.id) ? "checkmark.circle.fill" : "circle")
                                         .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                                }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                }.buttonStyle(.plain).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                             }
                             if question["options"].array.isEmpty || other.contains(question.id) {
                                 let value = Binding(get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 })
                                 Group {
                                     if question["isSecret"].bool { SecureField("Your answer…", text: value) }
                                     else { TextField("Your answer…", text: value, axis: .vertical).lineLimit(1...4) }
-                                }.padding(12).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                }.padding(12).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                             }
                         }
                     }
@@ -1080,7 +1080,7 @@ private struct ChatQuestionSheet: View {
                     Button { Task { _ = await chat.resolveQuestion(request.id, selections: answers) } } label: {
                         HStack { if chat.answeringQuestion { ProgressView() }; Text("Submit answer").font(.headline) }
                             .frame(maxWidth: .infinity).padding(.vertical, 16)
-                    }.buttonStyle(.plain).background(.regularMaterial, in: Capsule())
+                    }.buttonStyle(.plain).vesperMaterial(.regularMaterial, in: Capsule())
                         .disabled(!valid || chat.answeringQuestion).padding(.horizontal, 20).padding(.bottom, 12)
                 }
                 .navigationTitle("Answer question").navigationBarTitleDisplayMode(.inline)
@@ -1102,7 +1102,7 @@ private struct ChatQuestionSheet: View {
                 }
                 Spacer(minLength: 0)
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
             .overlay { RoundedRectangle(cornerRadius: 14).stroke(selected ? VesperTheme.muted : .clear, lineWidth: 1) }
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -1301,7 +1301,7 @@ private struct CallRecordButton: View {
     @State private var showing = false
     var body: some View {
         Button { showing = true } label: {
-            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }.buttonStyle(.plain).sheet(isPresented: $showing) {
             NavigationStack {
                 ScrollView {

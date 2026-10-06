@@ -405,7 +405,7 @@ struct LegacyMemoryView: View {
                 TextField("Search memories", text: $query).submitLabel(.search).onSubmit { Task { await load() } }
                 Button { Task { await load() } } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("Search memories")
                 Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add memory")
-            }.padding(14).background(.regularMaterial, in: Capsule())
+            }.padding(14).vesperMaterial(.regularMaterial, in: Capsule())
             if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
             if section == "Timeline" {
                 Picker("Sort and filter", selection: $filter) { ForEach(["Recent", "Current", "Corrected", "Recalled"], id: \.self) { Text($0).tag($0) } }.pickerStyle(.menu)
@@ -570,12 +570,12 @@ private struct MemoryRelationGraph: View {
                     }
                 }
                 ForEach(Array(topics.enumerated()), id: \.offset) { index, topic in
-                    Text(topic).font(.caption2).lineLimit(2).padding(7).background(.regularMaterial, in: Capsule())
+                    Text(topic).font(.caption2).lineLimit(2).padding(7).vesperMaterial(.regularMaterial, in: Capsule())
                         .position(point(index, count: topics.count, outer: false, size: geometry.size))
                 }
                 ForEach(Array(records.enumerated()), id: \.element.id) { index, memory in
                     Button { selected = memory } label: {
-                        Image(systemName: "doc.text").frame(width: 38, height: 38).background(.regularMaterial, in: Circle())
+                        Image(systemName: "doc.text").frame(width: 38, height: 38).vesperMaterial(.regularMaterial, in: Circle())
                             .overlay(Circle().stroke(VesperTheme.accent.opacity(0.5)))
                     }.accessibilityLabel(memory["body"].string).position(point(index, count: records.count, outer: true, size: geometry.size))
                 }

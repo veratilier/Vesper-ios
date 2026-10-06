@@ -61,14 +61,14 @@ struct MusicView: View {
                             Image(systemName: playbackModeIcon)
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .vesperMaterial(.ultraThinMaterial, in: Circle())
                         }
                         .accessibilityLabel("Playback mode: \(playbackModeName). Tap to change")
                         Button { sheet = .library } label: {
                             Image(systemName: "books.vertical")
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .vesperMaterial(.ultraThinMaterial, in: Circle())
                         }
                         .accessibilityLabel("My Music")
                     }
@@ -198,7 +198,7 @@ struct MusicView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 if lyricsFrostedBackground {
-                    RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial)
+                    Color.clear.vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
                 }
             }
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(lyricsFrostedBackground ? 0.5 : 0)))

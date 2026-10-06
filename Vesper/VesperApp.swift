@@ -259,7 +259,7 @@ struct RootView: View {
                 Divider()
                 WeeklyUsageView().padding(.horizontal, 28).padding(.bottom, 12)
             }.padding(.top, 8).frame(width: 280).frame(maxHeight: .infinity)
-                .background(.regularMaterial).transition(.move(edge: .leading))
+                .vesperMaterial(.regularMaterial).transition(.move(edge: .leading))
                 .gesture(DragGesture().onEnded { if $0.translation.width < -60 { withAnimation { sidebar = false } } })
                 .accessibilityAddTraits(.isModal)
     }
@@ -546,7 +546,7 @@ struct OpeningView: View {
                     Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
-                        .background(.ultraThinMaterial, in: Capsule())
+                        .vesperMaterial(.ultraThinMaterial, in: Capsule())
                         .overlay(Capsule().stroke(.white.opacity(0.7)))
                     }.buttonStyle(.plain).disabled(!ready || entering)
                     } else if store.loading {

@@ -575,7 +575,7 @@ struct ChatView: View {
             Button { memoryRecallVisible = true } label: { Image(systemName: "brain") }.accessibilityLabel("相关记忆")
             Button { terminalVisible = true } label: { Image(systemName: "terminal") }
                 .accessibilityLabel("Codex terminal")
-            AppearancePicker()
+            NavigationStyleToggle()
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
     }
     private func profileAvatar(_ role: String, fallbackName: String) -> some View {

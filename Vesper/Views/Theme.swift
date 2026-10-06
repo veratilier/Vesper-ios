@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import ImageIO
 
 enum VesperPalette: String, CaseIterable, Identifiable {
     case white, black, blue
@@ -36,46 +38,195 @@ extension View {
         #endif
     }
 }
-struct AppearancePicker: View {
+struct NavigationStyleToggle: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
-    @AppStorage("vesperPalette") private var palette = "blue"
-    @State private var showing = false
-    @AppStorage("iconChangeError") private var iconError = ""
     var body: some View {
-        Button { showing = true } label: { Image(systemName: "paintpalette") }
-            .accessibilityLabel("Appearance")
-            .popover(isPresented: $showing) {
-                VStack(alignment: .leading, spacing: 22) {
-                    Text("Appearance").font(.headline)
-                    Picker("Navigation", selection: $navigationStyle) {
-                        Text("Apple Native").tag("native")
-                        Text("Vesper").tag("vesper")
-                    }.pickerStyle(.segmented)
-                    HStack(spacing: 24) {
-                        ForEach(VesperPalette.allCases) { item in
-                            Button { palette = item.rawValue } label: {
-                                VStack(spacing: 7) {
-                                    Circle().fill(item.swatch).frame(width: 34, height: 34)
-                                        .overlay(Circle().stroke(.gray, lineWidth: 1))
-                                        .overlay { if palette == item.rawValue { Image(systemName: "checkmark").foregroundStyle(item == .black ? .white : .black) } }
-                                    Text(item.name).font(.caption)
-                                }
-                            }.buttonStyle(.plain).accessibilityAddTraits(palette == item.rawValue ? .isSelected : [])
-                        }
-                    }.frame(maxWidth: .infinity)
-                    if !iconError.isEmpty { Text(iconError).font(.caption).foregroundStyle(.secondary) }
-                }.padding(22).frame(width: 310).presentationCompactAdaptation(.popover)
-            }
+        Button { navigationStyle = navigationStyle == "native" ? "vesper" : "native" } label: {
+            Image(systemName: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled")
+        }.accessibilityLabel(navigationStyle == "native" ? "Switch to Vesper" : "Switch to Apple Native")
+            .accessibilityValue(navigationStyle == "native" ? "Apple Native" : "Vesper")
+    }
+}
+
+@MainActor final class WallpaperStore: ObservableObject {
+    static let shared = WallpaperStore(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Appearance", isDirectory: true))
+    @Published private(set) var image: UIImage?
+    private let directory: URL
+    private var file: URL { directory.appendingPathComponent("background.jpg") }
+    init(directory: URL) {
+        self.directory = directory
+        image = UIImage(contentsOfFile: file.path)
+    }
+    func importPhoto(_ data: Data) async throws {
+        let jpeg = try await Task.detached(priority: .userInitiated) { try Self.preparePhoto(data) }.value
+        try Task.checkCancellation()
+        guard let decoded = UIImage(data: jpeg) else { throw ServiceError(message: "Could not read this photo.") }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try jpeg.write(to: file, options: .atomic)
+        image = decoded
+    }
+    func reset() throws {
+        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        image = nil
+    }
+    // Downsample before decoding full-resolution camera images; apply EXIF rotation.
+    nonisolated static func preparePhoto(_ data: Data) throws -> Data {
+        guard data.count <= 50 * 1024 * 1024,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 2560,
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary),
+              let jpeg = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.9) else {
+            throw ServiceError(message: "Choose a readable photo under 50 MB.")
+        }
+        return jpeg
+    }
+}
+
+struct WallpaperArtwork: View {
+    let palette: String
+    var opening = false
+    @ObservedObject private var wallpaper = WallpaperStore.shared
+    var body: some View {
+        Group {
+            if let image = wallpaper.image { Image(uiImage: image).resizable() }
+            else { Image(opening && palette == "blue" ? "OpeningScene" : (VesperPalette(rawValue: palette) ?? .blue).background).resizable() }
+        }.scaledToFill()
     }
 }
 struct Background: View {
     @AppStorage("vesperPalette") private var palette = "blue"
+    @AppStorage("wallpaperShade") private var shade = 0.16
     var body: some View {
         GeometryReader { g in
-            Image((VesperPalette(rawValue: palette) ?? .blue).background).resizable().scaledToFill()
+            WallpaperArtwork(palette: palette)
                 .frame(width: g.size.width, height: g.size.height).clipped()
-                .overlay(palette == "black" ? Color.black.opacity(0.18) : Color.white.opacity(0.16))
+                .overlay(palette == "black" ? Color.black.opacity(shade) : Color.white.opacity(shade))
         }.ignoresSafeArea()
+    }
+}
+
+struct AppearanceSettingsView: View {
+    @AppStorage("vesperPalette") private var palette = "blue"
+    @AppStorage("wallpaperShade") private var shade = 0.16
+    @ObservedObject private var wallpaper = WallpaperStore.shared
+    @State private var photo: PhotosPickerItem?
+    @State private var importing = false
+    @State private var changingIcon = false
+    @State private var selectedIcon = ThemeIcons.currentValue
+    @State private var issue: String?
+    @State private var showingIssue = false
+    @Environment(\.scenePhase) private var phase
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                section("Background") {
+                    GeometryReader { area in
+                        WallpaperArtwork(palette: palette)
+                            .frame(width: area.size.width, height: 180).clipped()
+                            .overlay(palette == "black" ? Color.black.opacity(shade) : Color.white.opacity(shade))
+                            .overlay {
+                                VStack(spacing: 8) {
+                                    Text("Vesper").font(VesperTheme.title(36))
+                                    Text("Somewhere we belong.").font(.subheadline)
+                                }.foregroundStyle((VesperPalette(rawValue: palette) ?? .blue).ink)
+                            }
+                    }.frame(height: 180).clipShape(RoundedRectangle(cornerRadius: 18))
+                    PhotosPicker(selection: $photo, matching: .images) {
+                        HStack { Label("Choose photo", systemImage: "photo"); Spacer(); if importing { ProgressView() } }
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.disabled(importing)
+                    if wallpaper.image != nil {
+                        Button("Use theme background") { perform { try wallpaper.reset() } }
+                            .frame(minHeight: 44).disabled(importing)
+                    }
+                    HStack { Text(palette == "black" ? "Darken background" : "Lighten background"); Spacer(); Text("\(Int(shade * 100))%") }
+                        .font(.caption).foregroundStyle(VesperTheme.muted)
+                    Slider(value: $shade, in: 0...0.7).accessibilityLabel("Background readability")
+                }
+                section("Colors") {
+                    HStack(spacing: 12) {
+                        ForEach(VesperPalette.allCases) { item in
+                            Button { palette = item.rawValue } label: {
+                                VStack(spacing: 8) {
+                                    Circle().fill(item.swatch).frame(width: 36, height: 36)
+                                        .overlay(Circle().stroke(.gray.opacity(0.6)))
+                                        .overlay { if palette == item.rawValue { Image(systemName: "checkmark").foregroundStyle(item == .black ? .white : .black) } }
+                                    Text(item.name).font(.caption)
+                                }.frame(maxWidth: .infinity).padding(.vertical, 6).contentShape(Rectangle())
+                            }.accessibilityAddTraits(palette == item.rawValue ? .isSelected : [])
+                        }
+                    }
+                }
+                section("App icon") {
+                    HStack(spacing: 12) {
+                        ForEach(VesperPalette.allCases) { item in
+                            Button { changeIcon(item.rawValue) } label: {
+                                VStack(spacing: 8) {
+                                    iconPreview(item).frame(width: 58, height: 58).clipShape(RoundedRectangle(cornerRadius: 13))
+                                        .overlay(RoundedRectangle(cornerRadius: 13).stroke(selectedIcon == item.rawValue ? VesperTheme.ink : .clear, lineWidth: 2).padding(-4))
+                                    HStack(spacing: 3) {
+                                        Text(item.name)
+                                        if selectedIcon == item.rawValue { Image(systemName: "checkmark") }
+                                    }.font(.caption)
+                                }.frame(maxWidth: .infinity).padding(.vertical, 6).contentShape(Rectangle())
+                            }.disabled(changingIcon).accessibilityLabel(item.name + " App icon")
+                                .accessibilityAddTraits(selectedIcon == item.rawValue ? .isSelected : [])
+                        }
+                    }
+                    if changingIcon { ProgressView("Changing icon…").font(.caption) }
+                }
+            }.padding(20).frame(maxWidth: 580).frame(maxWidth: .infinity)
+        }.background { Background() }.navigationTitle("Appearance").navigationBarTitleDisplayMode(.inline)
+            .transparentNavigationTop().buttonStyle(.plain)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                if issue != nil { Button { showingIssue = true } label: { Image(systemName: "exclamationmark.circle") }.accessibilityLabel("Appearance error details") }
+            } }
+            .sheet(isPresented: $showingIssue) {
+                NavigationStack {
+                    ScrollView { Text(issue ?? "").frame(maxWidth: .infinity, alignment: .leading).padding(24) }
+                        .background { Background() }.navigationTitle("Appearance")
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingIssue = false } } }
+                }.presentationDetents([.medium]).presentationDragIndicator(.visible)
+            }
+            .task(id: photo) {
+                guard let photo else { return }
+                importing = true
+                defer { importing = false }
+                do {
+                    guard let data = try await photo.loadTransferable(type: Data.self) else { throw ServiceError(message: "Could not read this photo.") }
+                    try await wallpaper.importPhoto(data)
+                    issue = nil
+                } catch { if !Task.isCancelled { issue = error.localizedDescription } }
+                self.photo = nil
+            }
+            .onChange(of: phase) { _, value in if value == .active { selectedIcon = ThemeIcons.currentValue } }
+    }
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            VStack(alignment: .leading, spacing: 12, content: content).padding(18)
+                .vesperGlass(in: RoundedRectangle(cornerRadius: 24))
+        }
+    }
+    @ViewBuilder private func iconPreview(_ item: VesperPalette) -> some View {
+        if let image = ThemeIcons.preview(item.rawValue) { Image(uiImage: image).resizable().scaledToFit() }
+        else { Image(item.emblem).resizable().scaledToFill() }
+    }
+    private func perform(_ action: () throws -> Void) {
+        do { try action(); issue = nil } catch { issue = error.localizedDescription }
+    }
+    private func changeIcon(_ value: String) {
+        changingIcon = true
+        Task {
+            defer { changingIcon = false }
+            do { try await ThemeIcons.apply(value); selectedIcon = ThemeIcons.currentValue; issue = nil }
+            catch { issue = error.localizedDescription }
+        }
     }
 }
 struct GlassCard<Content: View>: View {
@@ -147,14 +298,39 @@ struct EditorSheet<Content: View>: View {
 }
 
 @MainActor enum ThemeIcons {
-    static func apply(_ value: String) {
-        // Palette fixtures must not send real icon-change requests to LaunchServices.
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        guard UIApplication.shared.supportsAlternateIcons else { return }
-        let name: String? = value == "white" ? "AppIconWhite" : value == "black" ? "AppIconBlack" : nil
-        guard UIApplication.shared.alternateIconName != name else { return }
-        UIApplication.shared.setAlternateIconName(name) { error in
-            DispatchQueue.main.async { UserDefaults.standard.set(error.map { "Theme applied; icon could not change: " + $0.localizedDescription } ?? "", forKey: "iconChangeError") }
+    static var currentValue: String {
+        switch UIApplication.shared.alternateIconName {
+        case "AppIconWhite": "white"
+        case "AppIconBlack": "black"
+        default: "blue"
+        }
+    }
+    static func name(for value: String) -> String? {
+        value == "white" ? "AppIconWhite" : value == "black" ? "AppIconBlack" : nil
+    }
+    static func preview(_ value: String) -> UIImage? {
+        let icons = Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any]
+        let details: [String: Any]?
+        if let name = name(for: value) { details = (icons?["CFBundleAlternateIcons"] as? [String: [String: Any]])?[name] }
+        else { details = icons?["CFBundlePrimaryIcon"] as? [String: Any] }
+        if let file = (details?["CFBundleIconFiles"] as? [String])?.last, let image = UIImage(named: file) { return image }
+        // Asset-catalog alternate icons have no public UIImage file name. Match
+        // the centered crop used by prepare_icons.sh for their source artwork.
+        guard value == "white" || value == "black",
+              let source = UIImage(named: value == "white" ? "WhiteEmblem" : "BlackEmblem")?.cgImage else { return nil }
+        let side = min(value == "white" ? 760 : 980, min(source.width, source.height))
+        let rect = CGRect(x: (source.width - side) / 2, y: (source.height - side) / 2, width: side, height: side)
+        return source.cropping(to: rect).map { UIImage(cgImage: $0) }
+    }
+    static func apply(_ value: String) async throws {
+        guard UIApplication.shared.supportsAlternateIcons else { throw ServiceError(message: "App icon changes are not available on this device.") }
+        let icon = name(for: value)
+        guard UIApplication.shared.alternateIconName != icon else { return }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            UIApplication.shared.setAlternateIconName(icon) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
         }
     }
 }

@@ -11,7 +11,6 @@ import UserNotifications
         WindowGroup {
             RootView().environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
                 .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
-                .onChange(of: palette) { _, value in ThemeIcons.apply(value) }
         }
     }
 }
@@ -235,7 +234,7 @@ struct RootView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         if libraryEditing { Button("Done") { libraryEditing = false }.fontWeight(.semibold) }
-                        else { AppearancePicker() }
+                        else { NavigationStyleToggle() }
                     }
                 }
         }
@@ -473,7 +472,7 @@ struct RootView: View {
                         else { Text(page.rawValue).font(.headline) }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) { AppearancePicker() }
+                ToolbarItem(placement: .topBarTrailing) { NavigationStyleToggle() }
             }
         }
         .alert("Vesper", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
@@ -512,7 +511,7 @@ struct RootView: View {
             Spacer()
             HStack(spacing: 8) { Image(VesperTheme.palette.emblem).resizable().scaledToFill().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 8)); homeWordmark }
             Spacer()
-            AppearancePicker().frame(width: 44, height: 44)
+            NavigationStyleToggle().frame(width: 44, height: 44)
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4)
     }
     private func refreshUsage() async {
@@ -535,7 +534,7 @@ struct OpeningView: View {
         GeometryReader { geometry in
             ZStack {
                 Color(red: 0.92, green: 0.94, blue: 0.96)
-                Image(palette == "blue" ? "OpeningScene" : (VesperPalette(rawValue: palette) ?? .blue).background).resizable().scaledToFill()
+                WallpaperArtwork(palette: palette, opening: true)
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped().opacity(visible ? 1 : 0)
                 VStack(spacing: 12) {
                     Text("Vesper").font(VesperTheme.title(72))

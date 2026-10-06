@@ -21,6 +21,8 @@ struct SettingsView: View {
     var body: some View {
         Page(title: "Settings") {
             SettingsGlassCard(padding: 0, interactive: true) { VStack(spacing: 0) {
+                NavigationLink { AppearanceSettingsView() } label: { settingsRow("Appearance", icon: "paintpalette") }
+                separator
                 NavigationLink { ConnectionView() } label: { settingsRow("Connection", icon: "network") }
                 separator
                 NavigationLink { UsageView() } label: { settingsRow("Usage & balances", icon: "chart.bar") }

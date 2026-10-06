@@ -45,7 +45,7 @@ private struct ControlsPalettePreview: View {
                     else if page == "Settings" { SettingsView() }
                     else { ScrollView { VesperAppGrid(editing: .constant(false), open: { _ in }).padding(18) } }
                 }.navigationTitle(page).navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationStyleToggle() } }
         }
     }
 }
@@ -163,6 +163,51 @@ private struct MiniMusicNavigationFixture: View {
 }
 
 @MainActor final class RedesignTests: XCTestCase {
+    func testWallpaperPersistsDownsampledPhotoAndRejectsBadReplacement() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 1500), format: format).image { context in
+            UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 1500))
+        }
+        let wallpaper = WallpaperStore(directory: directory)
+        XCTAssertNil(wallpaper.image)
+        try await wallpaper.importPhoto(try XCTUnwrap(source.pngData()))
+        XCTAssertEqual(wallpaper.image?.size.width, 2560)
+        XCTAssertEqual(wallpaper.image?.size.height, 1280)
+        let restored = WallpaperStore(directory: directory)
+        XCTAssertEqual(restored.image?.size, wallpaper.image?.size)
+        let before = try Data(contentsOf: directory.appendingPathComponent("background.jpg"))
+        do { try await wallpaper.importPhoto(Data("not an image".utf8)); XCTFail("Invalid input must be rejected") } catch {}
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("background.jpg")), before)
+        XCTAssertEqual(wallpaper.image?.size.width, 2560)
+        try wallpaper.reset()
+        XCTAssertNil(WallpaperStore(directory: directory).image)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("background.jpg").path))
+    }
+
+    func testAppearanceSettingsLayoutOnSmallAndStandardPhones() async throws {
+        let suite = "appearance-preview-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (palette, width) in [("white", 393), ("black", 320)] {
+            preferences.set(palette, forKey: "vesperPalette")
+            let content = NavigationStack { AppearanceSettingsView() }
+                .defaultAppStorage(preferences).preferredColorScheme(palette == "black" ? .dark : .light)
+                .tint((VesperPalette(rawValue: palette) ?? .white).ink)
+                .foregroundStyle((VesperPalette(rawValue: palette) ?? .white).ink)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 668 : 852)
+            window.rootViewController = UIHostingController(rootView: content); window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(600))
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Appearance-\(palette)-\(width)"
+            attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+
     func testMiniMusicDockClearsTabBarAndHidesForDetailNavigation() async throws {
         let previous = UserDefaults.standard.string(forKey: "vesperPalette")
         defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }

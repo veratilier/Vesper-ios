@@ -142,10 +142,7 @@ struct VoiceMessageBar: View {
     @State private var transcriptionTask: Task<Void, Never>?
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                guard let url = URL(string: attachment["url"].string), url.scheme == "https" else { return }
-                music.pause(); Task { await playback.toggle(url: url) }
-            } label: {
+            Group {
                 HStack(spacing: 14) {
                     Image(systemName: playback.playing ? "pause.fill" : "play.fill").font(.system(size: 20))
                     HStack(spacing: 3) {
@@ -158,9 +155,12 @@ struct VoiceMessageBar: View {
                     Text(playback.loading ? "…" : "\(Int(max(0, attachment["duration"].number)))″").monospacedDigit()
                 }.font(.system(size: 14)).frame(height: 32).padding(12)
                     .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
-            }.buttonStyle(.plain)
+            }
                 .modifier(ChatLongPress(id: messageID, actions: {
                     messageActions() + [ChatMessageAction(title: expanded ? "收起文字" : "转文字", icon: "text.bubble", run: toggleTranscript)]
+                }, onTap: {
+                    guard let url = URL(string: attachment["url"].string), url.scheme == "https" else { return }
+                    music.pause(); Task { await playback.toggle(url: url) }
                 }))
             if expanded {
                 VoiceTranscriptPanel(text: transcript, loading: transcribing) { expanded = false }

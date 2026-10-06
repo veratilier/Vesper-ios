@@ -93,6 +93,7 @@ struct ChatMessageAction: Identifiable {
 struct ChatLongPress: ViewModifier {
     let id: String
     let actions: () -> [ChatMessageAction]
+    var onTap: (() -> Void)? = nil
     @EnvironmentObject private var menu: ChatActionMenu
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var frame = CGRect.zero
@@ -104,7 +105,7 @@ struct ChatLongPress: ViewModifier {
                 if !isSelected { frame = $0 }
             }
             .contentShape(Rectangle())
-            .onLongPressGesture(minimumDuration: 0.45) { menu.show(id: id, frame: frame, actions: actions()) }
+            .modifier(ChatPressGesture(onTap: onTap) { menu.show(id: id, frame: frame, actions: actions()) })
             .accessibilityActions {
                 ForEach(actions()) { action in Button(action.title, action: action.run) }
             }
@@ -113,6 +114,30 @@ struct ChatLongPress: ViewModifier {
             .offset(y: isSelected && !reduceMotion ? -2 : 0)
             .zIndex(isSelected ? 1 : 0)
             .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.18), value: isSelected)
+    }
+}
+
+private struct ChatPressGesture: ViewModifier {
+    let onTap: (() -> Void)?
+    let onHold: () -> Void
+    @ViewBuilder func body(content: Content) -> some View {
+        if let onTap {
+            content.highPriorityGesture(
+                LongPressGesture(minimumDuration: 0.35, maximumDistance: 22)
+                    .exclusively(before: TapGesture())
+                    .onEnded { result in
+                        switch result {
+                        case .first(true): onHold()
+                        case .second: onTap()
+                        default: break
+                        }
+                    }
+            )
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onTap() }
+        } else {
+            content.onLongPressGesture(minimumDuration: 0.35, maximumDistance: 22, perform: onHold)
+        }
     }
 }
 

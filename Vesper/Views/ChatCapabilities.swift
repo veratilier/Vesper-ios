@@ -418,6 +418,7 @@ struct NativeCallView: View {
     @StateObject private var camera = CallCamera()
     @Environment(\.scenePhase) private var phase
     @State private var startedAt: Date?
+    @State private var callReplyOrigin: JSONValue = .null
     @State private var callConversation = ""
     @State private var usedVideo = false
     @State private var transcript: [JSONValue] = []
@@ -730,6 +731,7 @@ struct NativeCallView: View {
         guard systemCall.audioReady else { return }
         if !active {
             player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID
+            callReplyOrigin = initiator == "agent" ? chat.incomingCallOrigin : .null
             if let startedAt { CallLiveActivity.shared.start(at: startedAt, isVideo: video,
                 avatar: store.document("profile")["agentAvatar"].string) }
         }
@@ -877,9 +879,9 @@ struct NativeCallView: View {
         systemCall.end()
         if let start = startedAt {
             startedAt = nil
-            let entries = transcript; let target = callConversation; let wasVideo = usedVideo
+            let entries = transcript; let target = callConversation; let wasVideo = usedVideo; let replyOrigin = callReplyOrigin
             let ended = Date()
-            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator) }
+            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator, replyOrigin: replyOrigin) }
         }
         chat.callActive = false
         presentation.close()

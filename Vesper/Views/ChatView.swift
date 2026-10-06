@@ -864,7 +864,9 @@ struct ChatMessageRow: View, Equatable {
                             ChatMusicLinkCard(track: track).modifier(ChatLongPress(id: part.id, actions: { actions(part) })).id(part.id)
                         }
                     }
-                    if original["metadata"]["call"] != .null { CallRecordButton(message: original) }
+                    if original["metadata"]["call"] != .null {
+                        CallRecordButton(message: original, messageActions: { actions(original) })
+                    }
                     ForEach(ChatBubbles.textParts(original)) { part in
                         VStack(alignment: .leading, spacing: 8) {
                             if part["metadata"]["replyTo"] != .null {
@@ -885,7 +887,7 @@ struct ChatMessageRow: View, Equatable {
         }
     }
     private func actions(_ part: JSONValue) -> [ChatMessageAction] {
-        guard message["status"].string != "streaming" else { return [] }
+        guard part["status"].string != "streaming" else { return [] }
         let saved = ChatFavorites.existing(part.id, conversationID: chat.conversationID, in: store) != nil
         return [
             ChatMessageAction(title: "复制", icon: "doc.on.doc", run: { copy(part) }),
@@ -986,7 +988,7 @@ enum ChatPresentation {
     }
     private static func caption(_ message: JSONValue) -> String {
         let meta = message["metadata"]
-        if ["attachmentOnly", "musicOnly", "locationOnly", "voiceMessage"].contains(where: { meta[$0] == .bool(true) }) { return "" }
+        if ["attachmentOnly", "musicOnly", "locationOnly", "voiceMessage"].contains(where: { meta[$0] == .bool(true) }) || meta["call"] != .null { return "" }
         return message["content"].string
     }
     private static func canCombine(_ row: Row, with next: Row) -> Bool {
@@ -1001,10 +1003,17 @@ enum ChatPresentation {
             // Only attach these adjacent records inside the same uninterrupted reply.
             let legacyVoice = meta["voiceMessage"] == .bool(true) && meta["turnId"].string.isEmpty
                 && meta["threadId"].string.isEmpty && $0.id.hasPrefix("voice:" + thread + ":")
+            let legacyCall: Bool = {
+                guard meta["call"] != .null, meta["call"]["initiator"].string == "agent",
+                      meta["turnId"].string.isEmpty, meta["threadId"].string.isEmpty,
+                      let started = UserHistoryRecovery.parsedTime(meta["call"]["startedAt"].string),
+                      let reply = UserHistoryRecovery.parsedTime(first["createdAt"].string) else { return false }
+                // Compatibility for old, adjacent call cards. New records carry exact turn IDs.
+                return abs(started.timeIntervalSince(reply)) <= 120
+            }()
             return !isUser($0) && !isActivity($0) && !isLetterReminder($0) && !ChatTranscript.isWake($0)
-                && meta["call"] == .null
                 && meta["userInput"] == .null
-                && (legacyVoice || (meta["turnId"].string == turn && meta["threadId"].string == thread))
+                && (legacyVoice || legacyCall || (meta["turnId"].string == turn && meta["threadId"].string == thread))
                 && $0["conversationId"].string == first["conversationId"].string
         }
     }
@@ -1022,7 +1031,7 @@ enum ChatPresentation {
     static func liveHeadingID(_ rows: [Row], turnID: String) -> String? {
         rows.last { row in
             row.messages.contains { message in
-                !isUser(message) && !isLetterReminder(message) && message["metadata"]["call"] == .null
+                !isUser(message) && !isLetterReminder(message)
                     && message["metadata"]["turnId"].string == turnID
             }
         }?.id
@@ -1398,11 +1407,13 @@ private struct AssistantMessageHeading: View {
 
 private struct CallRecordButton: View {
     let message: JSONValue
+    var messageActions: () -> [ChatMessageAction] = { [] }
     @State private var showing = false
     var body: some View {
-        Button { showing = true } label: {
+        Group {
             Label(message["content"].string, systemImage: message["metadata"]["call"]["video"] == .bool(true) ? "video" : "phone").padding(16).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
-        }.buttonStyle(.plain).sheet(isPresented: $showing) {
+        }.modifier(ChatLongPress(id: message.id, actions: messageActions, onTap: { showing = true }))
+        .sheet(isPresented: $showing) {
             NavigationStack {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {

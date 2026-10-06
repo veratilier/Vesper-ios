@@ -424,6 +424,27 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(ChatPresentation.displayRows([unknownVoice, first]).count, 2)
     }
 
+    func testCallCardSharesItsInvitingTurnButNotUserOrUnrelatedCalls() {
+        var call = sharedReply("call-record", caption: "Voice call · 0:01")
+        call["createdAt"] = .string("2026-10-07T05:36:52Z")
+        call["metadata"]["call"] = .object(["initiator": .string("agent"), "startedAt": .string("2026-10-07T05:36:51Z")])
+        var reply = sharedReply("reply", caption: "邀请已经弹出来了。")
+        reply["createdAt"] = .string("2026-10-07T05:36:56Z")
+        let rows = ChatPresentation.displayRows([call, reply])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].messages, [call, reply])
+        XCTAssertEqual(rows[0].presentedMessage["content"], reply["content"])
+        XCTAssertEqual(ChatPresentation.liveHeadingID(rows, turnID: "turn"), rows[0].id)
+        var legacy = call; legacy["metadata"]["turnId"] = .null; legacy["metadata"]["threadId"] = .null
+        XCTAssertEqual(ChatPresentation.displayRows([legacy, reply]).count, 1)
+        legacy["metadata"]["call"]["startedAt"] = .string("2026-10-06T05:36:51Z")
+        XCTAssertEqual(ChatPresentation.displayRows([legacy, reply]).count, 2)
+        var user = call; user["role"] = .string("user"); user["metadata"]["call"]["initiator"] = .string("user")
+        XCTAssertEqual(ChatPresentation.displayRows([user, reply]).count, 2)
+        var other = call; other["metadata"]["turnId"] = .string("other")
+        XCTAssertEqual(ChatPresentation.displayRows([other, reply]).count, 2)
+    }
+
     func testAssistantMediaGroupingRespectsConversationTurnAndMessageBoundaries() {
         let media = sharedReply("media", media: "sticker")
         let text = sharedReply("text", caption: "Hello")

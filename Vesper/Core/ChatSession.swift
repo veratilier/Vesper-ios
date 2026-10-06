@@ -239,6 +239,7 @@ enum ChatUserInput {
     var callVisualContext: String?
     var onNativeHangupRequested: ((Int, String) -> Void)?
     @Published var incomingCall = false
+    private(set) var incomingCallOrigin: JSONValue = .null
     @Published var callActive = false
     @Published var thinkingSummary = ""
     @Published var messages: [JSONValue] = [] {
@@ -1406,10 +1407,15 @@ enum ChatUserInput {
             "farewell": .object(["type": .string("string"), "maxLength": .number(160)])
         ]), "required": .array([.string("afterQuietMinutes")]), "additionalProperties": .bool(false)])
     ])
-    func saveCall(start: Date, end: Date, video: Bool, transcript: [JSONValue], target: String, initiator: String = "user") async {
+    func saveCall(start: Date, end: Date, video: Bool, transcript: [JSONValue], target: String, initiator: String = "user", replyOrigin: JSONValue = .null) async {
         let seconds = max(0, Int(end.timeIntervalSince(start)))
         let title = "\(video ? "Video" : "Voice") call · \(seconds / 60):\(String(format: "%02d", seconds % 60))"
-        let message: JSONValue = .object(["id": .string("call-" + UUID().uuidString), "conversationId": .string(target), "role": .string(initiator == "agent" ? "agent" : "user"), "content": .string(title), "createdAt": .string(ISO8601DateFormatter().string(from: end)), "source": .string("vesper"), "status": .string("delivered"), "metadata": .object(["showTurnStatus": .bool(false), "call": .object(["startedAt": .string(ISO8601DateFormatter().string(from: start)), "endedAt": .string(ISO8601DateFormatter().string(from: end)), "transcript": .array(transcript), "video": .bool(video), "initiator": .string(initiator)])])])
+        var message: JSONValue = .object(["id": .string("call-" + UUID().uuidString), "conversationId": .string(target), "role": .string(initiator == "agent" ? "agent" : "user"), "content": .string(title), "createdAt": .string(ISO8601DateFormatter().string(from: end)), "source": .string("vesper"), "status": .string("delivered"), "metadata": .object(["showTurnStatus": .bool(false), "call": .object(["startedAt": .string(ISO8601DateFormatter().string(from: start)), "endedAt": .string(ISO8601DateFormatter().string(from: end)), "transcript": .array(transcript), "video": .bool(video), "initiator": .string(initiator)])])])
+        if initiator == "agent", replyOrigin["conversationId"].string == target,
+           !replyOrigin["turnId"].string.isEmpty, !replyOrigin["threadId"].string.isEmpty {
+            message["metadata"]["turnId"] = replyOrigin["turnId"]
+            message["metadata"]["threadId"] = replyOrigin["threadId"]
+        }
         if conversationID == target { messages.append(message) }
         do {
             guard let api else { throw ServiceError(message: "Not connected") }
@@ -1854,6 +1860,7 @@ enum ChatUserInput {
             }
             if name == "request_native_call" {
                 guard UIApplication.shared.applicationState == .active, !callActive, !incomingCall else { throw ServiceError(message: "Vera cannot receive an in-app call invitation right now.") }
+                incomingCallOrigin = .object(["conversationId": .string(targetConversation), "threadId": .string(targetThread), "turnId": .string(targetTurn)])
                 incomingCall = true
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("In-app call invitation displayed; Vera must accept and tap Start call. Not answered yet.")])])])]))
                 try checkCallback()

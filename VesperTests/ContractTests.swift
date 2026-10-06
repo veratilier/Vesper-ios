@@ -393,6 +393,37 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(rows[0].presentedMessage["metadata"]["attachmentOnly"], .bool(false))
     }
 
+    func testWholeAssistantTurnSharesTimestampIncludingLegacyVoiceAndMultipleTexts() {
+        var voice = sharedReply("voice:thread:call", media: "attachments")
+        voice["metadata"]["voiceMessage"] = .bool(true)
+        voice["createdAt"] = .string("2026-10-07T05:31:30Z")
+        var first = sharedReply("first", caption: "语音发过去了。")
+        first["createdAt"] = .string("2026-10-07T05:31:40Z")
+        var second = sharedReply("second", caption: "点开就能听见。")
+        second["createdAt"] = .string("2026-10-07T05:31:41Z")
+        var tool = sharedReply("tool"); tool["role"] = .string("tool")
+        for legacy in [false, true] {
+            var recording = voice
+            if legacy {
+                recording["metadata"]["turnId"] = .null
+                recording["metadata"]["threadId"] = .null
+            }
+            let rows = ChatPresentation.displayRows([recording, tool, first, second])
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows[0].messages.map(\.id), [recording.id, first.id, second.id])
+            XCTAssertEqual(rows[0].presentedMessage["createdAt"], voice["createdAt"])
+            XCTAssertEqual(rows[0].activities.map(\.id), [tool.id])
+            XCTAssertEqual(ChatPresentation.liveHeadingID(rows, turnID: "turn"), rows[0].id)
+        }
+        XCTAssertEqual(ChatPresentation.displayRows([first, second]).count, 1)
+        XCTAssertEqual(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([voice]), turnID: "turn"), voice.id)
+        var unknownVoice = voice
+        unknownVoice["metadata"]["turnId"] = .null
+        unknownVoice["metadata"]["threadId"] = .null
+        unknownVoice["id"] = .string("voice:other-thread:call")
+        XCTAssertEqual(ChatPresentation.displayRows([unknownVoice, first]).count, 2)
+    }
+
     func testAssistantMediaGroupingRespectsConversationTurnAndMessageBoundaries() {
         let media = sharedReply("media", media: "sticker")
         let text = sharedReply("text", caption: "Hello")
@@ -409,9 +440,9 @@ final class ContractTests: XCTestCase {
         var user = text; user["role"] = .string("user")
         XCTAssertEqual(ChatPresentation.displayRows([media, user, text]).count, 3)
         var voice = media; voice["metadata"]["voiceMessage"] = .bool(true)
-        XCTAssertEqual(ChatPresentation.displayRows([voice, text]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([voice, text]).count, 1)
         var second = text; second["id"] = .string("second")
-        XCTAssertEqual(ChatPresentation.displayRows([media, text, second]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([media, text, second]).count, 1)
         var question = sharedReply("question"); question["role"] = .string("tool"); question["metadata"]["userInput"] = .object(["status": .string("pending")])
         XCTAssertEqual(ChatPresentation.displayRows([media, question, text]).count, 2)
         var userMedia = media; userMedia["role"] = .string("user"); userMedia["content"] = .string("My caption")

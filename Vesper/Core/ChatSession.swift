@@ -1843,7 +1843,7 @@ enum ChatUserInput {
                 var attachment = try await api.uploadFile(data, name: "Rowan-voice.mp3", mime: "audio/mpeg")
                 try checkCallback()
                 attachment["type"] = .string("audio/mpeg"); attachment["transcript"] = .string(text); attachment["duration"] = .number(audio.duration)
-                let message: JSONValue = .object(["id": .string("voice:" + targetThread + ":" + callID), "conversationId": .string(targetConversation), "role": .string("agent"), "content": .string(text), "createdAt": .string(isoNow()), "status": .string("delivered"), "metadata": .object(["attachments": .array([attachment]), "voiceMessage": .bool(true)])])
+                let message: JSONValue = .object(["id": .string("voice:" + targetThread + ":" + callID), "conversationId": .string(targetConversation), "role": .string("agent"), "content": .string(text), "createdAt": .string(isoNow()), "status": .string("delivered"), "metadata": .object(["attachments": .array([attachment]), "voiceMessage": .bool(true), "threadId": .string(targetThread), "turnId": .string(targetTurn)])])
                 _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
                 try checkCallback()
                 if targetConversation == conversationID { if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message } else { messages.append(message) } }

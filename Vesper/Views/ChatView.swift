@@ -243,9 +243,12 @@ struct ChatView: View {
                             }
                         }
                         if chat.preparingSend {
-                            Text("Sending…").font(.system(size: 12)).foregroundStyle(VesperTheme.muted).frame(height: 44)
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.mini)
+                                Text("Sending…")
+                            }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted).frame(height: 44)
                         } else if chat.waitingForReply && chat.liveHeadingID == nil {
-                            AssistantMessageHeading(message: .object(["status": .string(chat.busy ? "streaming" : "delivered"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events)
+                            AssistantMessageHeading(message: .object(["status": .string("streaming"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events, isLive: true)
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(.horizontal, 20).padding(.vertical, 14)
@@ -962,6 +965,9 @@ enum ChatPresentation {
         var presentedMessage: JSONValue {
             var primary = messages.first { $0.id == id } ?? .null
             guard messages.count > 1 else { return primary }
+            // One timestamp for the whole reply, including media delivered before its text.
+            if let first = messages.first { primary["createdAt"] = first["createdAt"] }
+            if messages.contains(where: { $0["status"].string == "streaming" }) { primary["status"] = .string("streaming") }
             primary["content"] = .string(messages.map(ChatPresentation.caption).filter { !$0.isEmpty }.joined(separator: "\n\n"))
             for flag in ["attachmentOnly", "musicOnly", "locationOnly"] { primary["metadata"][flag] = .bool(false) }
             // A display snapshot; original records stay in messages for memory and deletion.
@@ -985,18 +991,20 @@ enum ChatPresentation {
     }
     private static func canCombine(_ row: Row, with next: Row) -> Bool {
         let all = row.messages + next.messages
-        let structured = all.contains { !$0["metadata"]["bubbles"].array.isEmpty }
-        guard !row.activity, !next.activity, !(row.activities + next.activities).contains(where: { $0["metadata"]["userInput"] != .null }), (structured || all.contains(where: hasMedia)),
-              (structured || all.filter({ !hasMedia($0) }).count <= 1),
-              let first = all.first else { return false }
+        guard !row.activity, !next.activity, !(row.activities + next.activities).contains(where: { $0["metadata"]["userInput"] != .null }),
+              let first = all.first(where: { !$0["metadata"]["turnId"].string.isEmpty }) else { return false }
         let turn = first["metadata"]["turnId"].string, thread = first["metadata"]["threadId"].string
         guard !turn.isEmpty, !thread.isEmpty else { return false }
         return all.allSatisfy {
             let meta = $0["metadata"]
+            // Older native voice records carry the thread in their ID but lack turn metadata.
+            // Only attach these adjacent records inside the same uninterrupted reply.
+            let legacyVoice = meta["voiceMessage"] == .bool(true) && meta["turnId"].string.isEmpty
+                && meta["threadId"].string.isEmpty && $0.id.hasPrefix("voice:" + thread + ":")
             return !isUser($0) && !isActivity($0) && !isLetterReminder($0) && !ChatTranscript.isWake($0)
-                && meta["call"] == .null && meta["voiceMessage"] != .bool(true)
+                && meta["call"] == .null
                 && meta["userInput"] == .null
-                && meta["turnId"].string == turn && meta["threadId"].string == thread
+                && (legacyVoice || (meta["turnId"].string == turn && meta["threadId"].string == thread))
                 && $0["conversationId"].string == first["conversationId"].string
         }
     }
@@ -1013,8 +1021,10 @@ enum ChatPresentation {
     }
     static func liveHeadingID(_ rows: [Row], turnID: String) -> String? {
         rows.last { row in
-            guard let message = row.messages.first(where: { $0.id == row.id }), !isUser(message), !isLetterReminder(message) else { return false }
-            return message["metadata"]["turnId"].string == turnID && message["metadata"]["showTurnStatus"] != .bool(false)
+            row.messages.contains { message in
+                !isUser(message) && !isLetterReminder(message) && message["metadata"]["call"] == .null
+                    && message["metadata"]["turnId"].string == turnID
+            }
         }?.id
     }
     static func isUser(_ message: JSONValue) -> Bool {
@@ -1345,8 +1355,11 @@ private struct AssistantMessageHeading: View {
                 HStack(spacing: 8) {
                     Circle().fill(VesperTheme.muted).frame(width: 6, height: 6)
                     let time = ChatPresentation.time(ChatTranscript.timestamp(message), full: true)
-                    if !time.isEmpty { Text(time) } else { Text("…") }
-                    if isLive || message["status"].string == "streaming" { ProgressView().controlSize(.mini) }
+                    if !time.isEmpty { Text(time) }
+                    if isLive || message["status"].string == "streaming" {
+                        ProgressView().controlSize(.mini)
+                        Text("Thinking…")
+                    }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

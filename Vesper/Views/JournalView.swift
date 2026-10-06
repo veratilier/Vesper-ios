@@ -130,7 +130,6 @@ enum JournalAuthor: String, CaseIterable, Identifiable {
     case vera = "Vera", rowan = "Rowan"
     var id: String { rawValue }
     var field: String { self == .vera ? "user" : "agent" }
-    var side: String { self == .vera ? "Left page" : "Right page" }
 }
 
 struct JournalView: View {
@@ -176,32 +175,30 @@ struct JournalView: View {
     private var animation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.28) }
 
     var body: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 8) {
-                dateNavigation
-                ScrollView {
-                    VStack(spacing: 12) {
-                        moodSelector
-                        paper(minHeight: max(320, geometry.size.height - 200))
-                            // Keep page swipes off the horizontally scrolling mood strip.
-                            .simultaneousGesture(DragGesture(minimumDistance: 28).onEnded { gesture in
-                                let delta = gesture.translation
-                                guard abs(delta.width) > 70, abs(delta.width) > abs(delta.height) * 1.8 else { return }
-                                select(JournalDay.moving(selectedDate, by: delta.width < 0 ? 1 : -1))
-                            })
-                    }
-                        .padding(.horizontal, 20).padding(.top, 2).padding(.bottom, 28)
-                        .frame(maxWidth: 780).frame(maxWidth: .infinity)
+        VStack(spacing: 8) {
+            dateNavigation
+            ZStack {
+                VStack(spacing: 12) {
+                    moodSelector
+                    paper
+                        .simultaneousGesture(DragGesture(minimumDistance: 28).onEnded { gesture in
+                            let delta = gesture.translation
+                            guard abs(delta.width) > 70, abs(delta.width) > abs(delta.height) * 1.8 else { return }
+                            select(JournalDay.moving(selectedDate, by: delta.width < 0 ? 1 : -1))
+                        })
                 }
-                .id(pageID)
-                .transition(reduceMotion ? .identity : .asymmetric(
-                    insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                    removal: .opacity))
-                .refreshable { await store.refresh() }
-                .accessibilityAction(named: "Previous day") { select(JournalDay.moving(selectedDate, by: -1)) }
-                .accessibilityAction(named: "Next day") { select(JournalDay.moving(selectedDate, by: 1)) }
-            }.padding(.top, 6).clipped()
-        }
+                .padding(.horizontal, 20).padding(.top, 2).padding(.bottom, 12)
+                .frame(maxWidth: 780, maxHeight: .infinity).frame(maxWidth: .infinity)
+                .id(author.field)
+                .transition(reduceMotion ? .identity : .opacity)
+            }
+            .id(selectedKey)
+            .transition(reduceMotion ? .identity : .asymmetric(
+                insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                removal: .opacity))
+            .accessibilityAction(named: "Previous day") { select(JournalDay.moving(selectedDate, by: -1)) }
+            .accessibilityAction(named: "Next day") { select(JournalDay.moving(selectedDate, by: 1)) }
+        }.padding(.top, 6).frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
         .transparentNavigationTop().background { Background() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -262,7 +259,6 @@ struct JournalView: View {
                 HStack(spacing: 4) {
                     Button("Today") { select(.now) }.font(.system(size: controlSize, weight: .regular)).frame(minWidth: 44, minHeight: 44)
                     Button {
-                        forward = author == .vera
                         withAnimation(animation) { author = author == .vera ? .rowan : .vera }
                     } label: {
                         Image(systemName: "person.crop.circle")
@@ -328,12 +324,9 @@ struct JournalView: View {
                 Button("更多") { showingMoods = true }.font(.system(size: captionSize, weight: .regular))
                     .frame(minWidth: 44, minHeight: 32).contentShape(Rectangle())
             }.padding(.horizontal, 12).padding(.top, 4)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) {
-                    ForEach(JournalMood.recent(in: diary, author: author)) { mood in moodButton(mood) }
-                }.fixedSize(horizontal: true, vertical: false)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
-                    ForEach(JournalMood.recent(in: diary, author: author)) { mood in moodButton(mood) }
+            HStack(spacing: 6) {
+                ForEach(JournalMood.recent(in: diary, author: author)) { mood in
+                    moodButton(mood, compact: true).frame(maxWidth: .infinity)
                 }
             }.padding(.horizontal, 12)
         }
@@ -343,18 +336,20 @@ struct JournalView: View {
         .accessibilityElement(children: .contain).accessibilityLabel(author.rawValue + " mood tags")
     }
 
-    private func moodButton(_ mood: JournalMood) -> some View {
+    private func moodButton(_ mood: JournalMood, compact: Bool = false) -> some View {
         let selected = diary[selectedKey]["moods"][author.field].array.contains(.string(mood.rawValue))
         return Button { toggleMood(mood) } label: {
             HStack(spacing: 4) {
-                if selected { Image(systemName: "checkmark").font(.system(size: captionSize - 2, weight: .medium)) }
-                Text(mood.label).font(.system(size: controlSize - 1, weight: .regular))
+                if selected && !compact { Image(systemName: "checkmark").font(.system(size: captionSize - 2, weight: .medium)) }
+                Text(mood.label).font(.system(size: controlSize - (compact ? 2 : 1), weight: .regular))
+                    .lineLimit(1).minimumScaleFactor(0.7)
             }
             .foregroundStyle(palette.ink)
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .frame(maxWidth: compact ? .infinity : nil)
+            .padding(.horizontal, compact ? 4 : 10).padding(.vertical, 6)
             .background(mood.color.opacity(selected ? 0.42 : 0.15), in: Capsule())
             .overlay(Capsule().stroke(mood.color.opacity(selected ? 0.8 : 0.35), lineWidth: selected ? 1 : 0.6))
-            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            .frame(minWidth: compact ? 0 : 44, minHeight: 44).contentShape(Rectangle())
         }
         // AppStore queues writes and re-reads the diary before changing it.
         // Unrelated music/state synchronization must not block mood selection.
@@ -363,28 +358,35 @@ struct JournalView: View {
         .accessibilityHint(selected ? "Remove this mood" : "Add this mood; multiple moods can be selected")
     }
 
-    private func paper(minHeight: CGFloat) -> some View {
+    private var paper: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(JournalDay.label(selectedDate, format: "MMMM d, yyyy"))
                 .font(.system(size: captionSize + 1, weight: .regular, design: .serif)).foregroundStyle(paperInk.opacity(0.68))
             Text(entryDisplay.title ?? (author.rawValue + "’s day")).font(.system(size: titleSize, weight: .regular, design: .serif))
                 .accessibilityAddTraits(.isHeader)
             Rectangle().fill(paperInk.opacity(0.28)).frame(width: 36, height: 0.5).accessibilityHidden(true)
-            if store.loading && store.documents["diary"] == nil {
-                ProgressView("Loading your diary…").tint(paperInk)
-            } else if store.documents["diary"] == nil && !store.connected {
-                Text("Connect to Vesper to load your diary.").font(.system(size: bodySize, weight: .regular, design: .serif))
-                Button("Retry") { Task { await store.refresh() } }.font(.subheadline)
-            } else {
-                ChatMarkdownText(content: entry.isEmpty ? (author == .vera ? "How did today feel?" : "No entry for this day yet.") : entryDisplay.body)
-                    .font(.system(size: bodySize, weight: .regular, design: .serif)).lineSpacing(6)
-                    .foregroundStyle(paperInk.opacity(entry.isEmpty ? 0.6 : 1))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if store.loading && store.documents["diary"] == nil {
+                        ProgressView("Loading your diary…").tint(paperInk)
+                    } else if store.documents["diary"] == nil && !store.connected {
+                        Text("Connect to Vesper to load your diary.").font(.system(size: bodySize, weight: .regular, design: .serif))
+                        Button("Retry") { Task { await store.refresh() } }.font(.subheadline)
+                    } else {
+                        ChatMarkdownText(content: entry.isEmpty ? (author == .vera ? "How did today feel?" : "No entry for this day yet.") : entryDisplay.body)
+                            .font(.system(size: bodySize, weight: .regular, design: .serif)).lineSpacing(6)
+                            .foregroundStyle(paperInk.opacity(entry.isEmpty ? 0.6 : 1))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 4)
             }
-            Spacer(minLength: 48)
+            .id(pageID)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .refreshable { await store.refresh() }
+            .accessibilityIdentifier("journal-entry-body")
             HStack {
-                Text(author.rawValue + " · " + author.side).font(.system(size: captionSize + 1, weight: .regular, design: .serif).italic())
+                Text(author.rawValue).font(.system(size: captionSize + 1, weight: .regular, design: .serif).italic())
                     .foregroundStyle(paperInk.opacity(0.72))
                 Spacer()
                 if author == .vera {
@@ -395,11 +397,11 @@ struct JournalView: View {
                     }.buttonStyle(.plain).accessibilityLabel("Write Vera's entry")
                         .disabled(store.saving || store.loading)
                 }
-            }
+            }.frame(height: 44)
         }
         .foregroundStyle(paperInk).tint(paperInk)
         .padding(.horizontal, 24).padding(.vertical, 26)
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background { JournalPaper(palette: palette) }
         .accessibilityIdentifier("journal-paper")
     }

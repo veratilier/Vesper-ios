@@ -179,6 +179,67 @@ private struct JournalLayoutFixture: View {
         }
         chat.disconnect()
     }
+    func testJournalLongBodyScrollsWithoutMovingHeaderOrFooter() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        let store = AppStore(); store.token = ""
+        let date = try XCTUnwrap(JournalDay.date("2026-10-06"))
+        let paragraphs = (1...30).map { "第\($0)段：把今天喜欢的片刻写下来。长日记只滚动正文，日期、标题和作者仍然留在纸页上。" }.joined(separator: "\n\n")
+        store.documents["diary"] = .object(["2026-10-06": .object([
+            "user": .string("# 今天的小事\n\n" + paragraphs),
+            "agent": .string("# 夜里的小记\n\n" + paragraphs)])])
+        let chat = ChatSession(), player = MusicPlayer()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func scrollViews(in view: UIView) -> [UIScrollView] {
+            (view as? UIScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        }
+        func tabBar(in view: UIView) -> UITabBar? {
+            if let bar = view as? UITabBar, !bar.isHidden { return bar }
+            return view.subviews.lazy.compactMap { tabBar(in: $0) }.first
+        }
+        for (author, palette, width) in [(JournalAuthor.rowan, "white", 393), (.vera, "blue", 320), (.rowan, "black", 393)] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let content = JournalLayoutFixture(contacts: false, author: author, date: date)
+                .environmentObject(store).environmentObject(chat).environmentObject(player).environmentObject(chat.composer)
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
+            let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
+            let vertical = scrollViews(in: host.view).filter { $0.contentSize.height > $0.bounds.height + 100 }
+            XCTAssertEqual(vertical.count, 1, "Only the diary body should scroll vertically")
+            let scroll = try XCTUnwrap(vertical.first)
+            let frame = scroll.convert(scroll.bounds, to: window)
+            let dock = try XCTUnwrap(tabBar(in: host.view))
+            XCTAssertGreaterThan(frame.minY, 350, "Date, mood tags and diary heading must stay above the scrolling body")
+            XCTAssertGreaterThan(frame.height, 70)
+            XCTAssertLessThan(frame.maxY, dock.convert(dock.bounds, to: window).minY - 44, "The fixed author row must clear the tab bar")
+            func capture(_ position: String) -> UIImage {
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "Journal-pinned-\(author.rawValue)-\(palette)-\(width)-\(position)"
+                attachment.lifetime = .keepAlways; add(attachment)
+                return image
+            }
+            let before = capture("top")
+            scroll.setContentOffset(CGPoint(x: 0, y: scroll.contentSize.height - scroll.bounds.height), animated: false)
+            try await Task.sleep(for: .milliseconds(200)); host.view.layoutIfNeeded()
+            let after = capture("bottom")
+            func difference(_ rect: CGRect) throws -> Double {
+                let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+                func pixels(_ image: UIImage) throws -> [UInt8] {
+                    let crop = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in image.draw(at: CGPoint(x: -rect.minX, y: -rect.minY)) }
+                    return Array(try XCTUnwrap(crop.cgImage?.dataProvider?.data) as Data)
+                }
+                let first = try pixels(before), second = try pixels(after)
+                return Double(zip(first, second).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }) / Double(first.count)
+            }
+            let header = CGRect(x: 44, y: frame.minY - 110, width: CGFloat(width) - 88, height: 100)
+            let footer = CGRect(x: 44, y: frame.maxY + 12, width: CGFloat(width) - 88, height: 44)
+            XCTAssertLessThan(try difference(header), 1, "Date and title must remain visually fixed")
+            XCTAssertLessThan(try difference(footer), 1, "Author and edit control must remain visually fixed")
+            XCTAssertGreaterThan(try difference(frame.insetBy(dx: 10, dy: 10)), 2, "The body must actually scroll to different text")
+        }
+    }
     func testLibraryRowsAndSecondarySurfacesUseDockGlass() async throws {
         let previous = UserDefaults.standard.string(forKey: "vesperPalette")
         defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }

@@ -30,9 +30,11 @@ struct NativeChatHome: View {
     private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
     private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
-        NavigationStack {
-            Group {
-            List {
+        NavigationStack { contactsWithDialogs }
+    }
+
+    private var contactList: some View {
+        List {
                 Button { searching = true } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
                         .font(.subheadline)
@@ -103,6 +105,10 @@ struct NativeChatHome: View {
             }
             .refreshable { await chat.loadConversations(); activityRefreshID += 1 }
             .disabled(rowDisabled)
+    }
+
+    private var contactsWithNavigation: some View {
+        contactList
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -137,6 +143,10 @@ struct NativeChatHome: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
+    }
+
+    private var contactsWithDialogs: some View {
+        contactsWithNavigation
             .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) {
                     guard let item = deletingConversation else { return }
@@ -184,8 +194,6 @@ struct NativeChatHome: View {
             .alert("Chat", isPresented: Binding(get: { !open && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
                 Button("OK") { chat.error = nil }
             } message: { Text(chat.error ?? "") }
-            }
-        }
     }
 
     private func updateWelcomeLine() {

@@ -172,8 +172,10 @@ struct HomeView: View {
             GeometryReader { geometry in
                 Image(palette == .black ? "DesireDarkCoast" : "DesireCoast").resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                    .saturation(0.65).contrast(0.85)
+                    .opacity(palette == .black ? 0.48 : 0.66)
                     .overlay(alignment: .top) {
-                        LinearGradient(colors: [palette == .black ? .black.opacity(0.5) : .white.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+                        LinearGradient(colors: [palette == .black ? .black.opacity(0.18) : .white.opacity(0.22), .clear], startPoint: .top, endPoint: .bottom)
                             .frame(height: 88)
                     }
                     .overlay(alignment: .topLeading) {
@@ -186,7 +188,7 @@ struct HomeView: View {
             }
             .frame(height: height)
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.85), lineWidth: 1.3))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 22))
         }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-print")
     }
     private var upcomingDate: JSONValue? { HomeDesktopContent.nextDate(store.document("anniversaries").array) }

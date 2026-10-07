@@ -32,7 +32,28 @@ struct NativeChatHome: View {
     private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
     private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
+        #if targetEnvironment(macCatalyst)
+        HStack(spacing: 0) {
+            NavigationStack { contactsWithDialogs }.frame(width: 300)
+            Divider()
+            NavigationStack {
+                ZStack {
+                    Background()
+                    if loadingChat {
+                        ProgressView("Opening chat…")
+                    } else if open {
+                        ChatView(onMenu: { open = false }, restoreLatest: false)
+                            .frame(maxWidth: 920).toolbar(.hidden, for: .navigationBar)
+                    } else {
+                        ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
+                                               description: Text("Choose Rowan or a conversation to continue."))
+                    }
+                }
+            }.frame(maxWidth: .infinity)
+        }
+        #else
         NavigationStack { contactsWithDialogs }
+        #endif
     }
 
     private var contactList: some View {
@@ -124,6 +145,7 @@ struct NativeChatHome: View {
                         .disabled(rowDisabled || chat.loadingModels)
                 }
             }
+            #if !targetEnvironment(macCatalyst)
             .navigationDestination(isPresented: $open) {
                 if loadingChat {
                     ProgressView("Opening chat…")
@@ -135,10 +157,12 @@ struct NativeChatHome: View {
                         .background { Background() }.toolbar(.hidden, for: .navigationBar)
                 }
             }
+            #endif
             .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
             .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
             .task {
-                chat.configure(store); await chat.loadConversations()
+                chat.configure(store)
+                if !store.token.isEmpty { await chat.loadConversations() }
                 if !openedOnce { openedOnce = true }
             }
             .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(!detail) }

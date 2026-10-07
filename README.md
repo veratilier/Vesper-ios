@@ -3,7 +3,12 @@
 A standalone SwiftUI client for Vera's existing Vesper services. No WKWebView,
 Capacitor, React runtime or bundled website. Minimum iOS 17; iPhone and iPad.
 
-## Open on your Mac
+## Mac desktop app
+
+Use the **VesperMac** scheme for the desktop app. See [MAC.md](MAC.md) for installation,
+first connection, desktop controls and platform support.
+
+## Build the iPhone app on your Mac
 
 1. Clone this repository and open **Vesper.xcodeproj** in Xcode 16 or later.
 2. Select the **Vesper** scheme, select your iPhone, and choose your own development

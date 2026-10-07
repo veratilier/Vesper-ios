@@ -1,5 +1,5 @@
 import SwiftUI
-#if canImport(AlarmKit)
+#if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
 import AlarmKit
 
 @available(iOS 26.0, *)
@@ -45,7 +45,7 @@ struct VesperAlarmItem: Codable, Identifiable {
 
     private let storageKey = "vesper.alarmkit.owned.v1"
     var supported: Bool {
-        #if canImport(AlarmKit)
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) { return true }
         #endif
         return false
@@ -59,7 +59,7 @@ struct VesperAlarmItem: Codable, Identifiable {
         UserDefaults.standard.set(data, forKey: storageKey)
     }
     func refresh() {
-        #if canImport(AlarmKit)
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) {
             switch AlarmManager.shared.authorizationState {
             case .authorized: permission = "Allowed"
@@ -87,7 +87,7 @@ struct VesperAlarmItem: Codable, Identifiable {
     func authorize() async {
         busy = true; defer { busy = false }
         do {
-            #if canImport(AlarmKit)
+            #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
             if #available(iOS 26.0, *) {
                 guard try await AlarmManager.shared.requestAuthorization() == .authorized else {
                     throw ServiceError(message: "Allow alarms for Vesper in iPhone Settings.")
@@ -106,7 +106,7 @@ struct VesperAlarmItem: Codable, Identifiable {
         guard !name.isEmpty, name.count <= 80 else { throw ServiceError(message: "Give the alarm a title of 1–80 characters.") }
         guard weekdays.isSubset(of: Set(1...7)) else { throw ServiceError(message: "Choose valid repeat days.") }
         guard !weekdays.isEmpty || date > Date() else { throw ServiceError(message: "Choose a future time for a one-time alarm.") }
-        #if canImport(AlarmKit)
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) {
             let manager = AlarmManager.shared
             let state = manager.authorizationState == .notDetermined ? try await manager.requestAuthorization() : manager.authorizationState
@@ -121,7 +121,7 @@ struct VesperAlarmItem: Codable, Identifiable {
         #endif
         throw ServiceError(message: "AlarmKit needs iOS 26 or newer and Xcode 26 or newer.")
     }
-    #if canImport(AlarmKit)
+    #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
     @available(iOS 26.0, *)
     private func schedule(_ item: VesperAlarmItem) async throws {
         guard let date = item.date else { throw ServiceError(message: "Set a time for this alarm.") }
@@ -154,7 +154,7 @@ struct VesperAlarmItem: Codable, Identifiable {
     #endif
     func setEnabled(_ enabled: Bool, for item: VesperAlarmItem) async throws {
         guard items.contains(where: { $0.id == item.id }) else { throw ServiceError(message: "This alarm is no longer available.") }
-        #if canImport(AlarmKit)
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) {
             if enabled == item.isEnabled { return }
             var updated = item
@@ -182,7 +182,7 @@ struct VesperAlarmItem: Codable, Identifiable {
         guard !name.isEmpty, name.count <= 80 else { throw ServiceError(message: "Give the alarm a title of 1–80 characters.") }
         guard weekdays.isSubset(of: Set(1...7)) else { throw ServiceError(message: "Choose valid repeat days.") }
         guard !weekdays.isEmpty || date > Date() else { throw ServiceError(message: "Choose a future time for a one-time alarm.") }
-        #if canImport(AlarmKit)
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) {
             // Schedule the replacement first so a failure cannot silently erase the old alarm.
             var updated = VesperAlarmItem(id: UUID(), title: name, date: date,
@@ -205,7 +205,7 @@ struct VesperAlarmItem: Codable, Identifiable {
         throw ServiceError(message: "AlarmKit is not available on this device.")
     }
     func cancel(id: UUID) throws {
-        #if canImport(AlarmKit)
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) {
             guard items.contains(where: { $0.id == id }) else {
                 throw ServiceError(message: "This alarm is not scheduled by Vesper.")

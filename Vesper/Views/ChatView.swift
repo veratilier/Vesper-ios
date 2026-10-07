@@ -736,6 +736,9 @@ struct ChatView: View {
                                    hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
                                    blocked: voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
                                    action: send)
+                        #if targetEnvironment(macCatalyst)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        #endif
                 }
             }
         }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
@@ -991,10 +994,14 @@ struct ChatHeaderMenu: View {
                 HStack(spacing: 8) {
                     actionIcon("相关记忆", symbol: "brain", action: onMemory)
                     actionIcon("终端", symbol: "terminal", action: onTerminal)
+                    #if targetEnvironment(macCatalyst)
+                    MacAppearanceButton().frame(width: 44, height: 44)
+                    #else
                     actionIcon(navigationStyle == "native" ? "切换到 Vesper" : "切换到 Apple Native",
                                symbol: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled") {
                         navigationStyle = navigationStyle == "native" ? "vesper" : "native"
                     }
+                    #endif
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .trailing)))
             } else {

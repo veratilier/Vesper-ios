@@ -2,6 +2,7 @@ import ActivityKit
 import Foundation
 import AppIntents
 
+#if !targetEnvironment(macCatalyst)
 struct VesperCallAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var isVideo: Bool
@@ -12,10 +13,13 @@ struct VesperCallAttributes: ActivityAttributes {
     var startedAt: Date
 }
 
+#endif
+
 @MainActor enum VesperCallControlBridge {
     static var handle: ((String) throws -> Void)?
 }
 
+#if !targetEnvironment(macCatalyst)
 struct VesperCallControlIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Control Vesper call"
     static var openAppWhenRun: Bool = false
@@ -36,3 +40,5 @@ struct VesperCallControlIntent: LiveActivityIntent {
         return .result()
     }
 }
+
+#endif

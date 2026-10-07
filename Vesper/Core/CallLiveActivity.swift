@@ -1,3 +1,15 @@
+#if targetEnvironment(macCatalyst)
+import Foundation
+// macOS shows the in-app call; Live Activities belong to the iPhone target.
+@MainActor final class CallLiveActivity {
+    static let shared = CallLiveActivity()
+    func start(at date: Date, isVideo: Bool, avatar: String) {}
+    func update(isVideo: Bool) {}
+    func updateControls(muted: Bool, speakerEnabled: Bool) {}
+    func end() {}
+    func endStale() async {}
+}
+#else
 import ActivityKit
 import Foundation
 
@@ -71,3 +83,5 @@ import Foundation
         }
     }
 }
+
+#endif

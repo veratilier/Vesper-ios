@@ -107,7 +107,7 @@ struct DevicePermissionsView: View {
     @State private var reminders = "Checking…"
     var body: some View {
         PermissionPage(title: "Permissions") {
-            Text("Choose what Vesper can access on this iPhone.").font(.subheadline).foregroundStyle(VesperTheme.muted)
+            Text("Choose what Vesper can access on this device.").font(.subheadline).foregroundStyle(VesperTheme.muted)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
                 card("Location", icon: "location.fill", status: weather.authorized ? "Allowed" : "Not allowed", detail: "Read your current location in chat and show local weather.") { WeatherPermissionsView() }
                 card("Health", icon: "heart.fill", status: HKHealthStore.isHealthDataAvailable() ? "Manage access" : "Unavailable", detail: "Choose which health summaries Rowan may read.") { HealthView() }
@@ -686,7 +686,7 @@ struct VoiceSettingsView: View {
                 HStack { Text("Speed"); Slider(value: $speed, in: 0.7...1.2, step: 0.05); Text(String(format: "%.2f×", speed)).font(.caption) }
                 Button("Save voice") { save() }.buttonStyle(.bordered)
                 Button(preview.speaking ? "Stop preview" : "Preview voice") { if preview.speaking { preview.stop() } else if validate() { Task { await preview.play("宝贝，我在这里。", store: store, connectionOverride: configuration) } } }.buttonStyle(.bordered)
-                Text("Saved in this iPhone’s Keychain and used for call replies. Preview uses your provider’s credits.").font(.caption).foregroundStyle(VesperTheme.muted)
+                Text("Saved in this device’s Keychain and used for call replies. Preview uses your provider’s credits.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
                 if let error = preview.error { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
@@ -953,13 +953,13 @@ struct NotificationSettingsView: View {
                     Spacer()
                     Text(accessStatus).font(.caption).foregroundStyle(VesperTheme.muted)
                 }
-                Text("Receive reminders for dates and letters synced to this iPhone.").foregroundStyle(VesperTheme.muted)
+                Text("Receive reminders for dates and letters synced to this device.").foregroundStyle(VesperTheme.muted)
                 if loaded && authorization == .notDetermined {
                     Button { Task { await requestPermission() } } label: {
                         Text(busy ? "Requesting…" : "Allow notifications")
                     }.buttonStyle(PermissionActionStyle()).disabled(busy)
                 } else if loaded {
-                    Button("Open iPhone Settings") {
+                    Button("Open system settings") {
                         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
                     }.buttonStyle(PermissionActionStyle())
                 }

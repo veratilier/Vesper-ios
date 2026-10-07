@@ -521,6 +521,7 @@ struct MovieRoomView: View {
                 if movie.loaded { VideoPlayer(player: movie.player).frame(height: 235).clipShape(RoundedRectangle(cornerRadius: 16)); Text(movie.title).font(.headline) }
                 else { EmptyCard(title: "Watch together", message: "Choose a local video or import a Bilibili link.") }
                 sourceControls
+                #if !targetEnvironment(macCatalyst)
                 HStack {
                     VStack(alignment: .leading) {
                         Text("跨 App 分享屏幕").font(.headline)
@@ -535,6 +536,7 @@ struct MovieRoomView: View {
                         GlassCard { Text(reply).font(.subheadline).textSelection(.enabled) }
                     }
                 }
+                #endif
                 Button { screen.active || screen.starting ? screen.stop() : screen.start() } label: {
                     Label(screen.active ? "停止分享屏幕" : screen.starting ? "Starting…" : "分享屏幕", systemImage: screen.active ? "stop.circle.fill" : "rectangle.on.rectangle")
                         .foregroundStyle(.white)
@@ -556,8 +558,10 @@ struct MovieRoomView: View {
         }.navigationTitle("Cinema").navigationBarTitleDisplayMode(.inline)
             .task {
                 conversation.configure(store); music.pause()
+                #if !targetEnvironment(macCatalyst)
                 do { try BroadcastAccess.save(endpoint: store.socketURL, token: store.token); broadcastReady = !store.token.isEmpty }
                 catch { message = error.localizedDescription }
+                #endif
                 if !conversationID.isEmpty { await conversation.open(.object(["id": .string(conversationID)])) }
             }
             .task(id: "\(job)-\(phase)-\(retry)") { await checkImport() }

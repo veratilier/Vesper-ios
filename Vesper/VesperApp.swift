@@ -9,9 +9,16 @@ import UserNotifications
     @AppStorage("vesperPalette") private var palette = "blue"
     var body: some Scene {
         WindowGroup {
-            RootView().environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
+            RootView()
+                #if targetEnvironment(macCatalyst)
+                .frame(minWidth: 980, minHeight: 650)
+                #endif
+                .environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
                 .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
         }
+        #if targetEnvironment(macCatalyst)
+        .defaultSize(width: 1220, height: 820)
+        #endif
     }
 }
 enum Destination: String, CaseIterable, Identifiable {
@@ -191,16 +198,27 @@ struct RootView: View {
     @State private var floatingCallCenter: CGPoint?
     @State private var floatingCallSize = CGSize(width: 220, height: 64)
     @GestureState private var floatingCallDrag = CGSize.zero
+    #if targetEnvironment(macCatalyst)
+    @State private var opening = false
+    #else
     @State private var opening = true
+    #endif
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
     @State private var sidebar = false
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder private var navigationSurface: some View {
+        #if targetEnvironment(macCatalyst)
+        MacNavigationView(selection: $destination, openMusic: { showingMusicPlayer = true }) { page in
+            if page == .chat { NativeChatHome() }
+            else { shell(page) }
+        }
+        #else
         if navigationStyle == "native" { nativeTabs }
         else if destination == .chat { NativeChatHome(onMenu: { sidebar = true }) }
         else { shell(destination) }
+        #endif
     }
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
@@ -450,8 +468,12 @@ struct RootView: View {
         NavigationStack {
             ZStack {
                 Background()
+                #if targetEnvironment(macCatalyst)
+                content(page)
+                #else
                 if page == .home && navigationStyle != "native" { VStack(spacing: 0) { homeHeader; content(page) } }
                 else { content(page) }
+                #endif
             }
             .safeAreaInset(edge: .bottom, spacing: 4) {
                 if navigationStyle == "native" && !NativeMusicAccessory.isSupported && [.home, .letters, .settings].contains(page) { musicDock }
@@ -463,9 +485,11 @@ struct RootView: View {
             .toolbar(page == .chat || (page == .home && navigationStyle != "native") ? .hidden : .visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
+                    #if !targetEnvironment(macCatalyst)
                     if navigationStyle == "vesper" {
                         Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
                     }
+                    #endif
                 }
                 if page != .letters {
                     ToolbarItem(placement: .principal) {

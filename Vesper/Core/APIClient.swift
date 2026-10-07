@@ -11,25 +11,55 @@ struct ServiceError: LocalizedError {
 enum CredentialStore {
     private static let service = "com.vera.vesper.native"
     static func read(account: String = "device-token") -> String {
+        (try? load(account: account)) ?? ""
+    }
+    static func load(account: String = "device-token") throws -> String {
+        #if targetEnvironment(macCatalyst)
+        let response = try MacCredentialBridge.perform(.init(operation: "read", account: account))
+        if response.status == errSecItemNotFound { return "" }
+        guard response.status == errSecSuccess, let value = response.value else {
+            throw ServiceError(message: "Could not read the saved credential from Keychain (\(response.status)).")
+        }
+        return value
+        #else
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
             kSecAttrAccount as String: account, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let d = result as? Data else { return "" }
+        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        if status == errSecItemNotFound { return "" }
+        guard status == errSecSuccess, let d = result as? Data else {
+            throw ServiceError(message: "Could not read the saved credential from Keychain (\(status)).")
+        }
         return String(data: d, encoding: .utf8) ?? ""
+        #endif
     }
     static func save(_ token: String, account: String = "device-token") throws {
+        #if targetEnvironment(macCatalyst)
+        let response = try MacCredentialBridge.perform(.init(operation: "save", account: account, value: token))
+        guard response.status == errSecSuccess else {
+            throw ServiceError(message: "Could not save the credential in Keychain (\(response.status)).")
+        }
+        #else
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         let values: [String: Any] = [kSecValueData as String: Data(token.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(q as CFDictionary, values as CFDictionary)
         if status == errSecItemNotFound {
             guard SecItemAdd(q.merging(values) { _, v in v } as CFDictionary, nil) == errSecSuccess else { throw ServiceError(message: "Could not save the device token.") }
         } else if status != errSecSuccess { throw ServiceError(message: "Could not update the device token.") }
+        #endif
+        guard try load(account: account) == token else {
+            throw ServiceError(message: "Keychain did not retain the credential. Please try saving again.")
+        }
     }
     static func delete(account: String) throws {
+        #if targetEnvironment(macCatalyst)
+        let status = try MacCredentialBridge.perform(.init(operation: "delete", account: account)).status
+        #else
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
                                     kSecAttrAccount as String: account]
         let status = SecItemDelete(query as CFDictionary)
+        #endif
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw ServiceError(message: "Could not remove the old music credential.")
         }

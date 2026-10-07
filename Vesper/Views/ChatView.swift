@@ -595,8 +595,18 @@ struct ChatView: View {
             .frame(maxWidth: .infinity).frame(height: 44)
             .overlay(alignment: .leading) {
                 HStack(spacing: 5) {
-                    if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
-                    else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
+                    Button {
+                        headerActionsExpanded = false
+                        if native { dismissChat() } else { onMenu() }
+                    } label: {
+                        Image(systemName: native ? "chevron.left" : "line.3.horizontal")
+                            .font(.system(size: 21, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .vesperGlass(in: Circle(), interactive: true)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel(native ? "Back to chats" : "Open sidebar")
+                        .accessibilityIdentifier("chat-header-back")
                     if !chat.issueDetails.isEmpty {
                         Button { connectionDetails = true } label: {
                             Group {

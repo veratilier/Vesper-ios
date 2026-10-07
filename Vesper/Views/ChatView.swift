@@ -934,7 +934,7 @@ struct ChatMessageRow: View, Equatable {
                             .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
                     }
                 } else if attachment["type"].string.hasPrefix("audio/") {
-                    VoiceMessageBar(attachment: attachment, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item.id, attachmentIndex: index, text: text) } },
+                    VoiceMessageBar(attachment: attachment, alignment: user ? .trailing : .leading, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item.id, attachmentIndex: index, text: text) } },
                                     onTranslation: { source, text in Task { await chat.saveVoiceTranslation(messageID: item.id, attachmentIndex: index, source: source, text: text) } })
                 } else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
                     ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
@@ -1291,21 +1291,28 @@ private struct ToolCallRow: View {
     let tool: JSONValue
     @State private var showingDetails = false
     private var title: String { tool["title"].string.isEmpty ? "Tool call" : tool["title"].string }
-    var body: some View {
-        Button { showingDetails = true } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "wrench").font(.system(size: 13))
-                Text(title).font(.system(size: 13)).lineLimit(1)
-                Spacer(minLength: 8)
-                Text(tool["status"].string.capitalized).font(.caption2)
-                Image(systemName: "chevron.right").font(.system(size: 10))
-            }
-            .foregroundStyle(VesperTheme.muted)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .contentShape(Rectangle())
+    private var hasOutput: Bool { !tool["output"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var row: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wrench").font(.system(size: 13))
+            Text(title).font(.system(size: 13)).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(tool["status"].string.capitalized).font(.caption2)
+            if hasOutput { Image(systemName: "chevron.right").font(.system(size: 10)) }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title + ", " + tool["status"].string + ", details")
+        .foregroundStyle(VesperTheme.muted)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+    }
+    var body: some View {
+        Group {
+            if hasOutput {
+                Button { showingDetails = true } label: { row.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(title + ", " + tool["status"].string + ", details")
+            } else {
+                row.accessibilityElement(children: .combine)
+            }
+        }
         .sheet(isPresented: $showingDetails) {
             NavigationStack {
                 ScrollView {

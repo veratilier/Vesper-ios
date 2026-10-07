@@ -419,8 +419,8 @@ extension BubbleInteractionTests {
                     }
                     HStack {
                         Spacer(minLength: 42)
-                        VStack(spacing: 6) {
-                            VoiceMessageBar(attachment: .object(["duration": .number(12)]))
+                        VStack(alignment: .trailing, spacing: 6) {
+                            VoiceMessageBar(attachment: .object(["duration": .number(12)]), alignment: .trailing)
                                 .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { voiceFrame = $0 }
                             VoiceTranscriptPanel(text: "刚才海边风有点大，不过夕阳特别好看，想让你也听听海浪的声音。", onCollapse: {})
                                 .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { transcriptFrame = $0 }
@@ -434,7 +434,8 @@ extension BubbleInteractionTests {
             window.rootViewController = UIHostingController(rootView: root); window.makeKeyAndVisible()
             defer { window.isHidden = true; window.rootViewController = nil }
             try await Task.sleep(for: .milliseconds(400)); window.rootViewController?.view.layoutIfNeeded()
-            XCTAssertEqual(voiceFrame.minX, transcriptFrame.minX, accuracy: 1)
+            XCTAssertGreaterThan(voiceFrame.minX, transcriptFrame.minX, "A short voice bar is narrower than its transcript")
+            XCTAssertEqual(voiceFrame.height, 44, accuracy: 1, "Compact voice bars retain their touch target")
             XCTAssertEqual(voiceFrame.maxX, transcriptFrame.maxX, accuracy: 1)
             XCTAssertGreaterThan(transcriptFrame.height, 90)
             XCTAssertEqual(transcriptFrame.minY - voiceFrame.maxY, 6, accuracy: 1)

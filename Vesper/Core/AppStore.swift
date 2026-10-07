@@ -8,6 +8,7 @@ import CryptoKit
          retryDelay: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
         self.loadState = loadState
         self.retryDelay = retryDelay
+        do { token = try CredentialStore.load() } catch { connectionError = error.localizedDescription }
         cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
         // Remove the former NetEase login even when the server is offline.
         UserDefaults.standard.removeObject(forKey: "netease-uid")
@@ -33,7 +34,7 @@ import CryptoKit
     }
     @Published var historyURL: String = UserDefaults.standard.string(forKey: "historyURL") ?? "https://codex.r-vera.com/history"
     @Published var socketURL: String = UserDefaults.standard.string(forKey: "socketURL") ?? "wss://codex.r-vera.com"
-    @Published var token = CredentialStore.read() {
+    @Published var token = "" {
         didSet { if oldValue != token { connected = false; documents.removeValue(forKey: "profile"); cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token) } }
     }
     var api: APIClient { APIClient(baseURL: baseURL, historyURL: historyURL, token: token) }
@@ -52,7 +53,7 @@ import CryptoKit
             _ = try APIClient.validatedURL(historyURL, path: "conversations")
             guard let s = URL(string: socketURL), s.scheme == "wss", s.host != nil else { throw ServiceError(message: "Enter a valid WSS chat address.") }
             try CredentialStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines))
-            token = CredentialStore.read()
+            token = try CredentialStore.load()
             UserDefaults.standard.set(baseURL, forKey: "apiURL")
             UserDefaults.standard.set(historyURL, forKey: "historyURL")
             UserDefaults.standard.set(socketURL, forKey: "socketURL")

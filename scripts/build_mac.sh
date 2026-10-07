@@ -10,6 +10,8 @@ APP="$DERIVED/Build/Products/Debug-maccatalyst/Vesper Mac.app"
 codesign --verify --deep --strict "$APP"
 printf '\nBuilt: %s\n' "$APP"
 if [[ "${1:-}" == "--install" ]]; then
-  ditto "$APP" '/Applications/Vesper Mac.app'
+  # Remove obsolete bundle resources too; retaining old icons breaks code signing.
+  rsync -a --delete "$APP/" '/Applications/Vesper Mac.app/'
+  codesign --verify --deep --strict '/Applications/Vesper Mac.app'
   printf 'Installed: /Applications/Vesper Mac.app\n'
 fi

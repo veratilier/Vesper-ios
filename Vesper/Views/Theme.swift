@@ -157,6 +157,18 @@ struct NavigationStyleToggle: View {
         image = decoded; selectedID = Self.photoID(jpeg)
         reloadHistory()
     }
+    func delete(_ id: String) throws {
+        guard history.contains(where: { $0.id == id }) else { throw ServiceError(message: "This background is unavailable.") }
+        let savedFile = historyDirectory.appendingPathComponent(id + ".jpg")
+        // Keep the selected copy until removing history succeeds; restore history if resetting fails.
+        let selectedData = selectedID == id ? try Data(contentsOf: savedFile) : nil
+        try FileManager.default.removeItem(at: savedFile)
+        if let selectedData {
+            do { try reset() }
+            catch { try? archive(selectedData); reloadHistory(); throw error }
+        }
+        reloadHistory()
+    }
     func reset() throws {
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         image = nil; selectedID = nil
@@ -245,6 +257,11 @@ struct AppearanceSettingsView: View {
                                 Button { perform { try wallpaper.select(saved.id) } } label: {
                                     backgroundThumbnail(Image(uiImage: saved.thumbnail), selected: wallpaper.selectedID == saved.id)
                                 }.accessibilityLabel("Saved background").accessibilityAddTraits(wallpaper.selectedID == saved.id ? .isSelected : [])
+                                    .contextMenu {
+                                        Button(role: .destructive) { perform { try wallpaper.delete(saved.id) } } label: {
+                                            Label("Delete background", systemImage: "trash")
+                                        }
+                                    }
                             }
                             ForEach(VesperPalette.allCases) { item in
                                 Button { perform { try wallpaper.reset(); palette = item.rawValue } } label: {
@@ -253,6 +270,15 @@ struct AppearanceSettingsView: View {
                             }
                         }.padding(3)
                     }.accessibilityIdentifier("background-history").disabled(importing)
+                    if !wallpaper.history.isEmpty {
+                        #if targetEnvironment(macCatalyst)
+                        Text("Right-click a saved background to delete it.")
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                        #else
+                        Text("Touch and hold a saved background to delete it.")
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                        #endif
+                    }
                     PhotosPicker(selection: $photo, matching: .images) {
                         HStack { Label("Choose photo", systemImage: "photo"); Spacer(); if importing { ProgressView() } }
                             .frame(minHeight: 44).contentShape(Rectangle())

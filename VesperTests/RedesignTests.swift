@@ -278,6 +278,21 @@ private struct GlassOpacityFixture: View {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("background.jpg")), selectedData)
         try await restored.importPhoto(first)
         XCTAssertEqual(restored.history.count, 2, "Reimporting the same photo must not duplicate history")
+        let otherID = try XCTUnwrap(restored.history.first { $0.id != firstID }?.id)
+        try restored.delete(otherID)
+        XCTAssertEqual(restored.selectedID, firstID, "Deleting an unused photo must preserve the current background")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("background.jpg")), selectedData)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("History/\(otherID).jpg").path))
+        XCTAssertEqual(WallpaperStore(directory: directory).history.map(\.id), [firstID])
+        XCTAssertThrowsError(try restored.delete("../background"))
+        try restored.delete(firstID)
+        XCTAssertNil(restored.image)
+        XCTAssertNil(restored.selectedID)
+        let afterDeletion = WallpaperStore(directory: directory)
+        XCTAssertNil(afterDeletion.image)
+        XCTAssertTrue(afterDeletion.history.isEmpty, "Deleted current background must not reappear on launch")
+        try await afterDeletion.importPhoto(first)
+        XCTAssertEqual(afterDeletion.history.count, 1, "A deleted background can be imported again")
     }
 
     func testAppearanceSettingsLayoutOnSmallAndStandardPhones() async throws {

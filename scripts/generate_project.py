@@ -86,7 +86,19 @@ broadcast_target=put('broadcast-target',isa='PBXNativeTarget',buildConfiguration
 broadcast_proxy=put('broadcast-proxy',isa='PBXContainerItemProxy',containerPortal=uid('project'),proxyType=1,remoteGlobalIDString=broadcast_target,remoteInfo='VesperBroadcast')
 objects[app_target]['dependencies'].append(put('broadcast-dep',isa='PBXTargetDependency',target=broadcast_target,targetProxy=broadcast_proxy))
 objects[embed]['files'].append(put('broadcast-embed-file',isa='PBXBuildFile',fileRef=broadcast_product,settings={'ATTRIBUTES':['RemoveHeadersOnCopy']}))
-project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target,widget_target,broadcast_target])
+# Derive desktop privacy strings without changing the iPhone plist.
+mac_info=plistlib.loads((root/'Vesper/Info.plist').read_bytes())
+for key in ['BroadcastKeychainGroup','NSHealthShareUsageDescription','NSAlarmKitUsageDescription','NSSupportsLiveActivities']:
+ mac_info.pop(key,None)
+mac_info['CFBundleDisplayName']='Vesper Mac'
+mac_info['NSLocationUsageDescription']='Show local weather and share location from this Mac only when you request it.'
+(root/'Vesper/Mac-Info.plist').write_bytes(plistlib.dumps(mac_info))
+# Mac Catalyst has its own product and entitlements; iOS extensions stay on iOS.
+mac_product=put('mac-product',isa='PBXFileReference',explicitFileType='wrapper.application',path='Vesper Mac.app',sourceTree='BUILT_PRODUCTS_DIR',includeInIndex=0)
+objects[products]['children'].append(mac_product)
+mac_config=configs('mac',{'IPHONEOS_DEPLOYMENT_TARGET':'26.0','PRODUCT_BUNDLE_IDENTIFIER':'com.vera.vesper.mac','PRODUCT_NAME':'Vesper Mac','CODE_SIGN_STYLE':'Manual','CODE_SIGN_IDENTITY':'-','INFOPLIST_FILE':'Vesper/Mac-Info.plist','CODE_SIGN_ENTITLEMENTS':'Vesper/Mac.entitlements','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'0.1.0','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator macosx','SUPPORTS_MACCATALYST':'YES','DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER':'NO','SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD':'NO','TARGETED_DEVICE_FAMILY':'2','ENABLE_HARDENED_RUNTIME':'YES','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/../Frameworks']})
+mac_target=put('mac-target',isa='PBXNativeTarget',buildConfigurationList=mac_config,buildPhases=[phase('mac-sources','PBXSourcesBuildPhase',source_build),phase('mac-frameworks','PBXFrameworksBuildPhase',[]),phase('mac-resources','PBXResourcesBuildPhase',resource_build)],buildRules=[],dependencies=[],name='VesperMac',productName='Vesper Mac',productReference=mac_product,productType='com.apple.product-type.application')
+project=put('project',isa='PBXProject',attributes={'BuildIndependentTargetsInParallel':'YES','LastUpgradeCheck':'1600','TargetAttributes':{app_target:{'CreatedOnToolsVersion':'16.0'},test_target:{'CreatedOnToolsVersion':'16.0','TestTargetID':app_target}}},buildConfigurationList=project_config,compatibilityVersion='Xcode 14.0',developmentRegion='en',hasScannedForEncodings=0,knownRegions=['en','Base'],mainGroup=main,productRefGroup=products,projectDirPath='',projectRoot='',targets=[app_target,test_target,widget_target,broadcast_target,mac_target])
 def serialize(v,level=0):
  if isinstance(v,dict):return '{\n'+''.join('\t'*(level+1)+json.dumps(str(k))+' = '+serialize(x,level+1)+';\n' for k,x in v.items())+'\t'*level+'}'
  if isinstance(v,list):return '( '+', '.join(serialize(x,level) for x in v)+', )' if v else '()'
@@ -104,3 +116,12 @@ def buildref(target,name):return f'<BuildableReference BuildableIdentifier="prim
 <AnalyzeAction buildConfiguration="Debug"/><ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
 </Scheme>''')
 print(f'Generated project with {len(source_refs)} Swift sources and {len(testrefs)} test files')
+
+macref=buildref(mac_target,'Vesper Mac.app').replace('BlueprintName="Vesper Mac"','BlueprintName="VesperMac"')
+(shared/'VesperMac.xcscheme').write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="2700" version="1.3">
+<BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="NO" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">{macref}</BuildActionEntry></BuildActionEntries></BuildAction>
+<LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES"><BuildableProductRunnable runnableDebuggingMode="0">{macref}</BuildableProductRunnable></LaunchAction>
+<ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES"><BuildableProductRunnable runnableDebuggingMode="0">{macref}</BuildableProductRunnable></ProfileAction>
+<AnalyzeAction buildConfiguration="Debug"/><ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
+</Scheme>''')

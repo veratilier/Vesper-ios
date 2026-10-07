@@ -106,6 +106,11 @@ struct ChatLongPress: ViewModifier {
             }
             .contentShape(Rectangle())
             .modifier(ChatPressGesture(onTap: onTap) { menu.show(id: id, frame: frame, actions: actions()) })
+            #if targetEnvironment(macCatalyst)
+            .contextMenu {
+                ForEach(actions()) { action in Button(action.title, action: action.run) }
+            }
+            #endif
             .accessibilityActions {
                 ForEach(actions()) { action in Button(action.title, action: action.run) }
             }

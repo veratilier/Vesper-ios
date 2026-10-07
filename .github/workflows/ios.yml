@@ -42,3 +42,13 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild build -project Vesper.xcodeproj -scheme Vesper -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+
+  mac-catalyst:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build independent Mac app
+        run: xcodebuild build -project Vesper.xcodeproj -scheme VesperMac -destination 'generic/platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO

@@ -166,22 +166,29 @@ struct ChatActivityHeatmap: View {
     private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level]) }
     var body: some View {
         VStack(spacing: 22) {
+            #if targetEnvironment(macCatalyst)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
+                activityMonthControls
+            }
+            #else
             HStack(spacing: 8) {
                 Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
                 Spacer(minLength: 4)
-                Button { moveMonth(-1) } label: { Image(systemName: "chevron.left").frame(width: 30, height: 36) }.accessibilityLabel("Previous activity month")
-                Text(JournalDates.label(month, format: "MMMM yyyy")).font(.system(size: 15, design: .serif)).italic().lineLimit(1).minimumScaleFactor(0.8)
-                Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel("Next activity month")
+                activityMonthControls
             }
+            #endif
             calendarGrid
-            if activityError {
+            if store.token.isEmpty {
+                Text("Connect Vesper to see your days together.").font(.caption).foregroundStyle(VesperTheme.muted)
+            } else if activityError {
                 Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
             } else if !ready { ProgressView().controlSize(.small).accessibilityLabel("Loading chat statistics") }
         }.buttonStyle(.plain).padding(.horizontal, 18).padding(.vertical, 24)
             .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
             .accessibilityIdentifier("chat-activity-heatmap")
             .task(id: refreshKey) {
-                guard phase == .active else { return }; await loadActivity()
+                guard phase == .active, !store.token.isEmpty else { return }; await loadActivity()
             }
             .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
                 NavigationStack {
@@ -195,6 +202,13 @@ struct ChatActivityHeatmap: View {
                         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selected = nil } } }
                 }.presentationDetents([.height(280)]).presentationDragIndicator(.visible)
             }
+    }
+    private var activityMonthControls: some View {
+        HStack(spacing: 8) {
+            Button { moveMonth(-1) } label: { Image(systemName: "chevron.left").frame(width: 30, height: 36) }.accessibilityLabel("Previous activity month")
+            Text(JournalDates.label(month, format: "MMMM yyyy")).font(.system(size: 15, design: .serif)).italic().lineLimit(1).minimumScaleFactor(0.8)
+            Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel("Next activity month")
+        }
     }
     private var cellCount: Int { ((offset + days.count + 6) / 7) * 7 }
     private var calendarGrid: some View {

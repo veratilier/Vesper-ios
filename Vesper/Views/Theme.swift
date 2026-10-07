@@ -85,10 +85,14 @@ extension View {
 struct NavigationStyleToggle: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     var body: some View {
+        #if targetEnvironment(macCatalyst)
+        MacAppearanceButton()
+        #else
         Button { navigationStyle = navigationStyle == "native" ? "vesper" : "native" } label: {
             Image(systemName: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled")
         }.accessibilityLabel(navigationStyle == "native" ? "Switch to Vesper" : "Switch to Apple Native")
             .accessibilityValue(navigationStyle == "native" ? "Apple Native" : "Vesper")
+        #endif
     }
 }
 
@@ -218,7 +222,7 @@ struct AppearanceSettingsView: View {
                         Spacer()
                         Text("More transparent")
                     }.font(.caption).foregroundStyle(VesperTheme.muted)
-                    Text(reduceTransparency ? "Reduce Transparency is enabled in iOS Settings." : "Adjusts Vesper’s glass surfaces. System bars keep their iOS appearance.")
+                    Text(reduceTransparency ? "Reduce Transparency is enabled in system settings." : "Adjusts Vesper’s glass surfaces. System bars keep their system appearance.")
                         .font(.caption).foregroundStyle(VesperTheme.muted)
                     Button("Reset glass transparency") { glassTransparency = 0 }
                         .font(.subheadline).frame(minHeight: 44)

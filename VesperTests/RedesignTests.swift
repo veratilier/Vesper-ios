@@ -97,7 +97,8 @@ private final class JournalLayoutProtocol: URLProtocol {
         if request.url?.path.hasSuffix("/activity") == true {
             let month = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "month" }?.value ?? "2026-10"
             var days: [String: Any] = [:]
-            for (index, count) in [15, 25, 40, 25, 10, 3].enumerated() {
+            // Include every heat level, especially bright cells that need dark text in black mode.
+            for (index, count) in [0, 3, 15, 40, 80, 120].enumerated() {
                 days[month + String(format: "-%02d", index + 1)] = ["total": count, "user": count / 2, "agent": count - count / 2, "autonomous": 1]
             }
             body = ["month": month, "days": days]

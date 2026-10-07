@@ -25,14 +25,16 @@ private final class StickerAssetProtocol: URLProtocol {
 private final class ChatHistoryPaginationProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var reads = 0
+    private static var limits: [String] = []
+    static var requestedLimits: [String] { lock.lock(); defer { lock.unlock() }; return limits }
     static var requestCount: Int { lock.lock(); defer { lock.unlock() }; return reads }
-    static func reset() { lock.lock(); reads = 0; lock.unlock() }
+    static func reset() { lock.lock(); reads = 0; limits = []; lock.unlock() }
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "history-pagination.example"
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock(); Self.reads += 1; Self.lock.unlock()
+        Self.lock.lock(); Self.reads += 1; Self.limits.append(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "limit" }?.value ?? ""); Self.lock.unlock()
         let earlier = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "before" } == true
         let message: JSONValue = .object([
             "id": .string(earlier ? "older" : "latest"), "role": .string("user"),
@@ -295,12 +297,17 @@ final class ContractTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 1)
         XCTAssertEqual(chat.messages.map(\.id), ["latest"])
+        XCTAssertEqual(ChatHistoryPaginationProtocol.requestedLimits, ["40"])
         XCTAssertTrue(chat.hasOlderMessages)
         XCTAssertNil(chat.jumpMessageID)
 
         await chat.loadOlder()
         XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 2)
         XCTAssertEqual(chat.messages.map(\.id), ["older", "latest"])
+        XCTAssertEqual(ChatHistoryPaginationProtocol.requestedLimits, ["40", "200"])
+        let reopened = await chat.open(.object(["id": .string("pagination-room")]))
+        XCTAssertTrue(reopened)
+        XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 2, "Returning to a loaded chat must not fetch the same history again")
         XCTAssertFalse(chat.hasOlderMessages)
         XCTAssertNil(chat.jumpMessageID)
         chat.disconnect()
@@ -1745,6 +1752,7 @@ final class ChatRecentCacheTests: XCTestCase {
         XCTAssertFalse(chat.showingCachedHistory)
         XCTAssertEqual(chat.messages.map(\.id), ["latest"])
         XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 1)
+        XCTAssertEqual(ChatRecentCache.load(api: api, id: "pagination-room")?["messages"].array.map(\.id), ["latest"], "Fresh iPhone history must replace stale disk previews")
         chat.disconnect()
     }
 }

@@ -568,6 +568,14 @@ enum ChatUserInput {
         "apps.asdk_app_6a92be9d9e1c819197f58017d0e2b985.enabled": .bool(false),
         "apps.app_6a92be9d9e1c819197f58017d0e2b985.enabled": .bool(false)
     ])
+    // The first phone screen needs only recent messages; older history stays paginated.
+    static var initialHistoryLimit: Int {
+        #if targetEnvironment(macCatalyst)
+        return 200
+        #else
+        return 40
+        #endif
+    }
     private weak var appStore: AppStore?
     func configure(_ store: AppStore) {
         if let api, api.token != store.api.token || api.baseURL != store.baseURL || api.historyURL != store.historyURL || endpoint != store.socketURL {
@@ -580,7 +588,7 @@ enum ChatUserInput {
         }
         appStore = store; api = store.api; endpoint = store.socketURL
         let historyAPI = store.api
-        historyReader = { id in try await historyAPI.request("/conversations/\(id)?latest=1&limit=200", history: true) }
+        historyReader = { id in try await historyAPI.request("/conversations/\(id)?latest=1&limit=\(Self.initialHistoryLimit)", history: true) }
         if networkMonitor == nil {
             let monitor = NWPathMonitor(); networkMonitor = monitor
             monitor.pathUpdateHandler = { [weak self] path in
@@ -608,10 +616,8 @@ enum ChatUserInput {
         return true
     }
     private func cacheRecentHistory() {
-        #if targetEnvironment(macCatalyst)
         guard !showingCachedHistory, voiceCallContext == nil, let api else { return }
-        ChatRecentCache.save(api: api, id: conversationID, messages: messages)
-        #endif
+        ChatRecentCache.save(api: api, id: conversationID, messages: Array(messages.suffix(min(100, Self.initialHistoryLimit))))
     }
     private func reuseVisibleConversation(_ id: String) -> Bool {
         guard id == conversationID, !messages.isEmpty, !showingCachedHistory else { return false }
@@ -691,9 +697,7 @@ enum ChatUserInput {
     func open(_ conversation: JSONValue) async -> Bool {
         guard !busy, !callActive, !openingMainRoom else { return false }
         self.error = nil
-        #if targetEnvironment(macCatalyst)
         if reuseVisibleConversation(conversation.id) { return true }
-        #endif
         do { try await loadConversation(conversation.id); return true }
         catch is CancellationError { return false }
         catch {
@@ -732,7 +736,7 @@ enum ChatUserInput {
         // Validate the record before discarding the current chat or its draft.
         let r: JSONValue
         var parameters = URLComponents()
-        parameters.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200")]
+        parameters.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: String(Self.initialHistoryLimit))]
         do {
             r = try await api.request("/conversations/\(id)?" + (parameters.percentEncodedQuery ?? ""), history: true)
         } catch let failure as ServiceError where failure.statusCode == 404 {
@@ -780,23 +784,18 @@ enum ChatUserInput {
         do {
             let identity = store.api
             let response: JSONValue
-            #if targetEnvironment(macCatalyst)
             if let profile = store.documents["profile"], !profile["mainConversationId"].string.isEmpty {
                 response = .object(["value": profile])
             } else { response = try await identity.request("/api/state?key=profile") }
-            #else
-            response = try await identity.request("/api/state?key=profile")
-            #endif
+
             try Task.checkCancellation()
             guard store.token == identity.token, store.baseURL == identity.baseURL else { throw CancellationError() }
             // This read is only for the room pointer; never overwrite a newer avatar save.
             let id = response["value"]["mainConversationId"].string
-            #if targetEnvironment(macCatalyst)
             if !id.isEmpty {
                 ChatRecentCache.rememberMain(api: identity, id: id)
                 if reuseVisibleConversation(id) { return true }
             }
-            #endif
             if !id.isEmpty {
                 do { try await loadConversation(id); return true }
                 catch {
@@ -821,9 +820,7 @@ enum ChatUserInput {
                 next["mainConversationId"] = .string(roomID)
                 return next
             }
-            #if targetEnvironment(macCatalyst)
             if saved { ChatRecentCache.rememberMain(api: identity, id: roomID) }
-            #endif
             return saved
         } catch is CancellationError { return false }
         catch { if Task.isCancelled { return false }; self.error = error.localizedDescription; return false }
@@ -1257,7 +1254,7 @@ enum ChatUserInput {
             if voiceCallContext == nil {
                 if threadID != nil || conversations.contains(where: { $0.id == conversationID }) {
                     // Refresh durable wake replies even when this socket never disconnected.
-                    let history = try await api.request("/conversations/\(conversationID)?latest=1&limit=200", history: true)
+                    let history = try await api.request("/conversations/\(conversationID)?latest=1&limit=\(Self.initialHistoryLimit)", history: true)
                     try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
                     try Self.validateHistoryRecord(history, expectedID: conversationID)
                     tombstones = history["tombstones"].array

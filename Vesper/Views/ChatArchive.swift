@@ -234,22 +234,16 @@ struct NativeChatHome: View {
     }
 
     private func enterChat(_ item: JSONValue? = nil) {
-        #if targetEnvironment(macCatalyst)
         chat.configure(store)
         if (item?.id ?? mainConversationID) == chat.conversationID,
            !chat.messages.isEmpty, !chat.showingCachedHistory {
             open = true; loadingChat = false
             return
         }
-        #endif
         guard !rowDisabled else { return }
-        #if targetEnvironment(macCatalyst)
         chat.configure(store)
         let previewVisible = chat.previewConversation(item?.id)
         loadingChat = !previewVisible
-        #else
-        loadingChat = true
-        #endif
         open = true
         openingTask = Task {
             let opened: Bool

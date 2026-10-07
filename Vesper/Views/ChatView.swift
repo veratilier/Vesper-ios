@@ -588,25 +588,30 @@ struct ChatView: View {
     @Environment(\.dismiss) private var dismissChat
     private var header: some View {
         HStack(spacing: 5) {
-            if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
-            else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
-            if !chat.issueDetails.isEmpty {
-                Button { connectionDetails = true } label: {
-                    Group {
-                        if chat.issueDetails.allSatisfy(\.progress) { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "exclamationmark.circle") }
-                    }.frame(width: 28, height: 40)
+            // Reserve both controls even when the issue indicator is absent.
+            HStack(spacing: 5) {
+                if native { Button { dismissChat() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Back to chats") }
+                else { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") }
+                if !chat.issueDetails.isEmpty {
+                    Button { connectionDetails = true } label: {
+                        Group {
+                            if chat.issueDetails.allSatisfy(\.progress) { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "exclamationmark.circle") }
+                        }.frame(width: 28, height: 40)
+                    }
+                    .accessibilityLabel("查看问题详情")
+                    .accessibilityIdentifier("chat-issue-details")
                 }
-                .accessibilityLabel("查看问题详情")
-                .accessibilityIdentifier("chat-issue-details")
-            }
-            Spacer()
-            Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
-            Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
-            Spacer()
+            }.frame(width: 77, alignment: .leading)
+            HStack(spacing: 5) {
+                Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
+                Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
+            }.buttonStyle(.plain).frame(maxWidth: .infinity)
+            // The ellipsis expands inside its reserved area, never moving the avatars.
             ChatHeaderMenu(expanded: $headerActionsExpanded, onMemory: { memoryRecallVisible = true }, onTerminal: { terminalVisible = true })
+                .frame(width: 148, alignment: .trailing)
+                .animation(.easeInOut(duration: 0.2), value: headerActionsExpanded)
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
-            .animation(.easeInOut(duration: 0.2), value: headerActionsExpanded)
     }
     private func profileAvatar(_ role: String, fallbackName: String) -> some View {
         let profile = store.document("profile")

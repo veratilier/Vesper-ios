@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import ImageIO
+import CryptoKit
 
 enum VesperPalette: String, CaseIterable, Identifiable {
     case white, black, blue
@@ -98,24 +99,67 @@ struct NavigationStyleToggle: View {
 
 @MainActor final class WallpaperStore: ObservableObject {
     static let shared = WallpaperStore(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Appearance", isDirectory: true))
+    struct SavedPhoto: Identifiable {
+        let id: String
+        let thumbnail: UIImage
+    }
     @Published private(set) var image: UIImage?
+    @Published private(set) var history: [SavedPhoto] = []
+    @Published private(set) var selectedID: String?
     private let directory: URL
     private var file: URL { directory.appendingPathComponent("background.jpg") }
     init(directory: URL) {
         self.directory = directory
         image = UIImage(contentsOfFile: file.path)
+        // Preserve the wallpaper imported before background history was introduced.
+        if let data = try? Data(contentsOf: file), image != nil {
+            selectedID = Self.photoID(data)
+            try? archive(data)
+        }
+        reloadHistory()
+    }
+    private var historyDirectory: URL { directory.appendingPathComponent("History", isDirectory: true) }
+    private static func photoID(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    private func archive(_ data: Data) throws {
+        try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+        let destination = historyDirectory.appendingPathComponent(Self.photoID(data) + ".jpg")
+        if !FileManager.default.fileExists(atPath: destination.path) { try data.write(to: destination, options: .atomic) }
+    }
+    private func reloadHistory() {
+        let files = (try? FileManager.default.contentsOfDirectory(at: historyDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        history = files.filter { $0.pathExtension == "jpg" }.sorted {
+            ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
+            ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+        }.compactMap { url in
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 200,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+                  ] as CFDictionary) else { return nil }
+            return SavedPhoto(id: url.deletingPathExtension().lastPathComponent, thumbnail: UIImage(cgImage: thumbnail))
+        }
+    }
+    func select(_ id: String) throws {
+        guard history.contains(where: { $0.id == id }) else { throw ServiceError(message: "This background is unavailable.") }
+        let data = try Data(contentsOf: historyDirectory.appendingPathComponent(id + ".jpg"))
+        guard let decoded = UIImage(data: data) else { throw ServiceError(message: "Could not read this background.") }
+        try data.write(to: file, options: .atomic)
+        image = decoded; selectedID = id
     }
     func importPhoto(_ data: Data) async throws {
         let jpeg = try await Task.detached(priority: .userInitiated) { try Self.preparePhoto(data) }.value
         try Task.checkCancellation()
         guard let decoded = UIImage(data: jpeg) else { throw ServiceError(message: "Could not read this photo.") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try archive(jpeg)
         try jpeg.write(to: file, options: .atomic)
-        image = decoded
+        image = decoded; selectedID = Self.photoID(jpeg)
+        reloadHistory()
     }
     func reset() throws {
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-        image = nil
+        image = nil; selectedID = nil
     }
     // Downsample before decoding full-resolution camera images; apply EXIF rotation.
     nonisolated static func preparePhoto(_ data: Data) throws -> Data {
@@ -172,6 +216,14 @@ struct AppearanceSettingsView: View {
     @State private var showingIssue = false
     @Environment(\.scenePhase) private var phase
 
+    private func backgroundThumbnail(_ image: Image, selected: Bool) -> some View {
+        image.resizable().scaledToFill().frame(width: 76, height: 92)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? VesperTheme.accent : .white.opacity(0.3), lineWidth: selected ? 3 : 1))
+            .overlay(alignment: .bottomTrailing) {
+                if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, VesperTheme.accent).padding(5) }
+            }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -187,14 +239,24 @@ struct AppearanceSettingsView: View {
                                 }.foregroundStyle((VesperPalette(rawValue: palette) ?? .blue).ink)
                             }
                     }.frame(height: 180).clipShape(RoundedRectangle(cornerRadius: 18))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(wallpaper.history) { saved in
+                                Button { perform { try wallpaper.select(saved.id) } } label: {
+                                    backgroundThumbnail(Image(uiImage: saved.thumbnail), selected: wallpaper.selectedID == saved.id)
+                                }.accessibilityLabel("Saved background").accessibilityAddTraits(wallpaper.selectedID == saved.id ? .isSelected : [])
+                            }
+                            ForEach(VesperPalette.allCases) { item in
+                                Button { perform { try wallpaper.reset(); palette = item.rawValue } } label: {
+                                    backgroundThumbnail(Image(item.background), selected: wallpaper.image == nil && palette == item.rawValue)
+                                }.accessibilityLabel(item.name + " background")
+                            }
+                        }.padding(3)
+                    }.accessibilityIdentifier("background-history").disabled(importing)
                     PhotosPicker(selection: $photo, matching: .images) {
                         HStack { Label("Choose photo", systemImage: "photo"); Spacer(); if importing { ProgressView() } }
                             .frame(minHeight: 44).contentShape(Rectangle())
                     }.disabled(importing)
-                    if wallpaper.image != nil {
-                        Button("Use theme background") { perform { try wallpaper.reset() } }
-                            .frame(minHeight: 44).disabled(importing)
-                    }
                     HStack { Text(palette == "black" ? "Darken background" : "Lighten background"); Spacer(); Text("\(Int(shade * 100))%") }
                         .font(.caption).foregroundStyle(VesperTheme.muted)
                     Slider(value: $shade, in: 0...0.7).accessibilityLabel("Background readability")
@@ -207,8 +269,6 @@ struct AppearanceSettingsView: View {
                             Text("Cards and buttons").font(.caption).foregroundStyle(VesperTheme.muted)
                         }
                         Spacer()
-                        Image(systemName: "play.fill").frame(width: 44, height: 44)
-                            .vesperGlass(in: Circle())
                     }.padding(.vertical, 8)
                     HStack {
                         Text("Glass transparency")

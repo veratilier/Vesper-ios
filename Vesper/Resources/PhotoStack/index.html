@@ -5,7 +5,7 @@
 <link rel="stylesheet" href="photo-stack.css">
 <style>
 html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;height:100%;-webkit-text-size-adjust:100%}
-#album{position:absolute;left:50%;top:14px;transform:translateX(-50%)} .pstack-card img{object-fit:cover}
+#album{position:absolute;left:24px;top:14px} html[data-trailing="true"] #album{left:auto;right:24px} .pstack-card img{object-fit:cover}
 @media(prefers-reduced-motion:reduce){.pstack-card{transition:none!important}}
 </style></head><body>
 <div id="album" role="group" aria-label="Photos"></div>
@@ -13,6 +13,7 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;h
 <script>
 // Vesper adapter. The upstream PhotoStack class is loaded unchanged above.
 const normalFinish=PhotoStack.prototype._finish;
+window.setAlignment=trailing=>document.documentElement.dataset.trailing=String(trailing);
 window.setReducedMotion=function(enabled){
  PhotoStack.prototype._finish=enabled?function(dir){
   if(this._anim)cancelAnimationFrame(this._anim);this._anim=null;this._animDir=0;

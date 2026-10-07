@@ -10,14 +10,12 @@ import NaturalLanguage
     @Published var file: ChatFile?
     @Published var error: String?
     @Published var startedAt: Date?
-    private var recordingLocale = VoiceRecognitionPreferences.recordingLocale()
     private var recorder: AVAudioRecorder?
     private var url: URL?
     private var recognition: SFSpeechRecognitionTask?
     private var generation = UUID()
     func start() async {
         guard !recording, !processing, file == nil else { return }
-        recordingLocale = VoiceRecognitionPreferences.recordingLocale()
         processing = true; error = nil
         let id = UUID(); generation = id
         let allowed = await AVAudioApplication.requestRecordPermission()
@@ -49,7 +47,7 @@ import NaturalLanguage
             let allowed = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) } }
             guard generation == id else { return }
             var transcript = ""
-            if allowed { transcript = await transcribe(url, locale: recordingLocale) }
+            if allowed { transcript = await transcribe(url) }
             guard generation == id else { return }
             file = ChatFile(name: "Voice-" + UUID().uuidString + ".m4a", mime: "audio/mp4", data: data, transcript: transcript, duration: duration)
         } catch { self.error = error.localizedDescription }
@@ -72,7 +70,7 @@ import NaturalLanguage
         guard !text.isEmpty else { throw ServiceError(message: "暂时未能识别这条语音，可以再次长按转文字。") }
         return text
     }
-    private func transcribe(_ url: URL, locale: Locale) async -> String {
+    private func transcribe(_ url: URL, locale: Locale = Locale(identifier: UserDefaults.standard.string(forKey: "voiceTranscriptionLocale") ?? Locale.current.identifier)) async -> String {
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return "" }
         return await withCheckedContinuation { continuation in
             var finished = false
@@ -282,9 +280,7 @@ private struct VoiceTranslationTask: View {
     }
 }
 
-struct VoiceRecognitionLanguages: View {
-    var title = "语音识别语言"
-    var selectedIdentifier: String = UserDefaults.standard.string(forKey: "voiceTranscriptionLocale") ?? ""
+private struct VoiceRecognitionLanguages: View {
     let onChoose: (Locale) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
@@ -306,12 +302,12 @@ struct VoiceRecognitionLanguages: View {
                     HStack {
                         Text(Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)
                         Spacer()
-                        if Locale(identifier: locale.identifier) == Locale(identifier: selectedIdentifier) { Image(systemName: "checkmark") }
+                        if locale.identifier == UserDefaults.standard.string(forKey: "voiceTranscriptionLocale") { Image(systemName: "checkmark") }
                     }
                 }
             }
             .searchable(text: $search, prompt: "搜索语言 / Español")
-            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("语音识别语言").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
         }
     }

@@ -157,7 +157,6 @@ struct ChatView: View {
     @State private var chatVisible = false
     @State private var incomingFrames: [String: CGRect] = [:]
     @State private var scrollFrame = CGRect.zero
-    @State private var recordingLanguagePicker = false
     @State private var headerFrame = CGRect.zero
     @State private var composerFrame = CGRect.zero
 
@@ -485,12 +484,6 @@ struct ChatView: View {
                 }
             } catch { chat.error = error.localizedDescription }
         }
-        .sheet(isPresented: $recordingLanguagePicker) {
-            VoiceRecognitionLanguages(title: "我的语音识别语言", selectedIdentifier: VoiceRecognitionPreferences.recordingLocale().identifier) { locale in
-                UserDefaults.standard.set(locale.identifier, forKey: VoiceRecognitionPreferences.recordingKey)
-                recordingLanguagePicker = false
-            }
-        }
         .sheet(isPresented: $locationPicker) { locationSheet }
         .sheet(isPresented: $musicPicker) { musicSheet }
         .sheet(isPresented: $history) { historySheet }
@@ -711,11 +704,6 @@ struct ChatView: View {
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
                 Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
-                    .contextMenu {
-                        Button("识别语言", systemImage: "globe") { recordingLanguagePicker = true }
-                            .disabled(voiceRecorder.recording)
-                    }
-                    .accessibilityHint("长按选择识别语言，默认中文")
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,

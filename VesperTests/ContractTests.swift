@@ -1598,13 +1598,26 @@ private final class BubblePersistenceProtocol: URLProtocol {
                 if count <= 0 { break }; bytes.append(buffer, count: count)
             }
         }
-        if request.httpMethod == "POST", let record = try? JSONDecoder().decode(JSONValue.self, from: bytes) {
+        let record = (try? JSONDecoder().decode(JSONValue.self, from: bytes)) ?? .null
+        if request.httpMethod == "POST", record != .null {
             Self.lock.lock(); Self.storage.append(record); Self.lock.unlock()
         }
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        var status = 200
+        var result: JSONValue = .object([:])
+        if record["name"].string == "sticker_send" {
+            if record["turnId"].string.isEmpty || record["conversationId"].string.isEmpty {
+                status = 400
+                result = .object(["error": .string("The sticker must belong to the current conversation turn.")])
+            } else {
+                result = .object(["result": .object(["stickerMessage": .object([
+                    "assetId": .string("fixture-sticker"), "url": .string("https://bubble-test.example/sticker.png"), "mimeType": .string("image/png")])])])
+            }
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("{}".utf8)); client?.urlProtocolDidFinishLoading(self)
+        client?.urlProtocol(self, didLoad: try! JSONEncoder().encode(result)); client?.urlProtocolDidFinishLoading(self)
     }
+
     override func stopLoading() {}
 }
 
@@ -1640,5 +1653,52 @@ extension ChatConnectionRecoveryTests {
         XCTAssertEqual(socket.packets.last { $0["id"].string == "bad" }?["result"]["success"], .bool(false))
         XCTAssertEqual(chat.messages.filter { !$0["metadata"]["bubbles"].array.isEmpty }.count, 1)
         XCTAssertEqual(BubblePersistenceProtocol.records.filter { !$0["metadata"]["bubbles"].array.isEmpty }.count, 1)
+    }
+}
+
+
+extension ChatConnectionRecoveryTests {
+    func testStickerDeliveryUsesRequestTurnEvenWithoutActiveSessionTurn() async throws {
+        BubblePersistenceProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [BubblePersistenceProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
+        chat.configureConnection(api: APIClient(baseURL: "https://bubble-test.example", historyURL: "https://bubble-test.example", token: "synthetic", requestSession: http), endpoint: "wss://bubble-test.example", threadID: "thread")
+        defer { chat.disconnect() }
+        try await chat.connect()
+        func packet(_ id: String, turn: String?, thread: String = "thread") -> JSONValue {
+            var params: JSONValue = .object(["name": .string("sticker_send"), "callId": .string(id), "threadId": .string(thread),
+                                            "arguments": .object(["assetId": .string("fixture-sticker")])])
+            if let turn { params["turnId"] = .string(turn) }
+            return .object(["id": .string(id), "method": .string("item/tool/call"), "params": params])
+        }
+        // Reconnected client has no active turn; the request still identifies its origin.
+        XCTAssertFalse(chat.busy)
+        try socket.emit(packet("after-reconnect", turn: "request-turn"))
+        await eventually { socket.packets.contains { $0["id"].string == "after-reconnect" && $0["result"] != .null } }
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "after-reconnect" }?["result"]["success"], .bool(true))
+        let forwarded = try XCTUnwrap(BubblePersistenceProtocol.records.first { $0["name"].string == "sticker_send" })
+        XCTAssertEqual(forwarded["turnId"].string, "request-turn")
+        XCTAssertEqual(forwarded["threadId"].string, "thread")
+        XCTAssertEqual(forwarded["conversationId"].string, chat.conversationID)
+        let saved = try XCTUnwrap(BubblePersistenceProtocol.records.first { $0["type"].string == "sticker" })
+        XCTAssertEqual(saved["metadata"]["turnId"].string, "request-turn")
+        XCTAssertEqual(chat.messages.first { $0.id == saved.id }?["metadata"]["sticker"]["assetId"].string, "fixture-sticker")
+
+        try socket.emit(.object(["method": .string("turn/started"), "params": .object(["turn": .object(["id": .string("session-turn")])])]))
+        await eventually { chat.busy }
+        try socket.emit(packet("explicit-turn", turn: "another-request-turn"))
+        await eventually { socket.packets.contains { $0["id"].string == "explicit-turn" && $0["result"] != .null } }
+        XCTAssertEqual(BubblePersistenceProtocol.records.last { $0["name"].string == "sticker_send" }?["turnId"].string, "another-request-turn")
+        // Older tool requests without a turn use the captured session turn.
+        try socket.emit(packet("legacy", turn: nil))
+        await eventually { socket.packets.contains { $0["id"].string == "legacy" && $0["result"] != .null } }
+        XCTAssertEqual(BubblePersistenceProtocol.records.last { $0["name"].string == "sticker_send" }?["turnId"].string, "session-turn")
+        let count = BubblePersistenceProtocol.records.count
+        try socket.emit(packet("wrong-thread", turn: "other-turn", thread: "other-thread"))
+        await eventually { socket.packets.contains { $0["id"].string == "wrong-thread" && $0["result"] != .null } }
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "wrong-thread" }?["result"]["success"], .bool(false))
+        XCTAssertEqual(BubblePersistenceProtocol.records.count, count)
     }
 }

@@ -1513,8 +1513,17 @@ enum ChatUserInput {
                 return
             }
             if ["item/tool/call", "tool/call", "tools/call"].contains(method) {
+                // Capture the request's origin before yielding to later socket events.
+                // Session turn state can be empty after reconnect or change while a tool awaits I/O.
+                let targetConversation = conversationID
+                let targetThread = p["threadId"].string.isEmpty ? (threadID ?? "") : p["threadId"].string
+                let targetTurn = p["turnId"].string.isEmpty ? (turnID ?? "") : p["turnId"].string
+                guard targetThread == (threadID ?? "") else {
+                    try? await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(false), "contentItems": .array([.object(["type": .string("inputText"), "text": .string("This tool request belongs to another chat.")])])])]))
+                    return
+                }
                 // Do not block the socket receive loop on a tool: later events and RPC replies must keep flowing.
-                Task { await executeTool(packet) }; return
+                Task { await executeTool(packet, targetConversation: targetConversation, targetThread: targetThread, targetTurn: targetTurn) }; return
             }
             if method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" {
                 if approval == nil { approval = packet }
@@ -1645,13 +1654,10 @@ enum ChatUserInput {
         do { try await sendPacket(.object(["id": packet["id"], "result": .object(["decision": .string(accept ? "accept" : "decline")])])) ; approval = nil }
         catch { guard (try? checkCallback()) != nil else { return }; self.error = error.localizedDescription }
     }
-    private func executeTool(_ packet: JSONValue) async {
+    private func executeTool(_ packet: JSONValue, targetConversation: String, targetThread: String, targetTurn: String) async {
         guard (try? checkCallback()) != nil else { return }
         guard let api else { return }
         let p = packet["params"]; let name = p["tool"].string.isEmpty ? p["name"].string : p["tool"].string
-        let targetConversation = conversationID
-        let targetThread = threadID ?? ""
-        let targetTurn = turnID ?? ""
         let callID = p["callId"].string.isEmpty ? (p["itemId"].string.isEmpty ? packet["id"].pretty : p["itemId"].string) : p["callId"].string
         let toolStarted = Date()
         var toolError: String?
@@ -1888,7 +1894,7 @@ enum ChatUserInput {
                 try checkCallback()
                 return
             }
-            var r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(threadID ?? ""), "conversationId": .string(conversationID), "turnId": .string(turnID ?? ""), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
+            var r = try await api.request("/api/codex/tools", method: "POST", body: .object(["name": .string(name), "arguments": args, "threadId": .string(targetThread), "conversationId": .string(targetConversation), "turnId": .string(targetTurn), "itemId": p["callId"] == .null ? p["itemId"] : p["callId"]]))
                 try checkCallback()
             if ["music_play", "music_control", "music_seek", "music_playlist_play"].contains(name), let player = appStore?.musicPlayer {
                 let command = r["result"]["command"]

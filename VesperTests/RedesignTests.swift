@@ -45,7 +45,7 @@ private struct ControlsPalettePreview: View {
                     else if page == "Settings" { SettingsView() }
                     else { ScrollView { VesperAppGrid(editing: .constant(false), open: { _ in }).padding(18) } }
                 }.navigationTitle(page).navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) { AppearancePicker() } }
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationStyleToggle() } }
         }
     }
 }
@@ -130,7 +130,211 @@ private struct JournalLayoutFixture: View {
     }
 }
 
+@MainActor private final class MiniMusicNavigationState: ObservableObject {
+    @Published var detail = false
+}
+private struct MiniMusicNavigationFixture: View {
+    @ObservedObject var state: MiniMusicNavigationState
+    let dockChanged: (Bool?, CGRect) -> Void
+    var body: some View {
+        TabView {
+            NavigationStack {
+                ZStack {
+                    Background()
+                    VStack {
+                        NavigationLink(isActive: $state.detail) { Text("Detail page").navigationTitle("Detail") } label: { Text("Open detail") }
+                        Spacer()
+                    }.padding(20)
+                }.safeAreaInset(edge: .bottom, spacing: 4) {
+                    MiniMusicPlayer(openMusic: { state.detail = true })
+                        .background { GeometryReader { geometry in
+                            Color.clear.onAppear { dockChanged(true, geometry.frame(in: .global)) }
+                                .onChange(of: geometry.frame(in: .global)) { _, frame in dockChanged(nil, frame) }
+                                .onDisappear { dockChanged(false, .zero) }
+                        } }
+                }.navigationTitle("Home").navigationBarTitleDisplayMode(.inline)
+            }.tabItem { Label("Home", systemImage: "house") }
+            Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }
+            Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }
+            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }
+            Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }
+        }
+    }
+}
+
+private struct GlassOpacityFixture: View {
+    let framesChanged: (String, CGRect) -> Void
+    var body: some View {
+        ZStack {
+            HStack(spacing: 0) {
+                ForEach(0..<20) { index in
+                    Rectangle().fill(index.isMultiple(of: 2) ? Color.cyan : Color.blue)
+                }
+            }.ignoresSafeArea()
+            VStack(spacing: 24) {
+                marker("glass").vesperGlass(in: RoundedRectangle(cornerRadius: 22))
+                marker("material").vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+            }
+        }
+    }
+    private func marker(_ id: String) -> some View {
+        ZStack {
+            Rectangle().fill(.black).frame(width: 20, height: 20)
+            VStack { Text(id).foregroundStyle(.black); Spacer() }.padding(12)
+        }.frame(width: 260, height: 110).background {
+            GeometryReader { geometry in
+                Color.clear.onAppear { framesChanged(id, geometry.frame(in: .global)) }
+                    .onChange(of: geometry.frame(in: .global)) { _, frame in framesChanged(id, frame) }
+            }
+        }
+    }
+}
+
 @MainActor final class RedesignTests: XCTestCase {
+    func testGlassTransparencyChangesOnlySurface() async throws {
+        let suite = "glass-opacity-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set("white", forKey: "vesperPalette")
+        var frames: [String: CGRect] = [:]
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        func content() -> some View {
+            GlassOpacityFixture { frames[$0] = $1 }.defaultAppStorage(preferences)
+                .preferredColorScheme(.light)
+        }
+        let host = UIHostingController(rootView: content())
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        func capture(_ name: String) async throws -> UIImage {
+            try await Task.sleep(for: .milliseconds(500)); host.view.layoutIfNeeded()
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            return image
+        }
+        func pixels(_ image: UIImage, rect: CGRect) throws -> [UInt8] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let crop = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in image.draw(at: CGPoint(x: -rect.minX, y: -rect.minY)) }
+            return Array(try XCTUnwrap(crop.cgImage?.dataProvider?.data) as Data)
+        }
+        let original = try await capture("Glass-default")
+        preferences.set(1.0, forKey: "glassTransparency")
+        let clear = try await capture("Glass-transparent")
+        for id in ["glass", "material"] {
+            let frame = try XCTUnwrap(frames[id])
+            let ink = CGRect(x: frame.midX - 4, y: frame.midY - 4, width: 8, height: 8)
+            XCTAssertEqual(try pixels(original, rect: ink), try pixels(clear, rect: ink), "Foreground must not fade with its glass surface")
+            let background = CGRect(x: frame.minX + 30, y: frame.midY, width: 30, height: 20)
+            XCTAssertNotEqual(try pixels(original, rect: background), try pixels(clear, rect: background), "The visible surface must actually respond to the preference")
+        }
+
+    }
+
+    func testWallpaperPersistsDownsampledPhotoAndRejectsBadReplacement() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 1500), format: format).image { context in
+            UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 1500))
+        }
+        let wallpaper = WallpaperStore(directory: directory)
+        XCTAssertNil(wallpaper.image)
+        try await wallpaper.importPhoto(try XCTUnwrap(source.pngData()))
+        XCTAssertEqual(wallpaper.image?.size.width, 2560)
+        XCTAssertEqual(wallpaper.image?.size.height, 1280)
+        let restored = WallpaperStore(directory: directory)
+        XCTAssertEqual(restored.image?.size, wallpaper.image?.size)
+        let before = try Data(contentsOf: directory.appendingPathComponent("background.jpg"))
+        do { try await wallpaper.importPhoto(Data("not an image".utf8)); XCTFail("Invalid input must be rejected") } catch {}
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("background.jpg")), before)
+        XCTAssertEqual(wallpaper.image?.size.width, 2560)
+        try wallpaper.reset()
+        XCTAssertNil(WallpaperStore(directory: directory).image)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("background.jpg").path))
+    }
+
+    func testAppearanceSettingsLayoutOnSmallAndStandardPhones() async throws {
+        let suite = "appearance-preview-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (palette, width) in [("white", 393), ("black", 320)] {
+            preferences.set(palette, forKey: "vesperPalette")
+            let content = NavigationStack { AppearanceSettingsView() }
+                .defaultAppStorage(preferences).preferredColorScheme(palette == "black" ? .dark : .light)
+                .tint((VesperPalette(rawValue: palette) ?? .white).ink)
+                .foregroundStyle((VesperPalette(rawValue: palette) ?? .white).ink)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 668 : 852)
+            window.rootViewController = UIHostingController(rootView: content); window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(600))
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Appearance-\(palette)-\(width)"
+            attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+
+    func testMiniMusicDockClearsTabBarAndHidesForDetailNavigation() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        let player = MusicPlayer()
+        player.setQueue([.object(["id": .string("fixture-song"), "title": .string("夜里，慢慢听"), "artist": .string("Rowan · A song for Vera")])])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func tabBar(in view: UIView) -> UITabBar? {
+            if let bar = view as? UITabBar, !bar.isHidden { return bar }
+            return view.subviews.lazy.compactMap { tabBar(in: $0) }.first
+        }
+        for (palette, width) in [("white",393),("blue",320),("black",393)] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let state = MiniMusicNavigationState()
+            var visible = false, dock = CGRect.zero
+            let content = MiniMusicNavigationFixture(state: state) { shown, frame in
+                // Geometry can settle after onDisappear during a navigation transition.
+                // Only appearance callbacks establish visibility; frame updates do not.
+                if let shown { visible = shown }
+                dock = frame
+            }
+                .environmentObject(player).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+                .preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
+            let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
+            XCTAssertTrue(visible)
+            let originalDock = dock
+            let bar = try XCTUnwrap(tabBar(in: host.view))
+            XCTAssertLessThanOrEqual(dock.maxY, bar.convert(bar.bounds, to: window).minY + 1)
+            XCTAssertGreaterThan(dock.minY, window.bounds.height - 180)
+            XCTAssertGreaterThanOrEqual(dock.height,48)
+            XCTAssertLessThanOrEqual(dock.height,65)
+            func capture(_ position: String) {
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "Mini-music-\(palette)-\(width)-\(position)"
+                attachment.lifetime = .keepAlways; add(attachment)
+            }
+            capture("root")
+            func waitForVisibility(_ expected: Bool) async throws {
+                // Navigation lifecycle callbacks may arrive after 600 ms on a busy
+                // simulator. Wait for the observed state with a bounded deadline.
+                let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+                while visible != expected && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(50))
+                    host.view.layoutIfNeeded()
+                }
+            }
+            state.detail = true
+            try await waitForVisibility(false)
+            XCTAssertFalse(visible, "The player must disappear when a detail page is pushed")
+            capture("detail")
+            state.detail = false
+            try await waitForVisibility(true)
+            XCTAssertTrue(visible, "Popping back should restore the mini player")
+            XCTAssertEqual(dock.minY,originalDock.minY,accuracy:1)
+            capture("returned")
+        }
+    }
     func testJournalDatesKeepBeijingDaysAndClampMonthTransitions() throws {
         let moment = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-05T16:01:00Z"))
         XCTAssertEqual(JournalDates.label(moment), "2026-10-06")
@@ -178,6 +382,67 @@ private struct JournalLayoutFixture: View {
             window.isHidden = true; window.rootViewController = nil
         }
         chat.disconnect()
+    }
+    func testJournalLongBodyScrollsWithoutMovingHeaderOrFooter() async throws {
+        let previous = UserDefaults.standard.string(forKey: "vesperPalette")
+        defer { if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") } else { UserDefaults.standard.removeObject(forKey: "vesperPalette") } }
+        let store = AppStore(); store.token = ""
+        let date = try XCTUnwrap(JournalDay.date("2026-10-06"))
+        let paragraphs = (1...30).map { "第\($0)段：把今天喜欢的片刻写下来。长日记只滚动正文，日期、标题和作者仍然留在纸页上。" }.joined(separator: "\n\n")
+        store.documents["diary"] = .object(["2026-10-06": .object([
+            "user": .string("# 今天的小事\n\n" + paragraphs),
+            "agent": .string("# 夜里的小记\n\n" + paragraphs)])])
+        let chat = ChatSession(), player = MusicPlayer()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func scrollViews(in view: UIView) -> [UIScrollView] {
+            (view as? UIScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        }
+        func tabBar(in view: UIView) -> UITabBar? {
+            if let bar = view as? UITabBar, !bar.isHidden { return bar }
+            return view.subviews.lazy.compactMap { tabBar(in: $0) }.first
+        }
+        for (author, palette, width) in [(JournalAuthor.rowan, "white", 393), (.vera, "blue", 320), (.rowan, "black", 393)] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let content = JournalLayoutFixture(contacts: false, author: author, date: date)
+                .environmentObject(store).environmentObject(chat).environmentObject(player).environmentObject(chat.composer)
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)
+            let host = UIHostingController(rootView: content); window.rootViewController = host; window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await Task.sleep(for: .milliseconds(700)); host.view.layoutIfNeeded()
+            let vertical = scrollViews(in: host.view).filter { $0.contentSize.height > $0.bounds.height + 100 }
+            XCTAssertEqual(vertical.count, 1, "Only the diary body should scroll vertically")
+            let scroll = try XCTUnwrap(vertical.first)
+            let frame = scroll.convert(scroll.bounds, to: window)
+            let dock = try XCTUnwrap(tabBar(in: host.view))
+            XCTAssertGreaterThan(frame.minY, 350, "Date, mood tags and diary heading must stay above the scrolling body")
+            XCTAssertGreaterThan(frame.height, 70)
+            XCTAssertLessThan(frame.maxY, dock.convert(dock.bounds, to: window).minY - 44, "The fixed author row must clear the tab bar")
+            func capture(_ position: String) -> UIImage {
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "Journal-pinned-\(author.rawValue)-\(palette)-\(width)-\(position)"
+                attachment.lifetime = .keepAlways; add(attachment)
+                return image
+            }
+            let before = capture("top")
+            scroll.setContentOffset(CGPoint(x: 0, y: scroll.contentSize.height - scroll.bounds.height), animated: false)
+            try await Task.sleep(for: .milliseconds(200)); host.view.layoutIfNeeded()
+            let after = capture("bottom")
+            func difference(_ rect: CGRect) throws -> Double {
+                let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+                func pixels(_ image: UIImage) throws -> [UInt8] {
+                    let crop = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in image.draw(at: CGPoint(x: -rect.minX, y: -rect.minY)) }
+                    return Array(try XCTUnwrap(crop.cgImage?.dataProvider?.data) as Data)
+                }
+                let first = try pixels(before), second = try pixels(after)
+                return Double(zip(first, second).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }) / Double(first.count)
+            }
+            let header = CGRect(x: 44, y: frame.minY - 110, width: CGFloat(width) - 88, height: 100)
+            let footer = CGRect(x: 44, y: frame.maxY + 12, width: CGFloat(width) - 88, height: 44)
+            XCTAssertLessThan(try difference(header), 1, "Date and title must remain visually fixed")
+            XCTAssertLessThan(try difference(footer), 1, "Author and edit control must remain visually fixed")
+            XCTAssertGreaterThan(try difference(frame.insetBy(dx: 10, dy: 10)), 2, "The body must actually scroll to different text")
+        }
     }
     func testLibraryRowsAndSecondarySurfacesUseDockGlass() async throws {
         let previous = UserDefaults.standard.string(forKey: "vesperPalette")
@@ -635,6 +900,84 @@ private struct JournalLayoutFixture: View {
         let elapsed = start.duration(to: .now)
         print("CHAT_PRESENTATION_1000_ROWS_20_PASSES: \(elapsed)")
         XCTAssertLessThan(elapsed, .seconds(5))
+    }
+
+    func testMusicResumeSurvivesRelaunchAndUnpreparedPlayerPolling() throws {
+        let suite = "music-resume-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        func song(_ id: String) -> JSONValue {
+            .object(["id": .string(id), "source": .string("appleMusic"), "appleMusicId": .string(id),
+                     "title": .string("Song " + id), "artist": .string("Artist"), "duration": .number(240),
+                     "lyrics": .array([.object(["time": .number(0), "text": .string("Fixture")])])])
+        }
+        let queue = [song("101"), song("102")]
+        let first = MusicPlayer(preferences: preferences)
+        first.setQueue(queue)
+        first.track = queue[1]
+        first.position = 83.5
+        first.duration = 240
+        first.cycleMode()
+        first.savePlaybackState()
+
+        let reopened = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(reopened.tracks, queue)
+        XCTAssertEqual(reopened.track, queue[1])
+        XCTAssertEqual(reopened.position, 83.5)
+        XCTAssertEqual(reopened.mode, "repeat")
+        XCTAssertFalse(reopened.playing)
+        XCTAssertFalse(reopened.resolving)
+        reopened.synchronize()
+        reopened.synchronize()
+        XCTAssertEqual(reopened.position, 83.5, "An empty native player must not reset restored progress")
+        XCTAssertNil(reopened.error)
+        reopened.seek(112)
+        let afterSeek = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(afterSeek.position, 112, "Seeking before preparation must update the resume point")
+        afterSeek.play()
+        XCTAssertTrue(afterSeek.resolving)
+        XCTAssertEqual(afterSeek.position, 112, "Play must prepare the song at its restored position, not zero")
+        afterSeek.synchronize()
+        XCTAssertEqual(afterSeek.position, 112, "Polling during preparation must preserve the resume point")
+        afterSeek.pause()
+        XCTAssertEqual(MusicPlayer(preferences: preferences).position, 112)
+    }
+
+    func testMusicResumePreservesQueueEditsAndClearsRemovedCurrentSong() throws {
+        let suite = "music-queue-resume-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let a: JSONValue = .object(["id": .string("a"), "duration": .number(120)])
+        let b: JSONValue = .object(["id": .string("b"), "duration": .number(180)])
+        let player = MusicPlayer(preferences: preferences)
+        player.setQueue([a]); player.seek(40)
+        player.setQueue([b], append: true)
+        XCTAssertEqual(player.position, 40)
+        XCTAssertFalse(player.resolving, "Editing a restored queue must not request music authorization")
+        XCTAssertEqual(MusicPlayer(preferences: preferences).tracks, [a, b])
+        player.remove("a")
+        let replacement = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(replacement.track, b)
+        XCTAssertEqual(replacement.position, 0)
+        replacement.setQueue([])
+        let empty = MusicPlayer(preferences: preferences)
+        XCTAssertEqual(empty.track, .null)
+        XCTAssertTrue(empty.tracks.isEmpty)
+        XCTAssertEqual(empty.position, 0)
+    }
+
+    func testMusicResumeClampsPositionAndIgnoresCorruptStorage() throws {
+        let suite = "music-invalid-resume-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(Data("invalid".utf8), forKey: "music.playbackResume.v1")
+        XCTAssertEqual(MusicPlayer(preferences: preferences).track, .null)
+        let player = MusicPlayer(preferences: preferences)
+        player.setQueue([.object(["id": .string("a"), "duration": .number(120)])])
+        player.position = 999; player.savePlaybackState()
+        XCTAssertEqual(MusicPlayer(preferences: preferences).position, 120)
+        player.position = .nan; player.savePlaybackState()
+        XCTAssertEqual(MusicPlayer(preferences: preferences).position, 0)
     }
 
     func testAppleMusicQueueIncludesFollowingSongsAndSkipsLegacyCards() {

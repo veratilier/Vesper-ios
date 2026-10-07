@@ -3,11 +3,12 @@ import SwiftUI
 /// Inline Markdown preserves line breaks; web links open without leaving the chat.
 struct ChatMarkdownText: View {
     let content: String
+    var selectable = true
 
     var body: some View {
         Text(Self.render(content))
             .tint(VesperTheme.accent)
-            .textSelection(.enabled)
+            .modifier(ChatTextSelection(enabled: selectable))
             .modifier(ChatInAppLinks())
     }
 
@@ -60,4 +61,11 @@ struct ChatMarkdownText: View {
         return text
     }
 
+}
+
+private struct ChatTextSelection: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.textSelection(.enabled) } else { content.textSelection(.disabled) }
+    }
 }

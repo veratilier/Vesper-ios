@@ -2,6 +2,8 @@ import SwiftUI
 
 struct NativeChatHome: View {
     var onMenu: (() -> Void)? = nil
+    var onOpenMusic: (() -> Void)? = nil
+    var onRootVisibilityChange: (Bool) -> Void = { _ in }
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var phase
@@ -98,8 +100,8 @@ struct NativeChatHome: View {
                     .listRowSeparator(.hidden)
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
             .listStyle(.plain)
-            .onAppear { contactsVisible = true; updateWelcomeLine() }
-            .onDisappear { contactsVisible = false }
+            .onAppear { contactsVisible = true; onRootVisibilityChange(true); updateWelcomeLine() }
+            .onDisappear { contactsVisible = false; onRootVisibilityChange(false) }
             .onChange(of: phase) { _, value in
                 if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
             }
@@ -109,6 +111,9 @@ struct NativeChatHome: View {
 
     private var contactsWithNavigation: some View {
         contactList
+            .safeAreaInset(edge: .bottom, spacing: 4) {
+                if !NativeMusicAccessory.isSupported, let onOpenMusic { MiniMusicPlayer(openMusic: onOpenMusic) }
+            }
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -136,6 +141,7 @@ struct NativeChatHome: View {
                 chat.configure(store); await chat.loadConversations()
                 if !openedOnce { openedOnce = true }
             }
+            .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(!detail) }
             .onChange(of: open) { _, isOpen in
                 if !isOpen {
                     openingTask?.cancel(); openingTask = nil; loadingChat = false
@@ -314,7 +320,7 @@ struct ChatFavoritesView: View {
                         opening = true
                         Task {
                             let opened = await chat.openSearchResult(.object([
-                                "id": item["messageId"], "conversationId": item["conversationId"]
+                                "id": item["metadata"]["sourceMessageId"].string.isEmpty ? item["messageId"] : item["metadata"]["sourceMessageId"], "conversationId": item["conversationId"]
                             ]))
                             opening = false
                             if opened { dismiss(); selected() }

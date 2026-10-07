@@ -31,7 +31,7 @@ import Foundation
             .array(current.array.filter { item in
                 guard item["conversationId"].string == conversationID else { return true }
                 return messageID.map { id in
-                item["messageId"].string != id && !item["metadata"]["sharedMedia"].array.contains(where: { $0.id == id })
+                item["messageId"].string != id && item["metadata"]["sourceMessageId"].string != id && !item["metadata"]["sharedMedia"].array.contains(where: { $0.id == id })
             } ?? false
             })
         }

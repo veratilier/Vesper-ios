@@ -418,6 +418,7 @@ struct NativeCallView: View {
     @StateObject private var camera = CallCamera()
     @Environment(\.scenePhase) private var phase
     @State private var startedAt: Date?
+    @State private var callReplyOrigin: JSONValue = .null
     @State private var callConversation = ""
     @State private var usedVideo = false
     @State private var transcript: [JSONValue] = []
@@ -545,7 +546,7 @@ struct NativeCallView: View {
                 .buttonStyle(.plain).accessibilityLabel("End call")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
+        .vesperMaterial(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(.white.opacity(0.55), lineWidth: 1))
         .shadow(radius: 10, y: 5)
     }
@@ -563,7 +564,7 @@ struct NativeCallView: View {
                     if video && active {
                         Button { flipCamera() } label: {
                             Image(systemName: "camera.rotate").font(.system(size: 18))
-                                .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                                .frame(width: 44, height: 44).vesperMaterial(.regularMaterial, in: Circle())
                         }.buttonStyle(.plain).disabled(cameraBusy).accessibilityLabel("Switch camera")
                     }
                     Spacer()
@@ -571,12 +572,12 @@ struct NativeCallView: View {
                         Image(systemName: "arrow.down.right.and.arrow.up.left")
                             .font(.system(size: 18, weight: .medium))
                             .frame(width: 44, height: 44)
-                            .background(.regularMaterial, in: Circle())
+                            .vesperMaterial(.regularMaterial, in: Circle())
                     }.buttonStyle(.plain).accessibilityLabel("Minimize call")
                 }
                 if !video && !typingFocused {
                     CallPortrait().frame(width: 104, height: 104)
-                        .padding(10).background(.ultraThinMaterial, in: Circle())
+                        .padding(10).vesperMaterial(.ultraThinMaterial, in: Circle())
                 }
                 VStack(spacing: 5) {
                     Text("Rowan").font(.title2.weight(.semibold))
@@ -610,7 +611,7 @@ struct NativeCallView: View {
                     Button("Send speech now") { submit() }
                         .font(.caption.weight(.medium)).foregroundStyle(video ? Color.white : VesperTheme.ink)
                         .padding(.horizontal, 14).padding(.vertical, 7)
-                        .background(.regularMaterial, in: Capsule())
+                        .vesperMaterial(.regularMaterial, in: Capsule())
                 }
                 if let quietHangupMinutes {
                     HStack {
@@ -620,7 +621,7 @@ struct NativeCallView: View {
                 }
                 if let error = voice.error ?? notice ?? speech.error ?? cameraNotice ?? systemCall.error {
                     Text(error).font(.caption).foregroundStyle(.red)
-                        .padding(9).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(9).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
                 HStack(spacing: 10) {
                     TextField("Type to Rowan…", text: $typedMessage, axis: .vertical)
@@ -637,7 +638,7 @@ struct NativeCallView: View {
                     .disabled(!active || waiting || callChat.busy || typedMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+                .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
                 if !active {
                     Button { player.pause(); Task { do { try await systemCall.start() } catch { notice = error.localizedDescription } } } label: {
                         Text(systemCall.id == nil ? "Start call" : "Connecting…")
@@ -730,6 +731,7 @@ struct NativeCallView: View {
         guard systemCall.audioReady else { return }
         if !active {
             player.pause(); active = true; chat.callActive = true; startedAt = Date(); callConversation = chat.conversationID
+            callReplyOrigin = initiator == "agent" ? chat.incomingCallOrigin : .null
             if let startedAt { CallLiveActivity.shared.start(at: startedAt, isVideo: video,
                 avatar: store.document("profile")["agentAvatar"].string) }
         }
@@ -877,9 +879,9 @@ struct NativeCallView: View {
         systemCall.end()
         if let start = startedAt {
             startedAt = nil
-            let entries = transcript; let target = callConversation; let wasVideo = usedVideo
+            let entries = transcript; let target = callConversation; let wasVideo = usedVideo; let replyOrigin = callReplyOrigin
             let ended = Date()
-            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator) }
+            Task { await chat.saveCall(start: start, end: ended, video: wasVideo, transcript: entries, target: target, initiator: initiator, replyOrigin: replyOrigin) }
         }
         chat.callActive = false
         presentation.close()
@@ -918,7 +920,7 @@ struct CallInvitation: View {
                 Button(action: decline) { VStack(spacing: 8) { Image(systemName: "phone.down.fill").frame(width: 52, height: 52).background(Color.red.opacity(0.12), in: Circle()); Text("Decline").font(.caption) }.foregroundStyle(.red) }
                 Button(action: accept) { VStack(spacing: 8) { Image(systemName: "phone.fill").frame(width: 52, height: 52).background(VesperTheme.ink, in: Circle()).foregroundStyle(.white); Text("Accept").font(.caption) } }
             }.font(.system(size: 21)).buttonStyle(.plain).padding(.top, 8)
-        }.padding(28).frame(maxWidth: 320).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
+        }.padding(28).frame(maxWidth: 320).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 30))
             .overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.6), lineWidth: 1))
             .shadow(color: .black.opacity(0.08), radius: 24, y: 12).accessibilityAddTraits(.isModal)
     }
@@ -952,7 +954,7 @@ struct ChatLocationCard: View {
                         Text("±\(Int(location["horizontalAccuracyMeters"].number)) m")
                     }.font(.caption2).foregroundStyle(VesperTheme.muted).padding(10)
                 }.frame(width: 270).foregroundStyle(VesperTheme.ink)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(VesperTheme.muted.opacity(0.18)))
             }.buttonStyle(.plain).accessibilityLabel("Shared location. Open in Maps")

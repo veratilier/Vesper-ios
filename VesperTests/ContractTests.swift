@@ -393,6 +393,58 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(rows[0].presentedMessage["metadata"]["attachmentOnly"], .bool(false))
     }
 
+    func testWholeAssistantTurnSharesTimestampIncludingLegacyVoiceAndMultipleTexts() {
+        var voice = sharedReply("voice:thread:call", media: "attachments")
+        voice["metadata"]["voiceMessage"] = .bool(true)
+        voice["createdAt"] = .string("2026-10-07T05:31:30Z")
+        var first = sharedReply("first", caption: "语音发过去了。")
+        first["createdAt"] = .string("2026-10-07T05:31:40Z")
+        var second = sharedReply("second", caption: "点开就能听见。")
+        second["createdAt"] = .string("2026-10-07T05:31:41Z")
+        var tool = sharedReply("tool"); tool["role"] = .string("tool")
+        for legacy in [false, true] {
+            var recording = voice
+            if legacy {
+                recording["metadata"]["turnId"] = .null
+                recording["metadata"]["threadId"] = .null
+            }
+            let rows = ChatPresentation.displayRows([recording, tool, first, second])
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows[0].messages.map(\.id), [recording.id, first.id, second.id])
+            XCTAssertEqual(rows[0].presentedMessage["createdAt"], voice["createdAt"])
+            XCTAssertEqual(rows[0].activities.map(\.id), [tool.id])
+            XCTAssertEqual(ChatPresentation.liveHeadingID(rows, turnID: "turn"), rows[0].id)
+        }
+        XCTAssertEqual(ChatPresentation.displayRows([first, second]).count, 1)
+        XCTAssertEqual(ChatPresentation.liveHeadingID(ChatPresentation.displayRows([voice]), turnID: "turn"), voice.id)
+        var unknownVoice = voice
+        unknownVoice["metadata"]["turnId"] = .null
+        unknownVoice["metadata"]["threadId"] = .null
+        unknownVoice["id"] = .string("voice:other-thread:call")
+        XCTAssertEqual(ChatPresentation.displayRows([unknownVoice, first]).count, 2)
+    }
+
+    func testCallCardSharesItsInvitingTurnButNotUserOrUnrelatedCalls() {
+        var call = sharedReply("call-record", caption: "Voice call · 0:01")
+        call["createdAt"] = .string("2026-10-07T05:36:52Z")
+        call["metadata"]["call"] = .object(["initiator": .string("agent"), "startedAt": .string("2026-10-07T05:36:51Z")])
+        var reply = sharedReply("reply", caption: "邀请已经弹出来了。")
+        reply["createdAt"] = .string("2026-10-07T05:36:56Z")
+        let rows = ChatPresentation.displayRows([call, reply])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].messages, [call, reply])
+        XCTAssertEqual(rows[0].presentedMessage["content"], reply["content"])
+        XCTAssertEqual(ChatPresentation.liveHeadingID(rows, turnID: "turn"), rows[0].id)
+        var legacy = call; legacy["metadata"]["turnId"] = .null; legacy["metadata"]["threadId"] = .null
+        XCTAssertEqual(ChatPresentation.displayRows([legacy, reply]).count, 1)
+        legacy["metadata"]["call"]["startedAt"] = .string("2026-10-06T05:36:51Z")
+        XCTAssertEqual(ChatPresentation.displayRows([legacy, reply]).count, 2)
+        var user = call; user["role"] = .string("user"); user["metadata"]["call"]["initiator"] = .string("user")
+        XCTAssertEqual(ChatPresentation.displayRows([user, reply]).count, 2)
+        var other = call; other["metadata"]["turnId"] = .string("other")
+        XCTAssertEqual(ChatPresentation.displayRows([other, reply]).count, 2)
+    }
+
     func testAssistantMediaGroupingRespectsConversationTurnAndMessageBoundaries() {
         let media = sharedReply("media", media: "sticker")
         let text = sharedReply("text", caption: "Hello")
@@ -409,9 +461,9 @@ final class ContractTests: XCTestCase {
         var user = text; user["role"] = .string("user")
         XCTAssertEqual(ChatPresentation.displayRows([media, user, text]).count, 3)
         var voice = media; voice["metadata"]["voiceMessage"] = .bool(true)
-        XCTAssertEqual(ChatPresentation.displayRows([voice, text]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([voice, text]).count, 1)
         var second = text; second["id"] = .string("second")
-        XCTAssertEqual(ChatPresentation.displayRows([media, text, second]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([media, text, second]).count, 1)
         var question = sharedReply("question"); question["role"] = .string("tool"); question["metadata"]["userInput"] = .object(["status": .string("pending")])
         XCTAssertEqual(ChatPresentation.displayRows([media, question, text]).count, 2)
         var userMedia = media; userMedia["role"] = .string("user"); userMedia["content"] = .string("My caption")
@@ -949,6 +1001,37 @@ final class ContractTests: XCTestCase {
         var reply = user; reply["role"] = .string("agent")
         XCTAssertFalse(chat.replyIsStillRunning(user))
         XCTAssertTrue(chat.replyIsStillRunning(reply))
+    }
+
+    func testUnansweredTerminalTurnSharesOneHeadingWithoutCrossingTurnsOrQuestions() {
+        func command(_ id: String, turn: String = "turn", thread: String = "thread", second: Int) -> JSONValue {
+            .object(["id": .string(id), "conversationId": .string("chat"), "role": .string("system"),
+                "createdAt": .string(String(format: "2026-10-07T01:00:%02dZ", second)),
+                "metadata": .object(["turnId": .string(turn), "threadId": .string(thread),
+                    "execution": .object(["type": .string("commandExecution"), "status": .string("failed"), "command": .string("echo fixture")])])])
+        }
+        let first = command("a", second: 1), second = command("b", second: 2), third = command("c", second: 3)
+        let grouped = ChatPresentation.displayRows([first, second, third])
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertTrue(grouped[0].activity)
+        XCTAssertEqual(grouped[0].activities.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(ChatTerminalRecords.entries(grouped[0].activities).count, 3)
+        XCTAssertEqual(ChatPresentation.liveHeadingID(grouped, turnID: "turn"), "a")
+        XCTAssertEqual(ChatPresentation.displayRows([first, command("other", turn: "other", second: 2)]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([first, command("other", thread: "other", second: 2)]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([command("legacy-a", turn: "", second: 1), command("legacy-b", turn: "", second: 2)]).count, 2)
+        var question = second
+        question["metadata"]["userInput"] = .object(["id": .string("question")])
+        XCTAssertEqual(ChatPresentation.displayRows([first, question, third]).count, 3)
+        var reply = third
+        reply["id"] = .string("reply"); reply["role"] = .string("agent")
+        reply["metadata"]["execution"] = .null
+        let answered = ChatPresentation.displayRows([first, second, reply])
+        XCTAssertEqual(answered.count, 1)
+        XCTAssertEqual(answered[0].id, "reply")
+        XCTAssertEqual(answered[0].activities.map(\.id), ["a", "b"])
+        reply["metadata"]["threadId"] = .string("different-thread")
+        XCTAssertEqual(ChatPresentation.displayRows([first, reply]).count, 2)
     }
 
     func testLiveHeadingUsesCurrentTurnAndMovesFromToolToReply() {
@@ -1495,5 +1578,67 @@ extension ChatConnectionRecoveryTests {
         try socket.emit(.object(["method": .string("turn/completed"), "params": .object(["turn": .object(["id": .string("turn")])])]))
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(chat.userInputRequests.count, 1)
+    }
+}
+
+private final class BubblePersistenceProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var storage: [JSONValue] = []
+    static var records: [JSONValue] { lock.lock(); defer { lock.unlock() }; return storage }
+    static func reset() { lock.lock(); storage = []; lock.unlock() }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "bubble-test.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var bytes = request.httpBody ?? Data()
+        if bytes.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }; bytes.append(buffer, count: count)
+            }
+        }
+        if request.httpMethod == "POST", let record = try? JSONDecoder().decode(JSONValue.self, from: bytes) {
+            Self.lock.lock(); Self.storage.append(record); Self.lock.unlock()
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{}".utf8)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+extension ChatConnectionRecoveryTests {
+    func testBubbleToolPersistsVerifiedQuoteAndRejectsFabricatedQuote() async throws {
+        BubblePersistenceProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [BubblePersistenceProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
+        chat.configureConnection(api: APIClient(baseURL: "https://bubble-test.example", historyURL: "https://bubble-test.example", token: "synthetic", requestSession: http), endpoint: "wss://bubble-test.example", threadID: "thread")
+        defer { chat.disconnect() }
+        try await chat.connect()
+        let original: JSONValue = .object(["id": .string("source"), "role": .string("user"), "content": .string("这句我想收藏起来。"), "conversationId": .string(chat.conversationID)])
+        chat.messages = [original]
+        func packet(_ id: String, quote: String) -> JSONValue {
+            .object(["id": .string(id), "method": .string("item/tool/call"), "params": .object([
+                "name": .string("send_native_bubbles"), "callId": .string(id), "arguments": .object([
+                    "bubbles": .array([.object(["text": .string("那就替你留着。"), "replyToMessageId": .string("source"), "quote": .string(quote)]),
+                                       .object(["text": .string("以后看到它，就想起今天。")])])])])])
+        }
+        try socket.emit(packet("good", quote: "这句我想收藏起来。"))
+        await eventually { socket.packets.contains { $0["id"].string == "good" && $0["result"] != .null } }
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "good" }?["result"]["success"], .bool(true))
+        let saved = try XCTUnwrap(BubblePersistenceProtocol.records.first { !$0["metadata"]["bubbles"].array.isEmpty })
+        XCTAssertEqual(saved["metadata"]["bubbles"].array.count, 2)
+        XCTAssertEqual(saved["metadata"]["bubbles"].array[0]["replyTo"]["messageId"].string, "source")
+        XCTAssertEqual(saved["metadata"]["bubbles"].array[0]["replyTo"]["partId"].string, "source#text-0")
+        let restored = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(saved))
+        XCTAssertEqual(ChatBubbles.textParts(restored).map { $0["content"].string }, ["那就替你留着。", "以后看到它，就想起今天。"])
+        try socket.emit(packet("bad", quote: "这句话没有说过。"))
+        await eventually { socket.packets.contains { $0["id"].string == "bad" && $0["result"] != .null } }
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "bad" }?["result"]["success"], .bool(false))
+        XCTAssertEqual(chat.messages.filter { !$0["metadata"]["bubbles"].array.isEmpty }.count, 1)
+        XCTAssertEqual(BubblePersistenceProtocol.records.filter { !$0["metadata"]["bubbles"].array.isEmpty }.count, 1)
     }
 }

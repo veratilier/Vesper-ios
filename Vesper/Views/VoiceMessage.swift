@@ -1,6 +1,8 @@
 import SwiftUI
 import AVFoundation
 import Speech
+import Translation
+import NaturalLanguage
 
 @MainActor final class VoiceMessageRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var recording = false
@@ -50,8 +52,26 @@ import Speech
             file = ChatFile(name: "Voice-" + UUID().uuidString + ".m4a", mime: "audio/mp4", data: data, transcript: transcript, duration: duration)
         } catch { self.error = error.localizedDescription }
     }
-    private func transcribe(_ url: URL) async -> String {
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable else { return "" }
+    func transcribeAttachment(_ attachment: JSONValue, locale: Locale) async throws -> String {
+        guard let source = URL(string: attachment["url"].string), source.scheme == "https" else { throw ServiceError(message: "这条语音没有可读取的音频。") }
+        guard SFSpeechRecognizer.supportedLocales().contains(where: { $0.identifier == locale.identifier }),
+              SFSpeechRecognizer(locale: locale)?.isAvailable == true else { throw ServiceError(message: "当前设备暂不支持这种语言的语音识别，请选择其他语言或稍后重试。") }
+        let allowed = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) } }
+        guard allowed else { throw ServiceError(message: "请在 iOS 设置中允许语音识别后重试。") }
+        let (data, response) = try await URLSession.shared.data(from: source)
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw URLError(.badServerResponse) }
+        try Task.checkCancellation()
+        let ext = (attachment["name"].string as NSString).pathExtension
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext.isEmpty ? "m4a" : ext)
+        try data.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let text = await transcribe(file, locale: locale)
+        try Task.checkCancellation()
+        guard !text.isEmpty else { throw ServiceError(message: "暂时未能识别这条语音，可以再次长按转文字。") }
+        return text
+    }
+    private func transcribe(_ url: URL, locale: Locale = Locale(identifier: UserDefaults.standard.string(forKey: "voiceTranscriptionLocale") ?? Locale.current.identifier)) async -> String {
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return "" }
         return await withCheckedContinuation { continuation in
             var finished = false
             var latest = ""
@@ -113,25 +133,197 @@ import Speech
 
 struct VoiceMessageBar: View {
     let attachment: JSONValue
+    var messageID: String = "voice"
+    var messageActions: () -> [ChatMessageAction] = { [] }
+    var onTranscript: (String) -> Void = { _ in }
+    var onTranslation: (String, String) -> Void = { _, _ in }
     @StateObject private var playback = VoiceMessagePlayback()
+    @StateObject private var transcriber = VoiceMessageRecorder()
     @EnvironmentObject private var music: MusicPlayer
+    @EnvironmentObject private var chat: ChatSession
     @State private var expanded = false
+    @State private var transcript = ""
+    @State private var transcribing = false
+    @State private var transcriptionTask: Task<Void, Never>?
+    @State private var choosingLanguage = false
+    @State private var translateAfterTranscribing = false
+    @State private var translationExpanded = false
+    @State private var translating = false
+    @State private var translatedText = ""
+    @State private var translationSource = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Group {
+                HStack(spacing: 14) {
+                    Image(systemName: playback.playing ? "pause.fill" : "play.fill").font(.system(size: 20))
+                    HStack(spacing: 3) {
+                        ForEach(0..<17) { index in
+                            Capsule().fill(VesperTheme.accent.opacity(playback.playing ? 0.9 : 0.6))
+                                .frame(width: 2.5, height: CGFloat(7 + (index * 7 % 19)))
+                        }
+                    }.accessibilityHidden(true)
+                    Spacer(minLength: 0)
+                    Text(playback.loading ? "…" : "\(Int(max(0, attachment["duration"].number)))″").monospacedDigit()
+                }.font(.system(size: 14)).frame(height: 32).padding(12)
+                    .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            }
+                .modifier(ChatLongPress(id: messageID, actions: {
+                    messageActions() + [
+                        ChatMessageAction(title: expanded ? "收起文字" : "转文字", icon: "text.bubble", run: toggleTranscript),
+                        ChatMessageAction(title: translationExpanded ? "收起翻译" : "翻译", icon: "translate", run: toggleTranslation)
+                    ]
+                }, onTap: {
+                    guard let url = URL(string: attachment["url"].string), url.scheme == "https" else { return }
+                    music.pause(); Task { await playback.toggle(url: url) }
+                }))
+            if expanded {
+                VoiceTranscriptPanel(text: transcript, loading: transcribing, onChooseLanguage: {
+                    translateAfterTranscribing = false; choosingLanguage = true
+                }) { expanded = false }
+            }
+            if translationExpanded {
+                VoiceTranscriptPanel(text: translatedText, loading: translating, title: "中文翻译", loadingText: "正在翻译…") { translationExpanded = false }
+            }
+        }.frame(maxWidth: 250)
+        .sheet(isPresented: $choosingLanguage) {
+            VoiceRecognitionLanguages { locale in
+                choosingLanguage = false
+                UserDefaults.standard.set(locale.identifier, forKey: "voiceTranscriptionLocale")
+                recognize(locale)
+            }
+        }
+        .background {
+            if #available(iOS 18.0, *), translating, !translationSource.isEmpty {
+                VoiceTranslationTask(source: translationSource) { result in
+                    switch result {
+                    case .success(let text):
+                        translatedText = text; onTranslation(translationSource, text)
+                    case .failure(let error):
+                        translationExpanded = false
+                        chat.error = "这条语音暂时无法翻译。请确认该语言受系统支持，并完成语言包下载。\n" + error.localizedDescription
+                    }
+                    translating = false
+                }
+            }
+        }
+        .onChange(of: playback.error) { _, value in if let value { chat.error = value } }
+        .onDisappear { playback.stop(); transcriptionTask?.cancel(); transcriptionTask = nil; transcriber.cancel(); transcribing = false; translating = false }
+    }
+    private func toggleTranscript() {
+        if expanded { expanded = false; return }
+        transcript = transcript.isEmpty ? attachment["transcript"].string : transcript
+        if !transcript.isEmpty { expanded = true; return }
+        translateAfterTranscribing = false; choosingLanguage = true
+    }
+    private func toggleTranslation() {
+        if translationExpanded { translationExpanded = false; return }
+        transcript = transcript.isEmpty ? attachment["transcript"].string : transcript
+        guard !transcript.isEmpty else {
+            translateAfterTranscribing = true; choosingLanguage = true; return
+        }
+        beginTranslation()
+    }
+    private func beginTranslation() {
+        translationExpanded = true
+        let cached = attachment["translation"]
+        if cached["sourceText"].string == transcript && cached["target"].string == "zh-Hans" && !cached["text"].string.isEmpty {
+            translatedText = cached["text"].string; return
+        }
+        if translationSource == transcript && !translatedText.isEmpty { return }
+        if NLLanguageRecognizer.dominantLanguage(for: transcript) == .simplifiedChinese {
+            translatedText = transcript; translationSource = transcript; return
+        }
+        guard #available(iOS 18.0, *) else {
+            translationExpanded = false; chat.error = "语音翻译需要 iOS 18 或更新版本。"; return
+        }
+        translatedText = ""; translationSource = transcript; translating = true
+    }
+    private func recognize(_ locale: Locale) {
+        guard !transcribing else { return }
+        transcribing = true; expanded = true
+        transcriptionTask = Task {
+            defer { transcribing = false }
+            do {
+                let text = try await transcriber.transcribeAttachment(attachment, locale: locale)
+                try Task.checkCancellation()
+                transcript = text; onTranscript(text)
+                translatedText = ""; translationSource = ""; translationExpanded = false
+                if translateAfterTranscribing { beginTranslation() }
+            } catch is CancellationError { }
+            catch { expanded = false; chat.error = error.localizedDescription }
+        }
+    }
+}
+
+@available(iOS 18.0, *)
+private struct VoiceTranslationTask: View {
+    let source: String
+    let onComplete: (Result<String, Error>) -> Void
+    @State private var configuration: TranslationSession.Configuration? = .init(source: nil, target: Locale.Language(identifier: "zh-Hans"))
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .translationTask(configuration) { session in
+                do {
+                    let response = try await session.translate(source)
+                    try Task.checkCancellation()
+                    onComplete(.success(response.targetText))
+                } catch is CancellationError { }
+                catch { onComplete(.failure(error)) }
+            }
+    }
+}
+
+private struct VoiceRecognitionLanguages: View {
+    let onChoose: (Locale) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    private var languages: [Locale] {
+        SFSpeechRecognizer.supportedLocales().sorted {
+            (Locale.current.localizedString(forIdentifier: $0.identifier) ?? $0.identifier) < (Locale.current.localizedString(forIdentifier: $1.identifier) ?? $1.identifier)
+        }.filter { locale in
+            search.isEmpty || [locale.identifier,
+                Locale.current.localizedString(forIdentifier: locale.identifier) ?? "",
+                locale.localizedString(forIdentifier: locale.identifier) ?? "",
+                Locale(identifier: "en").localizedString(forIdentifier: locale.identifier) ?? ""
+            ].contains { $0.localizedCaseInsensitiveContains(search) }
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            List(languages, id: \.identifier) { locale in
+                Button { onChoose(locale) } label: {
+                    HStack {
+                        Text(Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)
+                        Spacer()
+                        if locale.identifier == UserDefaults.standard.string(forKey: "voiceTranscriptionLocale") { Image(systemName: "checkmark") }
+                    }
+                }
+            }
+            .searchable(text: $search, prompt: "搜索语言 / Español")
+            .navigationTitle("语音识别语言").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+        }
+    }
+}
+
+struct VoiceTranscriptPanel: View {
+    let text: String
+    var loading = false
+    var title = "语音转写"
+    var loadingText = "正在转文字…"
+    var onChooseLanguage: (() -> Void)? = nil
+    let onCollapse: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
-                guard let url = URL(string: attachment["url"].string), url.scheme == "https" else { return }
-                music.pause(); Task { await playback.toggle(url: url) }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: playback.playing ? "pause.fill" : "play.fill")
-                    Image(systemName: "waveform").font(.system(size: 16))
-                    let seconds = Int(max(0, attachment["duration"].number))
-                    Text(playback.loading ? "Loading…" : "\(seconds / 60):\(String(format: "%02d", seconds % 60))").monospacedDigit()
-                }.font(.system(size: 14)).frame(minWidth: 100, minHeight: 32).padding(.horizontal, 10).padding(.vertical, 4).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain)
-            Button(expanded ? "Hide transcript" : "View transcript") { expanded.toggle() }.font(.caption)
-            if expanded { Text(attachment["transcript"].string.isEmpty ? "Transcription unavailable." : attachment["transcript"].string).font(.subheadline).textSelection(.enabled).frame(maxWidth: 270, alignment: .leading) }
-            if let error = playback.error { Text(error).font(.caption).foregroundStyle(.red) }
-        }.onDisappear { playback.stop() }
+            Text(title).font(.caption2).foregroundStyle(VesperTheme.muted)
+            if loading { HStack { ProgressView(); Text(loadingText).font(.caption) } }
+            else { Text(text).font(.system(size: 14)).lineSpacing(4).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            HStack {
+                if let onChooseLanguage { Button("识别语言", action: onChooseLanguage).disabled(loading) }
+                Spacer()
+                Button(action: onCollapse) { Label("收起", systemImage: "chevron.up") }
+            }.font(.caption).buttonStyle(.plain).foregroundStyle(VesperTheme.muted)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 }

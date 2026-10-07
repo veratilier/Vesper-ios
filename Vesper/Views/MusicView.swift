@@ -61,14 +61,14 @@ struct MusicView: View {
                             Image(systemName: playbackModeIcon)
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .vesperMaterial(.ultraThinMaterial, in: Circle())
                         }
                         .accessibilityLabel("Playback mode: \(playbackModeName). Tap to change")
                         Button { sheet = .library } label: {
                             Image(systemName: "books.vertical")
                                 .font(.system(size: 19))
                                 .frame(width: 42, height: 42)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .vesperMaterial(.ultraThinMaterial, in: Circle())
                         }
                         .accessibilityLabel("My Music")
                     }
@@ -198,7 +198,7 @@ struct MusicView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 if lyricsFrostedBackground {
-                    RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial)
+                    Color.clear.vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
                 }
             }
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(lyricsFrostedBackground ? 0.5 : 0)))
@@ -217,26 +217,49 @@ struct MusicView: View {
         }
     }
     private var controls: some View {
-        HStack(spacing: 0) {
-            control(showingLyrics ? "quote.bubble.fill" : "quote.bubble", label: showingLyrics ? "Show album cover" : "Show lyrics") {
-                withAnimation(.easeInOut(duration: 0.25)) { showingLyrics.toggle() }
-            }
-            Spacer(minLength: 5)
-            control("backward.end", label: "Previous song") { player.next(-1) }
-            Spacer(minLength: 5)
-            Button { player.toggle() } label: {
-                Group { if player.resolving { ProgressView() } else { Image(systemName: player.playing ? "pause" : "play").font(.system(size: 29)) } }
-                    .frame(width: 68, height: 68).background(.ultraThinMaterial, in: Circle())
-            }.disabled(player.tracks.isEmpty || player.resolving).accessibilityLabel(player.playing ? "Pause" : "Play")
-            Spacer(minLength: 5)
-            control("forward.end", label: "Next song") { player.next(1) }
-            Spacer(minLength: 5)
-            control("text.line.first.and.arrowtriangle.forward", label: "Queue, \(player.tracks.count) songs") { sheet = .queue }
-                .overlay(alignment: .topTrailing) { Text("\(player.tracks.count)").font(.system(size: 9)).foregroundStyle(VesperTheme.muted).allowsHitTesting(false) }
-        }.padding(.vertical, 4)
+        VStack(spacing: 4) {
+            HStack(spacing: 0) {
+                transportButton("backward.fill", label: "Previous song") { player.next(-1) }
+                    .disabled(player.tracks.isEmpty || player.resolving)
+                Button { player.toggle() } label: {
+                    Group {
+                        if player.resolving { ProgressView() }
+                        else {
+                            Image(systemName: player.playing ? "pause.fill" : "play.fill")
+                                .font(.system(size: 42, weight: .regular))
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                    }.frame(maxWidth: .infinity).frame(height: 68).contentShape(Rectangle())
+                }.disabled(player.tracks.isEmpty || player.resolving)
+                    .accessibilityLabel(player.playing ? "Pause" : "Play")
+                transportButton("forward.fill", label: "Next song") { player.next(1) }
+                    .disabled(player.tracks.isEmpty || player.resolving)
+            }.padding(.horizontal, 12)
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) { showingLyrics.toggle() }
+                } label: {
+                    Image(systemName: showingLyrics ? "quote.bubble.fill" : "quote.bubble")
+                        .font(.system(size: 20)).frame(width: 44, height: 44).contentShape(Rectangle())
+                }.accessibilityLabel(showingLyrics ? "Show album cover" : "Show lyrics")
+                    .accessibilityAddTraits(showingLyrics ? .isSelected : [])
+                Spacer()
+                Button { sheet = .queue } label: {
+                    Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                        .font(.system(size: 20)).frame(width: 44, height: 44).contentShape(Rectangle())
+                }.accessibilityLabel("Queue, \(player.tracks.count) songs")
+                    .overlay(alignment: .topTrailing) {
+                        Text("\(player.tracks.count)").font(.system(size: 9)).foregroundStyle(VesperTheme.muted)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+            }.padding(.horizontal, 20).foregroundStyle(VesperTheme.muted)
+        }.foregroundStyle(VesperTheme.ink)
     }
-    private func control(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: icon).font(.system(size: 21)).frame(width: 46, height: 46).background(.ultraThinMaterial, in: Circle()) }.accessibilityLabel(label)
+    private func transportButton(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 30, weight: .regular))
+                .frame(maxWidth: .infinity).frame(height: 68).contentShape(Rectangle())
+        }.accessibilityLabel(label)
     }
     private var queueSheet: some View {
         NavigationStack {

@@ -21,6 +21,8 @@ struct SettingsView: View {
     var body: some View {
         Page(title: "Settings") {
             SettingsGlassCard(padding: 0, interactive: true) { VStack(spacing: 0) {
+                NavigationLink { AppearanceSettingsView() } label: { settingsRow("Appearance", icon: "paintpalette") }
+                separator
                 NavigationLink { ConnectionView() } label: { settingsRow("Connection", icon: "network") }
                 separator
                 NavigationLink { UsageView() } label: { settingsRow("Usage & balances", icon: "chart.bar") }
@@ -69,7 +71,7 @@ struct PermissionPanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 10 : 16) { content }
             .frame(maxWidth: .infinity, alignment: .leading).padding(compact ? 15 : 20)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
             .overlay(RoundedRectangle(cornerRadius: 24).stroke(VesperTheme.palette == .black ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1))
     }
 }
@@ -499,7 +501,7 @@ private struct WakeSaveButton: View {
                 .font(.headline)
                 .foregroundStyle(VesperTheme.ink)
                 .frame(maxWidth: .infinity, minHeight: 56)
-                .background(.regularMaterial, in: Capsule())
+                .vesperMaterial(.regularMaterial, in: Capsule())
                 .overlay(Capsule().strokeBorder(.white.opacity(0.6), lineWidth: 1))
                 .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
         }

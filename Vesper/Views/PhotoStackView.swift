@@ -15,7 +15,7 @@ struct ChatPhotoStack: View {
             if photos.count > 1 {
                 Label("\(photos.count) Photos", systemImage: "square.grid.2x2.fill")
                     .font(.system(size: 13, weight: .semibold)).foregroundStyle(VesperTheme.accent)
-                PhotoStackWebView(urls: photos.map { $0["url"].string }, reducedMotion: reduceMotion,
+                PhotoStackWebView(urls: photos.map { $0["url"].string }, reducedMotion: reduceMotion, trailing: alignment == .trailing,
                     onChange: { front = $0 }, onTap: { front = $0; showingPhoto = true })
                     .frame(maxWidth: 320).frame(height: 226)
                     .accessibilityIdentifier("chat-photo-stack")
@@ -85,6 +85,7 @@ private struct ChatSinglePhoto: View {
 struct PhotoStackWebView: UIViewRepresentable {
     let urls: [String]
     var reducedMotion = false
+    var trailing = false
     let onChange: (Int) -> Void
     let onTap: (Int) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange, onTap: onTap) }
@@ -97,12 +98,12 @@ struct PhotoStackWebView: UIViewRepresentable {
             UIAccessibilityCustomAction(name: "Previous photo", target: context.coordinator, selector: #selector(Coordinator.previousPhoto)),
             UIAccessibilityCustomAction(name: "Next photo", target: context.coordinator, selector: #selector(Coordinator.nextPhoto)),
             UIAccessibilityCustomAction(name: "Open photo", target: context.coordinator, selector: #selector(Coordinator.openPhoto))]
-        view.configure(urls: urls, reducedMotion: reducedMotion)
+        view.configure(urls: urls, reducedMotion: reducedMotion, trailing: trailing)
         return view
     }
     func updateUIView(_ view: PhotoStackSurface, context: Context) {
         context.coordinator.onChange = onChange; context.coordinator.onTap = onTap
-        view.configure(urls: urls, reducedMotion: reducedMotion)
+        view.configure(urls: urls, reducedMotion: reducedMotion, trailing: trailing)
     }
     static func dismantleUIView(_ view: PhotoStackSurface, coordinator: Coordinator) {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "photoStack")
@@ -136,6 +137,7 @@ struct PhotoStackWebView: UIViewRepresentable {
 @MainActor final class PhotoStackSurface: WKWebView {
     private(set) var photoURLs: [String] = []
     private var reducedMotion = false
+    private var trailing = false
     private var mountedURLs: [String]?
     private var mountedReducedMotion = false
     private var ready = false
@@ -150,9 +152,10 @@ struct PhotoStackWebView: UIViewRepresentable {
         accessibilityHint = "Swipe left or right to turn photos. Use the actions to turn or open a photo."
     }
     required init?(coder: NSCoder) { fatalError("Use init()") }
-    func configure(urls: [String], reducedMotion: Bool) {
+    func configure(urls: [String], reducedMotion: Bool, trailing: Bool = false) {
         photoURLs = urls.map(Self.safeImageURL)
         self.reducedMotion = reducedMotion
+        self.trailing = trailing
         if ready { mount() }
         else if url == nil, !isLoading, let page = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "PhotoStack") {
             loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent())
@@ -160,6 +163,7 @@ struct PhotoStackWebView: UIViewRepresentable {
     }
     func mount() {
         ready = true
+        evaluateJavaScript("window.setAlignment(\(trailing ? "true" : "false"));")
         guard mountedURLs != photoURLs else {
             if mountedReducedMotion != reducedMotion {
                 mountedReducedMotion = reducedMotion

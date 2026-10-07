@@ -254,6 +254,32 @@ private struct GlassOpacityFixture: View {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("background.jpg").path))
     }
 
+    func testWallpaperHistoryPreservesPreviousPhotosAndRestoresSelection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let makePhoto: (UIColor) -> Data = { color in
+            UIGraphicsImageRenderer(size: CGSize(width: 160, height: 240)).image { context in
+                color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 160, height: 240))
+            }.pngData()!
+        }
+        let first = makePhoto(.systemBlue), second = makePhoto(.systemPink)
+        let wallpaper = WallpaperStore(directory: directory)
+        try await wallpaper.importPhoto(first)
+        let firstID = try XCTUnwrap(wallpaper.selectedID)
+        try await wallpaper.importPhoto(second)
+        XCTAssertEqual(wallpaper.history.count, 2)
+        try wallpaper.select(firstID)
+        let selectedData = try Data(contentsOf: directory.appendingPathComponent("background.jpg"))
+        XCTAssertEqual(WallpaperStore(directory: directory).selectedID, firstID)
+        try wallpaper.reset()
+        let restored = WallpaperStore(directory: directory)
+        XCTAssertEqual(restored.history.count, 2)
+        try restored.select(firstID)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("background.jpg")), selectedData)
+        try await restored.importPhoto(first)
+        XCTAssertEqual(restored.history.count, 2, "Reimporting the same photo must not duplicate history")
+    }
+
     func testAppearanceSettingsLayoutOnSmallAndStandardPhones() async throws {
         let suite = "appearance-preview-" + UUID().uuidString
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -657,6 +683,15 @@ private struct GlassOpacityFixture: View {
         }
         XCTAssertTrue(mounted, "The bundled upstream JS must load in WKWebView")
         guard mounted else { return }
+        web.configure(urls: urls, reducedMotion: true, trailing: true)
+        for index in [0, 2, 4] {
+            _ = try await web.evaluateJavaScript("stack.goto(\(index))")
+            let inset = try await web.evaluateJavaScript("innerWidth-stack.stage.getBoundingClientRect().right") as? Double
+            XCTAssertEqual(try XCTUnwrap(inset), 24, accuracy: 1, "Sent photos should stay near the right edge at every stack position")
+        }
+        web.configure(urls: urls, reducedMotion: false, trailing: false)
+        _ = try await web.evaluateJavaScript("stack.goto(0)")
+
         func waitForSettlement() async throws {
             for _ in 0..<50 {
                 if try await web.evaluateJavaScript("stack._anim===null") as? Bool == true { return }

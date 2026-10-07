@@ -16,6 +16,16 @@ struct ChatFile: Identifiable {
     var duration: Double? = nil
 }
 
+enum VoiceRecognitionPreferences {
+    static let recordingKey = "voiceRecordingLocale"
+    // Incoming voice transcription is a separate preference. Selecting Spanish
+    // for an incoming clip must not change how the user's next recording is read.
+    static func recordingLocale(defaults: UserDefaults = .standard) -> Locale {
+        let saved = defaults.string(forKey: recordingKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Locale(identifier: saved?.isEmpty == false ? saved! : "zh-CN")
+    }
+}
+
 @MainActor final class SpeechInput: ObservableObject {
     @Published var text = ""
     @Published var listening = false
@@ -33,7 +43,7 @@ struct ChatFile: Identifiable {
         let mic = await AVAudioApplication.requestRecordPermission()
         guard mic, generation == id else { if !mic { error = "Allow microphone access in Settings." }; return }
         guard InAppCalls.shared.id == nil || InAppCalls.shared.audioReady else { return }
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable else { error = "Speech recognition is unavailable."; return }
+        guard let recognizer = SFSpeechRecognizer(locale: VoiceRecognitionPreferences.recordingLocale()), recognizer.isAvailable else { error = "Speech recognition is unavailable."; return }
         do {
             let session = AVAudioSession.sharedInstance()
             if InAppCalls.shared.id == nil {

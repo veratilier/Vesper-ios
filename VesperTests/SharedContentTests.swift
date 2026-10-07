@@ -4,6 +4,20 @@ import SafariServices
 @testable import Vesper
 
 @MainActor final class SharedContentTests: XCTestCase {
+    func testOwnSpeechLanguageIsIndependentFromIncomingVoiceTranscription() throws {
+        let suite = "voice-language-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("en-US", forKey: "voiceTranscriptionLocale")
+        XCTAssertEqual(VoiceRecognitionPreferences.recordingLocale(defaults: defaults), Locale(identifier: "zh-CN"))
+        defaults.set("es-ES", forKey: VoiceRecognitionPreferences.recordingKey)
+        XCTAssertEqual(VoiceRecognitionPreferences.recordingLocale(defaults: defaults), Locale(identifier: "es-ES"))
+        defaults.set("ja-JP", forKey: "voiceTranscriptionLocale")
+        XCTAssertEqual(VoiceRecognitionPreferences.recordingLocale(defaults: defaults), Locale(identifier: "es-ES"))
+        defaults.set("  ", forKey: VoiceRecognitionPreferences.recordingKey)
+        XCTAssertEqual(VoiceRecognitionPreferences.recordingLocale(defaults: defaults), Locale(identifier: "zh-CN"))
+    }
+
     func testMusicStatusUsesTheDeviceQueueInsteadOfAnOldServerQueue() {
         let live: JSONValue = .object(["track": .object(["id": .string("apple-1")]), "queueLength": .number(5)])
         let result = ChatMusicContext.liveStatus(live, server: .object(["queueLength": .number(1)]))

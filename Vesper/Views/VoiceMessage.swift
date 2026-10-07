@@ -133,6 +133,7 @@ import NaturalLanguage
 
 struct VoiceMessageBar: View {
     let attachment: JSONValue
+    var alignment: HorizontalAlignment = .leading
     var messageID: String = "voice"
     var messageActions: () -> [ChatMessageAction] = { [] }
     var onTranscript: (String) -> Void = { _ in }
@@ -151,21 +152,27 @@ struct VoiceMessageBar: View {
     @State private var translating = false
     @State private var translatedText = ""
     @State private var translationSource = ""
+    private var duration: Double {
+        let value = attachment["duration"].number
+        return value.isFinite ? max(0, value) : 0
+    }
+    private var barWidth: CGFloat { 140 + CGFloat(min(duration, 60) / 60) * 110 }
+    private var waveCount: Int { 10 + Int(min(duration, 60) / 60 * 12) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: alignment, spacing: 6) {
             Group {
-                HStack(spacing: 14) {
-                    Image(systemName: playback.playing ? "pause.fill" : "play.fill").font(.system(size: 20))
-                    HStack(spacing: 3) {
-                        ForEach(0..<17) { index in
+                HStack(spacing: 8) {
+                    Image(systemName: playback.playing ? "pause.fill" : "play.fill").font(.system(size: 16)).frame(width: 18)
+                    HStack(spacing: 2) {
+                        ForEach(0..<waveCount, id: \.self) { index in
                             Capsule().fill(VesperTheme.accent.opacity(playback.playing ? 0.9 : 0.6))
-                                .frame(width: 2.5, height: CGFloat(7 + (index * 7 % 19)))
+                                .frame(maxWidth: 2.5).frame(height: CGFloat(5 + (index * 7 % 14)))
                         }
-                    }.accessibilityHidden(true)
-                    Spacer(minLength: 0)
-                    Text(playback.loading ? "…" : "\(Int(max(0, attachment["duration"].number)))″").monospacedDigit()
-                }.font(.system(size: 14)).frame(height: 32).padding(12)
-                    .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                    }.frame(maxWidth: .infinity, alignment: .leading).accessibilityHidden(true)
+                    Text(playback.loading ? "…" : "\(Int(duration))″").monospacedDigit().fixedSize()
+                }.font(.system(size: 13)).padding(.horizontal, 12).frame(width: barWidth, height: 40)
+                    .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                    .padding(.vertical, 2).contentShape(Rectangle())
             }
                 .modifier(ChatLongPress(id: messageID, actions: {
                     messageActions() + [
@@ -184,7 +191,7 @@ struct VoiceMessageBar: View {
             if translationExpanded {
                 VoiceTranscriptPanel(text: translatedText, loading: translating, title: "中文翻译", loadingText: "正在翻译…") { translationExpanded = false }
             }
-        }.frame(maxWidth: 250)
+        }.frame(width: expanded || translationExpanded ? 250 : barWidth)
         .sheet(isPresented: $choosingLanguage) {
             VoiceRecognitionLanguages { locale in
                 choosingLanguage = false

@@ -111,8 +111,12 @@ struct MusicView: View {
         .task { player.configure(store); player.updateLibrary(store.document("music").array) }
         .onChange(of: store.document("music")) { _, value in player.updateLibrary(value.array) }
         .sheet(item: $sheet) { item in
-            if item == .library { MusicLibraryView(catalog: catalog) }
-            else { queueSheet.presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
+            // Explicitly carry dependencies across the nested presentation boundary.
+            // Catalyst may present this sheet outside the parent's environment host.
+            Group {
+                if item == .library { MusicLibraryView(catalog: catalog) }
+                else { queueSheet.presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
+            }.environmentObject(store).environmentObject(player)
         }
         .alert("Music", isPresented: Binding(get: { player.error != nil }, set: { if !$0 { player.error = nil } })) { Button("OK") { player.error = nil } } message: { Text(player.error ?? "") }
     }

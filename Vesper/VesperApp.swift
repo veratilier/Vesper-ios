@@ -426,7 +426,9 @@ struct RootView: View {
     }
     var body: some View {
         lifecycle
-        .sheet(isPresented: $showingMusicPlayer) { MusicPlayerSheet(namespace: musicTransition) }
+        .sheet(isPresented: $showingMusicPlayer) {
+            MusicPlayerSheet(namespace: musicTransition).environmentObject(store).environmentObject(player)
+        }
         .task(id: sidebar) {
             guard sidebar else { return }
             while !Task.isCancelled {

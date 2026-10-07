@@ -29,9 +29,8 @@ struct MacNavigationView<Detail: View>: View {
                 }
                 Divider().padding(.vertical, 12)
                 row(.settings).padding(.horizontal, 10).padding(.bottom, 12)
-                if !store.token.isEmpty {
-                    MiniMusicPlayer(openMusic: openMusic).padding(.horizontal, 8).padding(.bottom, 12)
-                }
+                MacSidebarPlayer(openMusic: openMusic)
+                    .padding(.horizontal, 10).padding(.bottom, 12)
             }.frame(width: 190).frame(maxHeight: .infinity)
                 .vesperMaterial(.regularMaterial)
             Divider()
@@ -54,6 +53,46 @@ struct MacNavigationView<Detail: View>: View {
         }.buttonStyle(.plain).accessibilityIdentifier("mac-nav-" + page.rawValue)
     }
 }
+/// The phone dock's artwork, text and two 44-point buttons cannot fit a sidebar.
+/// Keep metadata and playback controls on separate rows with bounded artwork.
+private struct MacSidebarPlayer: View {
+    @EnvironmentObject private var player: MusicPlayer
+    let openMusic: () -> Void
+    private var title: String { player.track["title"].string }
+    var body: some View {
+        VStack(spacing: 4) {
+            Button(action: openMusic) {
+                HStack(spacing: 8) {
+                    Artwork(url: player.track["cover"].string)
+                        .frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 6))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title.isEmpty ? "Choose a song" : title)
+                            .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        if !player.track["artist"].string.isEmpty {
+                            Text(player.track["artist"].string).font(.system(size: 10))
+                                .foregroundStyle(VesperTheme.muted).lineLimit(1)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxWidth: .infinity).contentShape(Rectangle())
+            }.accessibilityLabel("Open Music, " + (title.isEmpty ? "Choose a song" : title))
+            HStack(spacing: 0) {
+                control("backward.fill", label: "Previous song") { player.next(-1) }
+                control(player.playing ? "pause.fill" : "play.fill", label: player.playing ? "Pause" : "Play") { player.toggle() }
+                control("forward.fill", label: "Next song") { player.next(1) }
+            }.disabled(player.tracks.isEmpty)
+        }.buttonStyle(.plain).padding(10)
+            .frame(maxWidth: .infinity)
+            .vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .accessibilityIdentifier("mac-sidebar-player")
+    }
+    private func control(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 13, weight: .semibold))
+                .frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle())
+        }.accessibilityLabel(label)
+    }
+}
+
 private struct MacWindowConfiguration: UIViewRepresentable {
     final class WindowProbe: UIView {
         override func didMoveToWindow() {

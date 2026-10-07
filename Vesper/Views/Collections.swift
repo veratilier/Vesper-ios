@@ -152,6 +152,7 @@ enum JournalDates {
 
 struct ChatActivityHeatmap: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage("vesperPalette") private var palette = "blue"
     @Environment(\.scenePhase) private var phase
     var refreshID = 0
     @State private var month = Date()
@@ -163,7 +164,11 @@ struct ChatActivityHeatmap: View {
     private var days: [Date] { JournalDates.days(month) }
     private var offset: Int { JournalDates.mondayOffset(month) }
     private var refreshKey: String { [monthKey, store.historyURL, store.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
-    private func heatColor(_ level: Int) -> Color { VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level]) }
+    private func heatColor(_ level: Int) -> Color {
+        // Stable dark-mode cell surfaces keep custom wallpapers from washing out the numbers.
+        if palette == "black" { return Color(white: [0.12, 0.25, 0.38, 0.68, 0.84][level]) }
+        return VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level])
+    }
     var body: some View {
         VStack(spacing: 22) {
             #if targetEnvironment(macCatalyst)
@@ -226,15 +231,19 @@ struct ChatActivityHeatmap: View {
     private func dayCell(_ date: Date) -> some View {
         let key = JournalDates.label(date)
         let count = Int(activity["days"][key]["total"].number)
+        let level = ready ? JournalDates.heatLevel(count) : 0
+        let darkModeInk = level >= 3 ? Color(white: 0.10) : Color(white: 0.98)
+        let future = key > JournalDates.label(.now)
         return Button { selected = key } label: {
-            RoundedRectangle(cornerRadius: 8).fill(heatColor(ready ? JournalDates.heatLevel(count) : 0))
+            RoundedRectangle(cornerRadius: 8).fill(heatColor(level))
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
                     VStack(spacing: 2) {
                         Text("\(JournalDates.calendar.component(.day, from: date))").font(.system(size: 14, design: .serif))
-                            .foregroundStyle(key > JournalDates.label(.now) ? VesperTheme.muted : VesperTheme.ink)
-                        Text(key > JournalDates.label(.now) ? " " : ready ? String(count) : "—")
-                            .font(.system(size: 9)).monospacedDigit().foregroundStyle(VesperTheme.muted)
+                            .foregroundStyle(palette == "black" ? darkModeInk.opacity(future ? 0.8 : 1) : future ? VesperTheme.muted : VesperTheme.ink)
+                        Text(future ? " " : ready ? String(count) : "—")
+                            .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                            .foregroundStyle(palette == "black" ? darkModeInk : VesperTheme.muted)
                     }
                 }
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(key == JournalDates.label(.now) ? VesperTheme.muted.opacity(0.7) : .white.opacity(0.25), lineWidth: 1))

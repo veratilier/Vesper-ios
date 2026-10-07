@@ -158,6 +158,7 @@ struct ChatView: View {
     @State private var incomingFrames: [String: CGRect] = [:]
     @State private var scrollFrame = CGRect.zero
     @State private var headerFrame = CGRect.zero
+    @State private var headerActionsExpanded = false
     @State private var composerFrame = CGRect.zero
 
     @MainActor init(onMenu: @escaping () -> Void = {}, restoreLatest: Bool = true, native: Bool = false, inbox: ChatInbox? = nil) {
@@ -332,6 +333,12 @@ struct ChatView: View {
                     followsLatest = true
                     nearBottom = true
                 }
+            }
+            if headerActionsExpanded {
+                Color.clear.contentShape(Rectangle())
+                    .onTapGesture { headerActionsExpanded = false }
+                    .accessibilityLabel("收起聊天选项")
+                    .accessibilityAddTraits(.isButton)
             }
             // Only the controls intercept touches; the gaps reveal the transcript.
             header.zIndex(1)
@@ -597,8 +604,9 @@ struct ChatView: View {
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
-            ChatHeaderMenu(onMemory: { memoryRecallVisible = true }, onTerminal: { terminalVisible = true })
+            ChatHeaderMenu(expanded: $headerActionsExpanded, onMemory: { memoryRecallVisible = true }, onTerminal: { terminalVisible = true })
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
+            .animation(.easeInOut(duration: 0.2), value: headerActionsExpanded)
     }
     private func profileAvatar(_ role: String, fallbackName: String) -> some View {
         let profile = store.document("profile")
@@ -955,19 +963,13 @@ struct ChatMessageRow: View, Equatable {
 }
 
 struct ChatHeaderMenu: View {
+    @Binding var expanded: Bool
     let onMemory: () -> Void
     let onTerminal: () -> Void
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
-    @State private var expanded = false
-    @State private var pendingAction: (() -> Void)?
     var body: some View {
-        Button { expanded.toggle() } label: {
-            Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .vesperGlass(in: Circle(), interactive: true)
-        }.buttonStyle(.plain).accessibilityLabel("聊天更多选项")
-            .accessibilityIdentifier("chat-header-more")
-            .popover(isPresented: $expanded, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+        ZStack(alignment: .trailing) {
+            if expanded {
                 HStack(spacing: 8) {
                     actionIcon("相关记忆", symbol: "brain", action: onMemory)
                     actionIcon("终端", symbol: "terminal", action: onTerminal)
@@ -975,21 +977,26 @@ struct ChatHeaderMenu: View {
                                symbol: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled") {
                         navigationStyle = navigationStyle == "native" ? "vesper" : "native"
                     }
-                }.padding(10).foregroundStyle(VesperTheme.ink)
-                    .presentationCompactAdaptation(.popover)
-                    .presentationBackground(.ultraThinMaterial)
-                    .onDisappear {
-                        let action = pendingAction
-                        pendingAction = nil
-                        action?()
-                    }
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .trailing)))
+            } else {
+                Button { expanded = true } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                }.buttonStyle(.plain).accessibilityLabel("聊天更多选项")
+                    .accessibilityIdentifier("chat-header-more")
+                    .transition(.opacity)
             }
+        }
+        .frame(width: expanded ? 148 : 44, height: 44, alignment: .trailing)
+        .foregroundStyle(VesperTheme.ink)
+        .vesperGlass(in: Capsule(), interactive: true)
+        .accessibilityAction(.escape) { expanded = false }
     }
     private func actionIcon(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button { pendingAction = action; expanded = false } label: {
+        Button { expanded = false; action() } label: {
             Image(systemName: symbol).font(.system(size: 21))
                 .frame(width: 44, height: 44)
-                .background(VesperTheme.ink.opacity(0.06), in: Circle())
         }.buttonStyle(.plain).accessibilityLabel(title)
     }
 }

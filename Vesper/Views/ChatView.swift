@@ -597,10 +597,7 @@ struct ChatView: View {
             Button { avatarRole = "user"; avatarPicker = true } label: { profileAvatar("user", fallbackName: "Vera") }.accessibilityLabel("Change Vera’s avatar").disabled(savingAvatar)
             Button { avatarRole = "agent"; avatarPicker = true } label: { profileAvatar("agent", fallbackName: "Rowan") }.accessibilityLabel("Change Rowan’s avatar").disabled(savingAvatar)
             Spacer()
-            Button { memoryRecallVisible = true } label: { Image(systemName: "brain") }.accessibilityLabel("相关记忆")
-            Button { terminalVisible = true } label: { Image(systemName: "terminal") }
-                .accessibilityLabel("Codex terminal")
-            NavigationStyleToggle()
+            ChatHeaderMenu(onMemory: { memoryRecallVisible = true }, onTerminal: { terminalVisible = true })
         }.font(.system(size: 20)).buttonStyle(ChatHeaderButton()).padding(.horizontal, 12).padding(.vertical, 4)
     }
     private func profileAvatar(_ role: String, fallbackName: String) -> some View {
@@ -706,7 +703,7 @@ struct ChatView: View {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
                 Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
                 Spacer()
-                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start() } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
+                Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start(context: chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(12).map { $0["content"].string } + [draft]) } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,
@@ -954,6 +951,23 @@ struct ChatMessageRow: View, Equatable {
                 }.modifier(ChatLongPress(id: part.id, actions: { actions(part) })).id(part.id)
             }
         }
+    }
+}
+
+struct ChatHeaderMenu: View {
+    let onMemory: () -> Void
+    let onTerminal: () -> Void
+    var body: some View {
+        Menu {
+            Button("相关记忆", systemImage: "brain", action: onMemory)
+            Button("终端", systemImage: "terminal", action: onTerminal)
+            NavigationStyleToggle(showsTitle: true)
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .vesperGlass(in: Circle(), interactive: true)
+        }.buttonStyle(.plain).accessibilityLabel("聊天更多选项")
+            .accessibilityIdentifier("chat-header-more")
     }
 }
 

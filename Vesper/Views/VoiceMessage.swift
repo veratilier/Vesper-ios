@@ -4,18 +4,42 @@ import Speech
 import Translation
 import NaturalLanguage
 
+enum ChatSpeechRecognition {
+    // Apple's recognizer has one primary locale. Mandarin accepts some embedded
+    // English; contextual terms improve vocabulary without translating the result.
+    static let recordingLocale = Locale(identifier: "zh-CN")
+    static func contextualStrings(from texts: [String]) -> [String] {
+        var terms = ["Vesper", "Vera", "Rowan"]
+        var seen = Set(terms.map { $0.lowercased() })
+        guard let pattern = try? NSRegularExpression(pattern: "[A-Za-z][A-Za-z0-9]*(?:[-'][A-Za-z0-9]+)*") else { return terms }
+        for text in texts.suffix(12).reversed() {
+            let limited = String(text.prefix(2000))
+            for match in pattern.matches(in: limited, range: NSRange(limited.startIndex..., in: limited)) {
+                guard let range = Range(match.range, in: limited) else { continue }
+                let term = String(limited[range])
+                guard (2...32).contains(term.count), seen.insert(term.lowercased()).inserted else { continue }
+                terms.append(term)
+                if terms.count == 64 { return terms }
+            }
+        }
+        return terms
+    }
+}
+
 @MainActor final class VoiceMessageRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var recording = false
     @Published var processing = false
     @Published var file: ChatFile?
     @Published var error: String?
     @Published var startedAt: Date?
+    private var recordingContext: [String] = []
     private var recorder: AVAudioRecorder?
     private var url: URL?
     private var recognition: SFSpeechRecognitionTask?
     private var generation = UUID()
-    func start() async {
+    func start(context: [String] = []) async {
         guard !recording, !processing, file == nil else { return }
+        recordingContext = ChatSpeechRecognition.contextualStrings(from: context)
         processing = true; error = nil
         let id = UUID(); generation = id
         let allowed = await AVAudioApplication.requestRecordPermission()
@@ -47,7 +71,7 @@ import NaturalLanguage
             let allowed = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) } }
             guard generation == id else { return }
             var transcript = ""
-            if allowed { transcript = await transcribe(url) }
+            if allowed { transcript = await transcribe(url, locale: ChatSpeechRecognition.recordingLocale, contextualStrings: recordingContext) }
             guard generation == id else { return }
             file = ChatFile(name: "Voice-" + UUID().uuidString + ".m4a", mime: "audio/mp4", data: data, transcript: transcript, duration: duration)
         } catch { self.error = error.localizedDescription }
@@ -70,7 +94,7 @@ import NaturalLanguage
         guard !text.isEmpty else { throw ServiceError(message: "暂时未能识别这条语音，可以再次长按转文字。") }
         return text
     }
-    private func transcribe(_ url: URL, locale: Locale = Locale(identifier: UserDefaults.standard.string(forKey: "voiceTranscriptionLocale") ?? Locale.current.identifier)) async -> String {
+    private func transcribe(_ url: URL, locale: Locale, contextualStrings: [String] = []) async -> String {
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return "" }
         return await withCheckedContinuation { continuation in
             var finished = false
@@ -78,7 +102,11 @@ import NaturalLanguage
             let finish: (String) -> Void = { value in
                 guard !finished else { return }; finished = true; continuation.resume(returning: value)
             }
-            recognition = recognizer.recognitionTask(with: SFSpeechURLRecognitionRequest(url: url)) { result, error in
+            let request = SFSpeechURLRecognitionRequest(url: url)
+            request.taskHint = .dictation
+            request.addsPunctuation = true
+            request.contextualStrings = contextualStrings
+            recognition = recognizer.recognitionTask(with: request) { result, error in
                 let value = result?.bestTranscription.formattedString; let final = result?.isFinal == true
                 Task { @MainActor in
                     if let value { latest = value }

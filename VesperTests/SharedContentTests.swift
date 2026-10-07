@@ -4,6 +4,18 @@ import SafariServices
 @testable import Vesper
 
 @MainActor final class SharedContentTests: XCTestCase {
+    func testRecordingSpeechKeepsChinesePrimaryAndMixedEnglishVocabulary() {
+        XCTAssertEqual(ChatSpeechRecognition.recordingLocale, Locale(identifier: "zh-CN"))
+        let terms = ChatSpeechRecognition.contextualStrings(from: ["今天复习 coursework，然后整理 biology notes。", "Coursework 要交给 Rowan。"])
+        XCTAssertTrue(terms.contains("Coursework"))
+        XCTAssertTrue(terms.contains("biology"))
+        XCTAssertTrue(terms.contains("notes"))
+        XCTAssertEqual(terms.filter { $0.lowercased() == "coursework" }.count, 1)
+        XCTAssertEqual(terms.filter { $0 == "Rowan" }.count, 1)
+        let many = (0..<100).map { "term\($0)" }.joined(separator: " ")
+        XCTAssertLessThanOrEqual(ChatSpeechRecognition.contextualStrings(from: [many]).count, 64)
+    }
+
     func testMusicStatusUsesTheDeviceQueueInsteadOfAnOldServerQueue() {
         let live: JSONValue = .object(["track": .object(["id": .string("apple-1")]), "queueLength": .number(5)])
         let result = ChatMusicContext.liveStatus(live, server: .object(["queueLength": .number(1)]))

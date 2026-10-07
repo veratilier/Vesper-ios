@@ -617,19 +617,41 @@ struct DataSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var exportURL: URL?
     @State private var status = ""
+    @State private var resolving: String?
     var body: some View {
-        Page(title: "Data", subtitle: "Your data stays with your existing Vesper services.") {
+        Page(title: "Data", subtitle: "Saved on this device, synced across your Vesper devices.") {
+            SettingsGlassCard { VStack(alignment: .leading, spacing: 12) {
+                Label("Local storage", systemImage: "internaldrive").font(.headline)
+                Text(store.hasLocalData ? "Your saved documents are ready to open without waiting for the cloud." : "Connect once to download your documents onto this device.").font(.subheadline)
+                if store.syncing { ProgressView("Syncing changes…") }
+                Text(store.pendingDocuments.isEmpty ? "No pending changes" : "\(store.pendingDocuments.count) document(s) saved locally, waiting to sync")
+                    .font(.caption).foregroundStyle(VesperTheme.muted)
+                if let date = store.lastSyncedAt { Text("Last sync: \(date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(VesperTheme.muted) }
+                if let error = store.syncError { Text(error).font(.caption) }
+                ForEach(store.conflictingDocuments.sorted(), id: \.self) { key in
+                    Button("Resolve changes in \(key.capitalized)") { resolving = key }
+                }
+                Button("Sync now") { Task { await store.refresh(); await store.syncPendingDocuments() } }
+                    .disabled(store.loading || store.syncing || store.token.isEmpty)
+                Text("New AI replies and files that have not been downloaded still need a connection.").font(.caption).foregroundStyle(VesperTheme.muted)
+            }}
             SettingsGlassCard { VStack(alignment: .leading, spacing: 16) {
                 Text("Device credentials are stored in the iOS Keychain. This app does not copy web browser credentials automatically.").font(.subheadline)
                 Button("Prepare document export") {
                     do { let url = FileManager.default.temporaryDirectory.appendingPathComponent("Vesper-documents.json"); try JSONEncoder.pretty.encode(JSONValue.object(store.documents)).write(to: url, options: [.atomic, .completeFileProtection]); exportURL = url }
                     catch { status = error.localizedDescription }
-                }.disabled(!store.connected)
+                }.disabled(!store.canEnter)
                 if let exportURL { ShareLink("Share export", item: exportURL) }
-                Text("Export includes synced documents. Chat history, media files and server memory are not included.").font(.caption).foregroundStyle(VesperTheme.muted)
+                Text("Export includes this device’s documents and pending edits. Chat history, media files and server memory are not included.").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !status.isEmpty { Text(status).font(.caption) }
             }}
         }.background { Background() }.transparentNavigationTop()
+        .confirmationDialog("Choose which changes to keep in \(resolving?.capitalized ?? "this document")", isPresented: Binding(get: { resolving != nil }, set: { if !$0 { resolving = nil } })) {
+            if let key = resolving {
+                Button("Keep this device’s edits") { Task { await store.resolvePendingDocument(key, keepLocal: true) }; resolving = nil }
+                Button("Use cloud version", role: .destructive) { Task { await store.resolvePendingDocument(key, keepLocal: false) }; resolving = nil }
+            }
+        }
     }
 }
 

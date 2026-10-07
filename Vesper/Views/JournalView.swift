@@ -204,7 +204,7 @@ struct JournalView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: beginEditing) { Image(systemName: "square.and.pencil").font(.system(size: controlSize + 3, weight: .regular)) }
                     .accessibilityLabel("Write Vera's entry")
-                    .disabled(store.saving || store.loading)
+                    .disabled(store.saving || (store.loading && !store.hasLocalData))
             }
         }
         .task { if store.documents["diary"] == nil && !store.loading { await store.refresh() } }
@@ -395,7 +395,7 @@ struct JournalView: View {
                             .overlay(Circle().stroke(paperInk.opacity(0.28), lineWidth: 0.7))
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityLabel("Write Vera's entry")
-                        .disabled(store.saving || store.loading)
+                        .disabled(store.saving || (store.loading && !store.hasLocalData))
                 }
             }.frame(height: 44)
         }
@@ -424,10 +424,10 @@ struct JournalView: View {
         savingMood = true
         Task {
             defer { savingMood = false }
-            let saved = await store.mutate("diary", reportErrors: false, verifySavedValue: true) { current in
+            let saved = await store.mutate("diary", reportErrors: false) { current in
                 JournalDay.togglingMood(mood, for: key, author: selectedAuthor, in: current, updatedAt: isoNow())
             }
-            if !saved { moodSaveError = "情绪标签未能确认保存。请检查连接后再试，已保存的日记内容仍保留。" }
+            if !saved { moodSaveError = "情绪标签未能保存。请重试，已有的日记内容仍保留。" }
         }
     }
     private func save() {

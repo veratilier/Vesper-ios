@@ -64,7 +64,7 @@ struct NotesBoard: View {
                 placements[note.id] = NotePlacement(note, index: index)
             }
         }.sheet(item: $editing) { CollectionEditor(kind: .notes, item: $0) }
-        .task { await store.refresh() }
+        .task { await store.refresh(minimumInterval: 45) }
         .confirmationDialog("Delete this note?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
             Button("Delete", role: .destructive) { if let note = pendingDelete { Task { _ = await store.remove("notes", id: note.id); pendingDelete = nil } } }
         }

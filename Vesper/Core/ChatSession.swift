@@ -784,7 +784,7 @@ enum ChatUserInput {
         do {
             let identity = store.api
             let response: JSONValue
-            if let profile = store.documents["profile"], !profile["mainConversationId"].string.isEmpty {
+            if store.connected, let profile = store.documents["profile"], !profile["mainConversationId"].string.isEmpty {
                 response = .object(["value": profile])
             } else { response = try await identity.request("/api/state?key=profile") }
 

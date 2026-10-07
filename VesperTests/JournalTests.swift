@@ -116,7 +116,9 @@ final class JournalTests: XCTestCase {
         URLProtocol.registerClass(JournalMoodPersistenceProtocol.self)
         defer { URLProtocol.unregisterClass(JournalMoodPersistenceProtocol.self) }
         JournalMoodPersistenceProtocol.reset(dropTags: false)
-        let store = AppStore(); store.token = "synthetic-mood"; store.baseURL = "https://journal-mood-save.example"
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("journal-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let store = AppStore(disk: LocalDocumentDisk(directory: cache)); store.token = "synthetic-mood"; store.baseURL = "https://journal-mood-save.example"
         let saved = await store.mutate("diary", verifySavedValue: true) {
             JournalDay.togglingMood(.attached, for: "2026-10-07", author: .vera, in: $0, updatedAt: "now")
         }
@@ -129,7 +131,9 @@ final class JournalTests: XCTestCase {
         URLProtocol.registerClass(JournalMoodPersistenceProtocol.self)
         defer { URLProtocol.unregisterClass(JournalMoodPersistenceProtocol.self) }
         JournalMoodPersistenceProtocol.reset(dropTags: true)
-        let store = AppStore(); store.token = "synthetic-mood"; store.baseURL = "https://journal-mood-save.example"
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("journal-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let store = AppStore(disk: LocalDocumentDisk(directory: cache)); store.token = "synthetic-mood"; store.baseURL = "https://journal-mood-save.example"
         let saved = await store.mutate("diary", reportErrors: false, verifySavedValue: true) {
             JournalDay.togglingMood(.attached, for: "2026-10-07", author: .vera, in: $0, updatedAt: "now")
         }

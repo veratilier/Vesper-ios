@@ -1120,7 +1120,7 @@
 				"CODE_SIGN_IDENTITY" = "-";
 				"INFOPLIST_FILE" = "Vesper/Mac-Info.plist";
 				"CODE_SIGN_ENTITLEMENTS" = "Vesper/Mac.entitlements";
-				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
+				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIconWhite";
 				"CURRENT_PROJECT_VERSION" = "1";
 				"MARKETING_VERSION" = "0.1.0";
 				"SUPPORTED_PLATFORMS" = "iphoneos iphonesimulator macosx";
@@ -1146,7 +1146,7 @@
 				"CODE_SIGN_IDENTITY" = "-";
 				"INFOPLIST_FILE" = "Vesper/Mac-Info.plist";
 				"CODE_SIGN_ENTITLEMENTS" = "Vesper/Mac.entitlements";
-				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
+				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIconWhite";
 				"CURRENT_PROJECT_VERSION" = "1";
 				"MARKETING_VERSION" = "0.1.0";
 				"SUPPORTED_PLATFORMS" = "iphoneos iphonesimulator macosx";

@@ -34,6 +34,13 @@ open navigation and settings but cannot read private history or send messages.
 
 - Persistent sidebar for Home, Chat, Letters, Collection features and Settings.
 - Contacts remain beside the selected chat, with a separate conversation pane.
+- Entering Chat automatically opens the main conversation. Reopening the current
+  room reuses its live session; after relaunch, a per-account local preview of up
+  to 100 confirmed messages appears while the server validates the room. Cached
+  previews cannot send until validation finishes; the first visit needs network.
+- Chat previews live in the app's sandboxed Caches directory, separate from the
+  authoritative server history. They contain text and attachment metadata, not
+  the device token or downloaded attachment bodies.
 - Right-click messages for copy, favorite, quote and applicable media actions.
 - **Command–Return** sends the current draft; normal Return can insert a newline.
 - Resizable window, centered chat content, native file pickers and saved appearance.
@@ -46,7 +53,9 @@ open navigation and settings but cannot read private history or send messages.
   health/alarm tools are omitted and rejected if requested by an older thread.
 - Calendar, reminders, location and audio refer to the Mac and its permissions;
   the Mac app does not remotely grant access to the iPhone.
-- App-icon switching depends on system support. Music, microphone, dictation,
+- The Mac build uses the White icon. Appearance offers icon images to copy for
+  Finder → Get Info → paste onto the small icon; the iPhone alternate-icon API
+  is not used for Mac changes. Music, microphone, dictation,
   calling and real server delivery require account pairing and applicable macOS
   permission/provider authorization. Do not infer success from a compiled build.
 - Initial verification: Catalyst compilation, signature verification, launch,

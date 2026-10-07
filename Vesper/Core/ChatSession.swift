@@ -201,6 +201,11 @@ enum ChatUserInput {
     @Published private var dismissedToolIssues: Set<String> = []
     var issueDetails: [ChatIssue] {
         var issues: [ChatIssue] = []
+        if showingCachedHistory {
+            issues.append(ChatIssue(id: "cached-history", title: "最近聊天记录",
+                detail: busy || openingMainRoom ? "正在后台同步，完成后即可发送。" : "同步未完成；可先阅读，再点联系人重试。",
+                dismissible: false, progress: busy || openingMainRoom))
+        }
         if reconnecting || connectionNeedsRetry {
             issues.append(ChatIssue(id: "connection", title: "聊天连接",
                 detail: connectionIssue ?? (connectionNeedsRetry ? "Chat recovery failed. Tap Retry to start another attempt." : "正在重新连接 · 第 \(recoveryAttempts)/5 次尝试"),
@@ -333,6 +338,7 @@ enum ChatUserInput {
         }).first else { return }
         if latest.id != conversationID || messages.isEmpty { await open(latest) }
     }
+    @Published private(set) var showingCachedHistory = false
     @Published var busy = false
     @Published var status = ""
     @Published var error: String?
@@ -564,9 +570,13 @@ enum ChatUserInput {
     ])
     private weak var appStore: AppStore?
     func configure(_ store: AppStore) {
-        if let api, api.token != store.api.token || endpoint != store.socketURL {
+        if let api, api.token != store.api.token || api.baseURL != store.baseURL || api.historyURL != store.historyURL || endpoint != store.socketURL {
             disconnect(); unresolvedSends = [:]; pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
             connectionSuppressed = store.api.token.isEmpty
+            showingCachedHistory = false; messages = []; conversations = []; threadID = nil
+            let nextID = UUID().uuidString
+            composer.switchConversation(from: conversationID, to: nextID)
+            conversationID = nextID
         }
         appStore = store; api = store.api; endpoint = store.socketURL
         let historyAPI = store.api
@@ -579,6 +589,34 @@ enum ChatUserInput {
             }
             monitor.start(queue: DispatchQueue(label: "Vesper.ChatNetwork"))
         }
+    }
+    /// Show a read-only preview immediately; only a fresh validated read may restore its thread.
+    func previewConversation(_ requestedID: String? = nil) -> Bool {
+        guard !busy, !callActive, let api, !api.token.isEmpty else { return false }
+        let main = appStore?.document("profile")["mainConversationId"].string ?? ""
+        let id = requestedID ?? (main.isEmpty ? ChatRecentCache.mainID(api: api) ?? "" : main)
+        guard !id.isEmpty else { return false }
+        if conversationID == id && !messages.isEmpty { return true }
+        guard let cached = ChatRecentCache.load(api: api, id: id), !cached["messages"].array.isEmpty else { return false }
+        composer.switchConversation(from: conversationID, to: id)
+        disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil
+        tombstones = []; events = []; thinkingSummary = ""; jumpMessageID = nil
+        hasOlderMessages = false; historyCursor = ""
+        showingCachedHistory = true
+        messages = cached["messages"].array
+        status = "Syncing recent history…"
+        return true
+    }
+    private func cacheRecentHistory() {
+        #if targetEnvironment(macCatalyst)
+        guard !showingCachedHistory, voiceCallContext == nil, let api else { return }
+        ChatRecentCache.save(api: api, id: conversationID, messages: messages)
+        #endif
+    }
+    private func reuseVisibleConversation(_ id: String) -> Bool {
+        guard id == conversationID, !messages.isEmpty, !showingCachedHistory else { return false }
+        if threadID != nil && !initialized { retryConnection() }
+        return true
     }
     func loadConversations() async {
         guard let api else { return }
@@ -621,6 +659,7 @@ enum ChatUserInput {
             self.error = "The server returned an unrecognized deletion result. Refresh the conversation list."
             return
         }
+        ChatRecentCache.remove(api: api, id: item.id)
         conversations.removeAll { $0.id == item.id }
         if conversationID == item.id { newConversation() }
         var favoritesCleaned = false
@@ -652,6 +691,9 @@ enum ChatUserInput {
     func open(_ conversation: JSONValue) async -> Bool {
         guard !busy, !callActive, !openingMainRoom else { return false }
         self.error = nil
+        #if targetEnvironment(macCatalyst)
+        if reuseVisibleConversation(conversation.id) { return true }
+        #endif
         do { try await loadConversation(conversation.id); return true }
         catch is CancellationError { return false }
         catch {
@@ -684,6 +726,7 @@ enum ChatUserInput {
     }
     private func loadConversation(_ id: String) async throws {
         guard let api, !id.isEmpty else { throw ServiceError(message: "Connect your device first.") }
+        let requestedIntent = intent
         busy = true
         defer { busy = turnID != nil }
         // Validate the record before discarding the current chat or its draft.
@@ -698,6 +741,8 @@ enum ChatUserInput {
             r = try await api.request("/conversations/\(id)", history: true)
         }
         try Task.checkCancellation()
+        guard self.api?.token == api.token, self.api?.historyURL == api.historyURL,
+              self.api?.baseURL == api.baseURL, intent == requestedIntent else { throw CancellationError() }
         try Self.validateHistoryRecord(r, expectedID: id)
         composer.switchConversation(from: conversationID, to: id)
         disconnect(); conversationID = id; restoreSendState(); connectionSuppressed = false; threadID = nil; turnID = nil
@@ -705,7 +750,9 @@ enum ChatUserInput {
         let t = r["conversation"]["codexThreadId"].string
         threadID = t.isEmpty ? nil : t
         tombstones = r["tombstones"].array
+        showingCachedHistory = false
         messages = ChatTranscript.merge([], incoming: r["messages"].array, tombstones: tombstones)
+        cacheRecentHistory()
         hasOlderMessages = r["hasMore"].bool; historyCursor = r["before"].string
         // Older pages are loaded only by explicit pagination or search.
         // Prepending the entire archive here moves the visible reading position.
@@ -731,9 +778,25 @@ enum ChatUserInput {
         defer { openingMainRoom = false }
         self.error = nil
         do {
-            let response = try await store.api.request("/api/state?key=profile")
+            let identity = store.api
+            let response: JSONValue
+            #if targetEnvironment(macCatalyst)
+            if let profile = store.documents["profile"], !profile["mainConversationId"].string.isEmpty {
+                response = .object(["value": profile])
+            } else { response = try await identity.request("/api/state?key=profile") }
+            #else
+            response = try await identity.request("/api/state?key=profile")
+            #endif
+            try Task.checkCancellation()
+            guard store.token == identity.token, store.baseURL == identity.baseURL else { throw CancellationError() }
             // This read is only for the room pointer; never overwrite a newer avatar save.
             let id = response["value"]["mainConversationId"].string
+            #if targetEnvironment(macCatalyst)
+            if !id.isEmpty {
+                ChatRecentCache.rememberMain(api: identity, id: id)
+                if reuseVisibleConversation(id) { return true }
+            }
+            #endif
             if !id.isEmpty {
                 do { try await loadConversation(id); return true }
                 catch {
@@ -758,6 +821,9 @@ enum ChatUserInput {
                 next["mainConversationId"] = .string(roomID)
                 return next
             }
+            #if targetEnvironment(macCatalyst)
+            if saved { ChatRecentCache.rememberMain(api: identity, id: roomID) }
+            #endif
             return saved
         } catch is CancellationError { return false }
         catch { if Task.isCancelled { return false }; self.error = error.localizedDescription; return false }
@@ -824,7 +890,9 @@ enum ChatUserInput {
                 if conversationID == targetConversation {
                     tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
                     messages.removeAll { $0.id == message.id }
-                }
+                    if showingCachedHistory { ChatRecentCache.remove(api: api, id: targetConversation) }
+                    else { cacheRecentHistory() }
+                } else { ChatRecentCache.remove(api: api, id: targetConversation) }
                 if let store {
                     let favoritesCleaned = await ChatFavorites.removeCopies(conversationID: targetConversation, messageID: message.id, in: store)
                     if !favoritesCleaned { self.error = "Message deleted from history, but its saved Favorite may still contain a copy. Remove it from Favorites." }
@@ -833,7 +901,7 @@ enum ChatUserInput {
         }
     }
     func newConversation(id: String = UUID().uuidString) {
-        guard !busy else { return }; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
+        guard !busy else { return }; showingCachedHistory = false; composer.switchConversation(from: conversationID, to: id); jumpMessageID = nil; hasOlderMessages = false; historyCursor = ""; disconnect(); conversationID = id; restoreSendState(); threadID = nil; turnID = nil; messages = []; events = []; thinkingSummary = ""; status = "New conversation"
     }
     func disconnect() {
         wantsConnection = false; connectionSuppressed = true; intent = UUID(); sending = false; busy = false; stopRecovery()
@@ -991,6 +1059,7 @@ enum ChatUserInput {
                 let buffered = bufferedPackets; bufferedPackets = []
                 for packet in buffered { try checkCallback(); await handle(packet) }
                 try checkCallback()
+                cacheRecentHistory()
                 initialized = true; reconnecting = false; connectionNeedsRetry = false
                 connectionStage = .ready; connectionIssue = nil; readyAt = Date()
                 Self.log.info("chat-ready generation=\(expected.uuidString, privacy: .public) attempt=\(self.recoveryAttempts, privacy: .public)")
@@ -1139,7 +1208,7 @@ enum ChatUserInput {
     var preparingSend: Bool { sending && turnID == nil }
 
     func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil, location: JSONValue? = nil, replyTo: JSONValue? = nil, onAccepted: () -> Void = {}) async -> Bool {
-        guard !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil || location != nil) else { return false }
+        guard !showingCachedHistory, !openingMainRoom, !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil || location != nil) else { return false }
         if let location, !ChatSharedLocation.valid(location) { error = "This location is invalid. Nothing was sent."; return false }
         let sendIntent = intent
         sending = true
@@ -1453,6 +1522,7 @@ enum ChatUserInput {
         guard voiceCallContext == nil, let api else { return }
         _ = try await api.request("/conversations/\(targetConversation)/messages", method: "POST", body: message, history: true)
         try checkCallback()
+        if targetConversation == conversationID { cacheRecentHistory() }
         if message["status"].string == "delivered", !ChatPresentation.isActivity(message), !message["content"].string.isEmpty || !message["metadata"]["attachments"].array.isEmpty {
             do {
                 _ = try await api.request("/api/memory/messages", method: "POST", body: .object(["conversationId": .string(targetConversation), "messageId": .string(message.id), "role": .string(ChatPresentation.isUser(message) ? "user" : "agent"), "content": message["content"], "createdAt": message["createdAt"], "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// One place for chat identity, history reconciliation and presentation order.
 /// The history service owns durable messages; live Codex items fill gaps until
@@ -185,5 +186,53 @@ enum ChatBubbles {
         var quote = self.quote(match ?? original, conversationID: conversationID)
         quote["text"] = .string(excerpt)
         return quote
+    }
+}
+
+/// A bounded display cache, never the authority for a conversation's thread or deletion state.
+/// Account and service identities are hashed so separate logins cannot share previews.
+enum ChatRecentCache {
+    static func directory(api: APIClient, root: URL? = nil) -> URL? {
+        guard !api.token.isEmpty, let root = root ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        return root.appendingPathComponent("VesperChatPreviews").appendingPathComponent(digest(api.baseURL + "\n" + api.historyURL + "\n" + api.token))
+    }
+    private static func digest(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    static func load(api: APIClient, id: String, root: URL? = nil) -> JSONValue? {
+        guard let directory = directory(api: api, root: root), !id.isEmpty,
+              let data = try? Data(contentsOf: directory.appendingPathComponent(digest(id) + ".json")),
+              data.count <= 4_000_000, let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              value["conversation"]["id"].string == id else { return nil }
+        return value
+    }
+    static func save(api: APIClient, id: String, messages: [JSONValue], root: URL? = nil) {
+        guard let directory = directory(api: api, root: root), !id.isEmpty else { return }
+        // Pending/streaming items must not be presented as a confirmed reply after relaunch.
+        var recent = Array(messages.filter { ["", "delivered"].contains($0["status"].string) }.suffix(100))
+        while !recent.isEmpty {
+            let value: JSONValue = .object(["conversation": .object(["id": .string(id)]), "messages": .array(recent)])
+            if let data = try? JSONEncoder().encode(value), data.count <= 4_000_000 {
+                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try? data.write(to: directory.appendingPathComponent(digest(id) + ".json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                return
+            }
+            recent.removeFirst()
+        }
+        remove(api: api, id: id, root: root)
+    }
+    static func mainID(api: APIClient, root: URL? = nil) -> String? {
+        guard let directory = directory(api: api, root: root) else { return nil }
+        return try? String(contentsOf: directory.appendingPathComponent("main-room"), encoding: .utf8)
+    }
+    static func rememberMain(api: APIClient, id: String, root: URL? = nil) {
+        guard let directory = directory(api: api, root: root), !id.isEmpty else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? Data(id.utf8).write(to: directory.appendingPathComponent("main-room"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+    static func remove(api: APIClient, id: String, root: URL? = nil) {
+        guard let directory = directory(api: api, root: root) else { return }
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(digest(id) + ".json"))
+        if mainID(api: api, root: root) == id { try? FileManager.default.removeItem(at: directory.appendingPathComponent("main-room")) }
     }
 }

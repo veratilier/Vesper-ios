@@ -4,12 +4,19 @@ import CryptoKit
 @MainActor final class AppStore: ObservableObject {
     private let loadState: (APIClient) async throws -> JSONValue
     private let retryDelay: () async throws -> Void
+    private let disk: LocalDocumentDisk
+    private let requestDocument: (APIClient, String, String, JSONValue?) async throws -> JSONValue
     init(loadState: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/api/state") },
-         retryDelay: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
+         retryDelay: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
+         disk: LocalDocumentDisk = LocalDocumentDisk(),
+         requestDocument: @escaping (APIClient, String, String, JSONValue?) async throws -> JSONValue = { try await $0.request($1, method: $2, body: $3) }) {
         self.loadState = loadState
         self.retryDelay = retryDelay
+        self.disk = disk
+        self.requestDocument = requestDocument
         do { token = try CredentialStore.load() } catch { connectionError = error.localizedDescription }
         cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
+        restoreLocalDocuments()
         // Remove the former NetEase login even when the server is offline.
         UserDefaults.standard.removeObject(forKey: "netease-uid")
         do {
@@ -27,18 +34,107 @@ import CryptoKit
     @Published var loading = false
     @Published var saving = false
     @Published var connected = false
+    @Published private(set) var hasLocalData = false
+    @Published private(set) var syncing = false
+    @Published private(set) var pendingDocuments: [String: PendingDocument] = [:]
+    @Published private(set) var syncError: String?
+    @Published private(set) var conflictingDocuments: Set<String> = []
+    @Published private(set) var lastSyncedAt: Date?
+    var canEnter: Bool { connected || (hasLocalData && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+    private var syncTask: Task<Void, Never>?
+    private var identityGeneration = UUID()
     @Published var legacyMusicCleanupStatus: String?
     @Published var connectionError: String?
     @Published var baseURL: String = UserDefaults.standard.string(forKey: "apiURL") ?? "https://api.vesper.r-vera.com" {
-        didSet { if oldValue != baseURL { connected = false; documents.removeValue(forKey: "profile"); cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token) } }
+        didSet { if oldValue != baseURL { restoreLocalDocuments() } }
     }
     @Published var historyURL: String = UserDefaults.standard.string(forKey: "historyURL") ?? "https://codex.r-vera.com/history"
     @Published var socketURL: String = UserDefaults.standard.string(forKey: "socketURL") ?? "wss://codex.r-vera.com"
     @Published var token = "" {
-        didSet { if oldValue != token { connected = false; documents.removeValue(forKey: "profile"); cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token) } }
+        didSet { if oldValue != token { restoreLocalDocuments() } }
     }
     var api: APIClient { APIClient(baseURL: baseURL, historyURL: historyURL, token: token) }
     func document(_ key: String) -> JSONValue { documents[key] ?? (key == "profile" ? cachedProfile : .null) }
+    private func restoreLocalDocuments() {
+        identityGeneration = UUID()
+        syncTask?.cancel(); syncTask = nil; syncing = false
+        connected = false; hasLocalData = false
+        documents = [:]; pendingDocuments = [:]; lastSyncedAt = nil; syncError = nil; conflictingDocuments = []
+        cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
+        do {
+            if let snapshot = try disk.load(api) {
+                documents = snapshot.documents; pendingDocuments = snapshot.pending
+                lastSyncedAt = snapshot.lastSync; hasLocalData = true
+            }
+        } catch { syncError = "Local data could not be read. Reconnect to restore the cloud copy." }
+    }
+    private func persist(_ values: [String: JSONValue], pending: [String: PendingDocument], syncedAt: Date?) throws {
+        try disk.save(LocalDocumentSnapshot(documents: values, pending: pending, lastSync: syncedAt), api: api)
+    }
+    /// User-authored collections can be saved offline. Commands, credentials and
+    /// verified room-pointer changes still require a confirmed server response.
+    static let localDocumentKeys: Set<String> = ["notes", "todos", "anniversaries", "diary", "favorites", "readingRoom", "music", "musicFavorites", "musicPlaylists", "musicAnnotations"]
+    func scheduleSync() {
+        guard syncTask == nil, !pendingDocuments.isEmpty else { return }
+        let generation = identityGeneration
+        syncTask = Task { [weak self] in
+            guard let self else { return }
+            await self.syncPendingDocuments()
+            if self.identityGeneration == generation { self.syncTask = nil }
+        }
+    }
+    func syncPendingDocuments() async {
+        guard !syncing, !saving, !pendingDocuments.isEmpty, !token.isEmpty else { return }
+        let generation = identityGeneration, client = api
+        syncing = true; syncError = nil
+        defer { if generation == identityGeneration { syncing = false } }
+        for key in pendingDocuments.keys.sorted() {
+            guard let selected = pendingDocuments[key], !Task.isCancelled else { continue }
+            do {
+                let latest = try await requestDocument(client, "/api/state?key=\(key)", "GET", nil)
+                guard generation == identityGeneration, !Task.isCancelled else { return }
+                let merged = try DocumentMerge.apply(base: selected.base, local: selected.value, remote: latest["value"]) ?? .null
+                if merged != latest["value"] {
+                    let receipt = try await requestDocument(client, "/api/state", "PUT", .object(["key": .string(key), "value": merged]))
+                    guard receipt["ok"].bool else { throw ServiceError(message: "The server did not confirm synchronization.") }
+                }
+                guard generation == identityGeneration, !Task.isCancelled else { return }
+                var pending = pendingDocuments, values = documents
+                if let newer = pending[key], newer.id != selected.id {
+                    // Edits made while the PUT was in flight remain queued and
+                    // are rebased onto its acknowledged result, not discarded.
+                    let rebased = try DocumentMerge.apply(base: selected.value, local: newer.value, remote: merged, preferLocal: true) ?? .null
+                    pending[key] = PendingDocument(base: merged, value: rebased); values[key] = rebased
+                } else { pending.removeValue(forKey: key); values[key] = merged }
+                let now = Date()
+                try persist(values, pending: pending, syncedAt: now)
+                documentRevision += 1
+                documents = values; pendingDocuments = pending; lastSyncedAt = now; hasLocalData = true
+                conflictingDocuments.remove(key)
+                if key == "notes" { WidgetSync.notes(document(key)) }
+            } catch {
+                guard generation == identityGeneration, !Task.isCancelled else { return }
+                if error is DocumentMerge.Conflict { conflictingDocuments.insert(key) }
+                syncError = error is DocumentMerge.Conflict ? "\(key.capitalized): \(error.localizedDescription)" : "Saved on this device. Cloud sync will retry when available."
+            }
+        }
+    }
+    func resolvePendingDocument(_ key: String, keepLocal: Bool) async {
+        guard !syncing, let selected = pendingDocuments[key] else { return }
+        let generation = identityGeneration, client = api
+        do {
+            let latest = try await requestDocument(client, "/api/state?key=\(key)", "GET", nil)
+            guard generation == identityGeneration, pendingDocuments[key]?.id == selected.id else { return }
+            var pending = pendingDocuments, values = documents
+            if keepLocal {
+                let merged = try DocumentMerge.apply(base: selected.base, local: selected.value, remote: latest["value"], preferLocal: true) ?? .null
+                pending[key] = PendingDocument(base: latest["value"], value: merged); values[key] = merged
+            } else { pending.removeValue(forKey: key); values[key] = latest["value"] }
+            try persist(values, pending: pending, syncedAt: lastSyncedAt)
+            documentRevision += 1; pendingDocuments = pending; documents = values; syncError = nil; conflictingDocuments.remove(key)
+            scheduleSync()
+        } catch { if generation == identityGeneration { syncError = error.localizedDescription } }
+    }
     private func rememberProfile(_ value: JSONValue) {
         cachedProfile = ProfileDisplayCache.displayFields(value)
         ProfileDisplayCache.save(cachedProfile, baseURL: baseURL, token: token)
@@ -62,7 +158,9 @@ import CryptoKit
     }
     private var documentRevision = 0
     private var cleaningLegacyMusic = false
-    func refresh(retryTransientFailures: Bool = false) async {
+    func refresh(retryTransientFailures: Bool = false, minimumInterval: TimeInterval = 0) async {
+        scheduleSync()
+        if connected, let lastSyncedAt, Date().timeIntervalSince(lastSyncedAt) < minimumInterval, pendingDocuments.isEmpty { return }
         // A new foreground task can start before the cancelled request has unwound.
         if retryTransientFailures {
             let wasLoading = loading
@@ -95,9 +193,14 @@ import CryptoKit
                 connected = true
                 // A read started before a save must never replace the saved document.
                 guard revision == documentRevision, !saving else { return }
-                documents = docs.mapValues { $0["value"] }
+                var values = docs.mapValues { $0["value"] }
+                for (key, pending) in pendingDocuments { values[key] = pending.value }
+                documents = values
+                do { try persist(values, pending: pendingDocuments, syncedAt: Date()); hasLocalData = true; lastSyncedAt = Date() }
+                catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
                 rememberProfile(documents["profile"] ?? .null)
                 WidgetSync.notes(document("notes"))
+                scheduleSync()
                 return
             } catch {
                 guard !Task.isCancelled, !(error is CancellationError),
@@ -173,25 +276,56 @@ import CryptoKit
         await withCheckedContinuation { saveWaiters.append($0) }
     }
     private func releaseSave() {
-        if saveWaiters.isEmpty { saving = false }
+        if saveWaiters.isEmpty { saving = false; scheduleSync() }
         else { saveWaiters.removeFirst().resume() }
     }
     func mutate(_ key: String, reportErrors: Bool = true, verifySavedValue: Bool = false, change: (JSONValue) throws -> JSONValue) async -> Bool {
+        let invocationGeneration = identityGeneration
+        if verifySavedValue, pendingDocuments[key] != nil {
+            if let syncTask { await syncTask.value }
+            guard invocationGeneration == identityGeneration else { return false }
+            await syncPendingDocuments()
+            guard invocationGeneration == identityGeneration else { return false }
+            guard pendingDocuments[key] == nil else {
+                if reportErrors { error = "Your local changes are saved. Finish cloud sync before requesting a verified save." }
+                return false
+            }
+        }
+        if Self.localDocumentKeys.contains(key), !verifySavedValue, hasLocalData {
+            do {
+                let value = try change(document(key))
+                guard value != document(key) else { return true }
+                var pending = pendingDocuments, values = documents
+                pending[key] = PendingDocument(base: pending[key]?.base ?? document(key), value: value)
+                values[key] = value
+                try persist(values, pending: pending, syncedAt: lastSyncedAt)
+                documentRevision += 1; documents = values; pendingDocuments = pending
+                if key == "notes" { WidgetSync.notes(value) }
+                scheduleSync()
+                return true
+            } catch { if reportErrors { self.error = error.localizedDescription }; return false }
+        }
         await acquireSave()
         documentRevision += 1
         defer { documentRevision += 1; releaseSave() }
-        guard !Task.isCancelled else { return false }
+        guard !Task.isCancelled, invocationGeneration == identityGeneration else { return false }
+        let client = api, generation = identityGeneration
         do {
-            let latest = try await api.request("/api/state?key=\(key)")
+            let latest = try await requestDocument(client, "/api/state?key=\(key)", "GET", nil)
+            guard generation == identityGeneration else { return false }
             let value = try change(latest["value"])
-            let receipt = try await api.request("/api/state", method: "PUT", body: .object(["key": .string(key), "value": value]))
+            let receipt = try await requestDocument(client, "/api/state", "PUT", .object(["key": .string(key), "value": value]))
             guard receipt["ok"].bool else { throw ServiceError(message: "The server did not confirm this save.") }
             if verifySavedValue {
-                let saved = try await api.request("/api/state?key=\(key)")
+                let saved = try await requestDocument(client, "/api/state?key=\(key)", "GET", nil)
                 guard saved["value"] == value else { throw ServiceError(message: "The saved profile could not be verified. Please try again.") }
             }
-            documents[key] = value; if key == "profile" { rememberProfile(value) }; if key == "notes" { WidgetSync.notes(value) }; return true
-        } catch { if reportErrors { self.error = error.localizedDescription }; return false }
+            guard generation == identityGeneration else { return false }
+            documents[key] = pendingDocuments[key]?.value ?? value
+            do { try persist(documents, pending: pendingDocuments, syncedAt: lastSyncedAt); hasLocalData = true }
+            catch { syncError = "Saved in the cloud, but the local copy could not be saved." }
+            if key == "profile" { rememberProfile(value) }; if key == "notes" { WidgetSync.notes(value) }; return true
+        } catch { if reportErrors, generation == identityGeneration { self.error = error.localizedDescription }; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {
         await mutate(key) { current in

@@ -70,7 +70,7 @@ struct HomeView: View {
                         }
                     }
                     if showsInlineMusic { musicRow }
-                    if !store.connected {
+                    if !store.connected && !store.hasLocalData {
                         Button("Connect Vesper in Settings") { navigate(.settings) }
                             .font(.footnote).foregroundStyle(palette.muted)
                     }
@@ -83,8 +83,8 @@ struct HomeView: View {
         .foregroundStyle(palette.ink)
         .buttonStyle(.plain)
         .task {
-            await store.refresh()
             player.updateLibrary(store.document("music").array)
+            await store.refresh(minimumInterval: 45)
             await loadUsage()
         }
         .task(id: phase) {

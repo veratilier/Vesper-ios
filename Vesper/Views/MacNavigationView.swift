@@ -22,7 +22,7 @@ struct MacNavigationView<Detail: View>: View {
                         ForEach(collection) { row($0) }
                     }.padding(.horizontal, 10)
                 }
-                if !store.connected {
+                if !store.connected && !store.hasLocalData {
                     Button { selection = .settings } label: {
                         Label("Connect Vesper", systemImage: "link").font(.caption)
                     }.buttonStyle(.plain).padding(.horizontal, 20).padding(.top, 12)

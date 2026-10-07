@@ -405,7 +405,7 @@ struct RootView: View {
             player.configure(store); player.synchronize()
             while !Task.isCancelled {
                 if !store.token.isEmpty {
-                    await store.refresh()
+                    await store.refresh(minimumInterval: 45)
                     if let response = try? await store.api.request("/api/desire") { WidgetSync.desire(response["data"]) }
                     await refreshUsage()
                 }
@@ -569,7 +569,7 @@ struct OpeningView: View {
                 }.foregroundStyle(VesperTheme.ink).shadow(color: .black.opacity(0.08), radius: 8)
                     .position(x: geometry.size.width / 2, y: geometry.size.height * 0.30).opacity(ready ? 1 : 0)
                 VStack(spacing: 14) { Spacer()
-                    if store.connected {
+                    if store.canEnter {
                     Button { entering = true; enter() } label: {
                     Text("Enter Vesper  ›").font(.system(size: 20, design: .serif).italic())
                         .padding(.horizontal, 30).padding(.vertical, 13)
@@ -587,7 +587,7 @@ struct OpeningView: View {
                         Button("Connection settings") { showingConnection = true }
                     }
                 }.padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: store.connected)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: store.canEnter)
             }
         }.ignoresSafeArea()
         .task(id: phase) {

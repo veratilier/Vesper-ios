@@ -734,7 +734,7 @@ struct ChatView: View {
                 else {
                     ChatSendButton(text: draftStore.text,
                                    hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
-                                   blocked: voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
+                                   blocked: chat.showingCachedHistory || chat.openingMainRoom || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
                                    action: send)
                         #if targetEnvironment(macCatalyst)
                         .keyboardShortcut(.return, modifiers: .command)

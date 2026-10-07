@@ -167,6 +167,7 @@ struct AppearanceSettingsView: View {
     @State private var importing = false
     @State private var changingIcon = false
     @State private var selectedIcon = ThemeIcons.currentValue
+    @State private var copiedMacIcon = ""
     @State private var issue: String?
     @State private var showingIssue = false
     @Environment(\.scenePhase) private var phase
@@ -242,6 +243,27 @@ struct AppearanceSettingsView: View {
                     }
                 }
                 section("App icon") {
+                    #if targetEnvironment(macCatalyst)
+                    Text("This Mac build uses the White icon.").font(.subheadline)
+                    HStack(spacing: 12) {
+                        ForEach([VesperPalette.white, .black]) { item in
+                            Button {
+                                if let image = ThemeIcons.preview(item.rawValue) {
+                                    UIPasteboard.general.image = image; copiedMacIcon = item.name
+                                }
+                            } label: {
+                                VStack(spacing: 8) {
+                                    iconPreview(item).frame(width: 58, height: 58).clipShape(RoundedRectangle(cornerRadius: 13))
+                                    Text("Copy " + item.name).font(.caption)
+                                }.frame(maxWidth: .infinity)
+                            }.accessibilityLabel("Copy " + item.name + " icon for Finder")
+                        }
+                    }
+                    Text(copiedMacIcon.isEmpty
+                         ? "To customize the Mac app icon, copy an icon here. In Finder, select Vesper Mac → Get Info, select the small icon at the top left, then paste."
+                         : copiedMacIcon + " icon copied. In Finder, select Vesper Mac → Get Info, select the small icon at the top left, then press ⌘V.")
+                        .font(.caption).foregroundStyle(VesperTheme.muted).textSelection(.enabled)
+                    #else
                     HStack(spacing: 12) {
                         ForEach(VesperPalette.allCases) { item in
                             Button { changeIcon(item.rawValue) } label: {
@@ -258,6 +280,7 @@ struct AppearanceSettingsView: View {
                         }
                     }
                     if changingIcon { ProgressView("Changing icon…").font(.caption) }
+                    #endif
                 }
             }.padding(20).frame(maxWidth: 580).frame(maxWidth: .infinity)
         }.background { Background() }.navigationTitle("Appearance").navigationBarTitleDisplayMode(.inline)
@@ -392,7 +415,9 @@ struct EditorSheet<Content: View>: View {
         let details: [String: Any]?
         if let name = name(for: value) { details = (icons?["CFBundleAlternateIcons"] as? [String: [String: Any]])?[name] }
         else { details = icons?["CFBundlePrimaryIcon"] as? [String: Any] }
+        #if !targetEnvironment(macCatalyst)
         if let file = (details?["CFBundleIconFiles"] as? [String])?.last, let image = UIImage(named: file) { return image }
+        #endif
         // Asset-catalog alternate icons have no public UIImage file name. Match
         // the centered crop used by prepare_icons.sh for their source artwork.
         guard value == "white" || value == "black",

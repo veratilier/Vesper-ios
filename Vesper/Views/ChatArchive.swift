@@ -39,7 +39,7 @@ struct NativeChatHome: View {
             NavigationStack {
                 ZStack {
                     Background()
-                    if loadingChat {
+                    if loadingChat && !chat.showingCachedHistory {
                         ProgressView("Opening chat…")
                     } else if open {
                         ChatView(onMenu: { open = false }, restoreLatest: false)
@@ -162,6 +162,9 @@ struct NativeChatHome: View {
             .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
             .task {
                 chat.configure(store)
+                #if targetEnvironment(macCatalyst)
+                if !store.token.isEmpty && !open { enterChat() }
+                #endif
                 if !store.token.isEmpty { await chat.loadConversations() }
                 if !openedOnce { openedOnce = true }
             }
@@ -231,8 +234,22 @@ struct NativeChatHome: View {
     }
 
     private func enterChat(_ item: JSONValue? = nil) {
+        #if targetEnvironment(macCatalyst)
+        chat.configure(store)
+        if (item?.id ?? mainConversationID) == chat.conversationID,
+           !chat.messages.isEmpty, !chat.showingCachedHistory {
+            open = true; loadingChat = false
+            return
+        }
+        #endif
         guard !rowDisabled else { return }
+        #if targetEnvironment(macCatalyst)
+        chat.configure(store)
+        let previewVisible = chat.previewConversation(item?.id)
+        loadingChat = !previewVisible
+        #else
         loadingChat = true
+        #endif
         open = true
         openingTask = Task {
             let opened: Bool
@@ -241,7 +258,7 @@ struct NativeChatHome: View {
             guard !Task.isCancelled else { return }
             openingTask = nil
             loadingChat = false
-            if !opened { open = false }
+            if !opened && !chat.showingCachedHistory { open = false }
         }
     }
 

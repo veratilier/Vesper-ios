@@ -1702,3 +1702,49 @@ extension ChatConnectionRecoveryTests {
         XCTAssertEqual(BubblePersistenceProtocol.records.count, count)
     }
 }
+
+final class ChatRecentCacheTests: XCTestCase {
+    func testPreviewCacheIsBoundedAccountScopedAndRemovable() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let api = APIClient(baseURL: "https://cache.example", historyURL: "https://history.example", token: "synthetic-a")
+        var other = api; other.token = "synthetic-b"
+        var otherService = api; otherService.historyURL = "https://other.example"
+        var messages: [JSONValue] = (0..<130).map { .object(["id": .string("m-\($0)"), "content": .string("fixture"), "status": .string("delivered")]) }
+        messages.append(.object(["id": .string("pending"), "status": .string("pending")]))
+        messages.append(.object(["id": .string("streaming"), "status": .string("streaming")]))
+        messages.append(.object(["id": .string("failed"), "status": .string("error")]))
+        ChatRecentCache.save(api: api, id: "room", messages: messages, root: root)
+        ChatRecentCache.rememberMain(api: api, id: "room", root: root)
+        XCTAssertEqual(ChatRecentCache.load(api: api, id: "room", root: root)?["messages"].array.count, 100)
+        XCTAssertEqual(ChatRecentCache.load(api: api, id: "room", root: root)?["messages"].array.first?.id, "m-30")
+        XCTAssertNil(ChatRecentCache.load(api: other, id: "room", root: root))
+        XCTAssertNil(ChatRecentCache.load(api: otherService, id: "room", root: root))
+        XCTAssertNil(ChatRecentCache.load(api: api, id: "other-room", root: root))
+        XCTAssertEqual(ChatRecentCache.mainID(api: api, root: root), "room")
+        ChatRecentCache.remove(api: api, id: "room", root: root)
+        XCTAssertNil(ChatRecentCache.mainID(api: api, root: root))
+        XCTAssertNil(ChatRecentCache.load(api: api, id: "room", root: root))
+    }
+    @MainActor func testCachedPreviewCannotSendUntilValidatedAndFreshHistoryReplacesIt() async throws {
+        let api = APIClient(baseURL: "https://history-pagination.example", historyURL: "https://history-pagination.example", token: "cache-test-" + UUID().uuidString)
+        defer { if let dir = ChatRecentCache.directory(api: api) { try? FileManager.default.removeItem(at: dir) } }
+        ChatRecentCache.save(api: api, id: "pagination-room", messages: [.object(["id": .string("stale"), "role": .string("user"), "content": .string("cached fixture"), "status": .string("delivered")])])
+        let chat = ChatSession()
+        chat.configureConnection(api: api, endpoint: "wss://invalid.example")
+        XCTAssertTrue(chat.previewConversation("pagination-room"))
+        XCTAssertTrue(chat.showingCachedHistory)
+        XCTAssertEqual(chat.messages.first?.id, "stale")
+        let sent = await chat.send("must not send from unvalidated cache")
+        XCTAssertFalse(sent)
+        ChatHistoryPaginationProtocol.reset()
+        URLProtocol.registerClass(ChatHistoryPaginationProtocol.self)
+        defer { URLProtocol.unregisterClass(ChatHistoryPaginationProtocol.self) }
+        let opened = await chat.open(.object(["id": .string("pagination-room")]))
+        XCTAssertTrue(opened)
+        XCTAssertFalse(chat.showingCachedHistory)
+        XCTAssertEqual(chat.messages.map(\.id), ["latest"])
+        XCTAssertEqual(ChatHistoryPaginationProtocol.requestCount, 1)
+        chat.disconnect()
+    }
+}

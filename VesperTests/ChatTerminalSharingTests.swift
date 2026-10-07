@@ -3,6 +3,17 @@ import SwiftUI
 @testable import Vesper
 
 @MainActor final class ChatTerminalSharingTests: XCTestCase {
+    func testGroupedTerminalCardRendersOperationsInOneSurface() async throws {
+        let records: [JSONValue] = (1...4).map { index in
+            .object(["id": .string("operation-\(index)"), "metadata": .object(["execution": .object([
+                "type": .string("commandExecution"), "title": .string("echo fixture-\(index)"),
+                "command": .string("echo fixture-\(index)"), "status": .string(index == 2 ? "failed" : "completed"),
+                "output": .string("Synthetic output")])])])
+        }
+        let image = try await renderFixture(AnyView(TerminalOperationGroup(records: records).padding(20).background { Background() }), name: "Grouped terminal operations")
+        XCTAssertGreaterThan(image.size.width, 300)
+    }
+
     func testRecordedTerminalHistoryIncludesCommandsAndOutputsWithoutDuplicatingItems() {
         let old: JSONValue = .object(["id": .string("command"), "type": .string("CommandExecution"), "title": .string("echo synthetic"), "output": .string("synthetic result"), "createdAt": .string("2026-10-01T00:00:00Z")])
         let new: JSONValue = .object(["id": .string("tool"), "type": .string("DynamicToolCall"), "title": .string("test_tool"), "status": .string("completed"), "createdAt": .string("2026-10-01T00:01:00Z")])

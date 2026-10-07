@@ -157,6 +157,7 @@ struct ChatView: View {
     @State private var chatVisible = false
     @State private var incomingFrames: [String: CGRect] = [:]
     @State private var scrollFrame = CGRect.zero
+    @State private var headerFrame = CGRect.zero
     @State private var composerFrame = CGRect.zero
 
     @MainActor init(onMenu: @escaping () -> Void = {}, restoreLatest: Bool = true, native: Bool = false, inbox: ChatInbox? = nil) {
@@ -218,8 +219,7 @@ struct ChatView: View {
     @State private var loadingPhotos = false
     @FocusState private var focused: Bool
     private var chatContent: some View {
-        VStack(spacing: 0) {
-            header.zIndex(1)
+        ZStack(alignment: .top) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
@@ -251,7 +251,7 @@ struct ChatView: View {
                             AssistantMessageHeading(message: .object(["status": .string("streaming"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events, isLive: true)
                         }
                         Color.clear.frame(height: 1).id("bottom")
-                    }.padding(.horizontal, 20).padding(.vertical, 14)
+                    }.padding(.horizontal, 20).padding(.top, 62).padding(.bottom, 14)
                     .background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
                     .opacity(positionedConversationID == chat.conversationID || chat.messages.isEmpty ? 1 : 0)
                 }.scrollDismissesKeyboard(.interactively)
@@ -333,6 +333,11 @@ struct ChatView: View {
                     nearBottom = true
                 }
             }
+            // Only the controls intercept touches; the gaps reveal the transcript.
+            header.zIndex(1)
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
+                    headerFrame = frame; markDisplayedMessages()
+                }
         }
     }
     private var scrollUpdate: ChatScrollUpdate {
@@ -391,6 +396,9 @@ struct ChatView: View {
     private func markDisplayedMessages() {
         guard chatVisible, chatTabSelected, phase == .active, positionedConversationID == chat.conversationID else { return }
         var viewport = scrollFrame
+        let visibleTop = max(viewport.minY, headerFrame.maxY)
+        viewport.size.height = max(0, viewport.maxY - visibleTop)
+        viewport.origin.y = visibleTop
         if composerFrame.height > 0 { viewport.size.height = max(0, min(viewport.maxY, composerFrame.minY) - viewport.minY) }
         let ids = ChatReadVisibility.displayedIDs(frames: incomingFrames, viewport: viewport)
         inbox.markDisplayed(conversation: chat.conversationID, messageIDs: ids)
@@ -1027,10 +1035,30 @@ enum ChatPresentation {
                 && $0["conversationId"].string == first["conversationId"].string
         }
     }
+    private struct TurnKey: Hashable {
+        let conversation: String
+        let thread: String
+        let turn: String
+    }
+    private static func turnKey(_ message: JSONValue) -> TurnKey? {
+        let meta = message["metadata"]
+        guard !meta["turnId"].string.isEmpty else { return nil }
+        return TurnKey(conversation: message["conversationId"].string,
+                       thread: meta["threadId"].string, turn: meta["turnId"].string)
+    }
+    private static func canCombineActivities(_ first: Row, _ second: Row) -> Bool {
+        guard first.activity, second.activity, let key = first.messages.first.flatMap(turnKey) else { return false }
+        return (first.messages + second.messages).allSatisfy {
+            turnKey($0) == key && $0["metadata"]["userInput"] == .null && !ChatTranscript.isWake($0)
+        }
+    }
     private static func combinedMediaRows(_ rows: [Row]) -> [Row] {
         var result: [Row] = []
         for row in rows {
-            if let last = result.last, canCombine(last, with: row) {
+            if let last = result.last, canCombineActivities(last, row) {
+                result[result.count - 1] = Row(id: last.id, activity: true,
+                    messages: last.messages + row.messages, activities: last.activities + row.activities)
+            } else if let last = result.last, canCombine(last, with: row) {
                 let messages = last.messages + row.messages
                 let primary = messages.first { !hasMedia($0) } ?? messages[0]
                 result[result.count - 1] = Row(id: primary.id, activity: false, messages: messages, activities: last.activities + row.activities)
@@ -1083,7 +1111,7 @@ enum ChatPresentation {
         let messages = ChatTranscript.ordered(input).filter { !isWakeActivity($0) }
         // Index turn ownership once. Re-scanning the complete history for every
         // tool row was quadratic, especially in chats with many tool calls.
-        var firstReplyByTurn: [String: Int] = [:]
+        var firstReplyByTurn: [TurnKey: Int] = [:]
         var nextReply = Array<Int?>(repeating: nil, count: messages.count)
         var nextLegacyReply = nextReply
         var next: Int?, nextLegacy: Int?
@@ -1094,7 +1122,7 @@ enum ChatPresentation {
                 next = index
                 let turn = messages[index]["metadata"]["turnId"].string
                 if turn.isEmpty { nextLegacy = index }
-                else { firstReplyByTurn[turn] = index }
+                else if let key = turnKey(messages[index]) { firstReplyByTurn[key] = index }
             }
         }
         var attached: [Int: [JSONValue]] = [:]
@@ -1110,7 +1138,7 @@ enum ChatPresentation {
                 if turn.isEmpty { previousLegacy = index }
                 continue
             }
-            let exact = turn.isEmpty ? nil : firstReplyByTurn[turn]
+            let exact = turnKey(message).flatMap { firstReplyByTurn[$0] }
             let nearby = turn.isEmpty ? (nextReply[index] ?? previous) : (nextLegacyReply[index] ?? previousLegacy)
             if let target = exact ?? nearby { attached[target, default: []].append(message) }
             else { orphans.insert(index) }
@@ -1303,7 +1331,7 @@ private struct ToolCallRow: View {
 
 private struct MiniTerminal: View {
     let execution: JSONValue
-    @State private var expanded = false
+    var inlineDetails = false
     @State private var details = false
     private var title: String { execution["title"].string.isEmpty ? "Terminal" : execution["title"].string }
     private var statusColor: Color { ["failed", "error"].contains(execution["status"].string) ? .red : execution["status"].string == "running" ? .yellow : .white.opacity(0.8) }
@@ -1315,7 +1343,7 @@ private struct MiniTerminal: View {
                 Text(execution["status"].string.capitalized).font(.caption2).foregroundStyle(statusColor)
                 Button { details = true } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.accessibilityLabel("Expand terminal")
             }
-            if expanded { output.frame(maxHeight: 220) }
+            if inlineDetails { output.frame(maxHeight: 320) }
         }.font(.system(size: 12, design: .monospaced)).foregroundStyle(Color.white.opacity(0.9))
         .padding(12).background(Color(red: 0.12, green: 0.14, blue: 0.18), in: RoundedRectangle(cornerRadius: 12))
         .buttonStyle(.plain)
@@ -1361,6 +1389,56 @@ private struct MiniTerminal: View {
     }
 }
 
+struct TerminalOperationGroup: View {
+    let records: [JSONValue]
+    var live = false
+    @State private var details = false
+    private var executions: [JSONValue] { records.map { $0["metadata"]["execution"] } }
+    private var failed: Int { executions.filter { ["failed", "error", "declined", "interrupted", "cancelled"].contains($0["status"].string) }.count }
+    private var finished: Int { executions.filter { ["completed", "succeeded", "success", "failed", "error", "declined", "interrupted", "cancelled"].contains($0["status"].string) }.count }
+    private var running: Bool { live && executions.contains { ["running", "inProgress"].contains($0["status"].string) } }
+    private var status: String { running ? "Running" : failed > 0 ? "\(failed) failed" : finished == records.count ? "Completed" : "Awaiting status" }
+    private var color: Color { running ? .orange : failed > 0 ? .red : finished == records.count ? .green : VesperTheme.muted }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button { details = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: running ? "terminal" : failed > 0 ? "exclamationmark.circle" : finished == records.count ? "checkmark.circle" : "clock")
+                        .foregroundStyle(color)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(records.count) operations · \(status)").font(.system(size: 14, weight: .semibold))
+                        Text("Terminal").font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 14))
+                }.frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("View all \(records.count) terminal operations, \(status)")
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(Array(executions.prefix(3).enumerated()), id: \.offset) { _, execution in
+                    Text("$ " + (execution["command"].string.isEmpty ? execution["title"].string : execution["command"].string))
+                        .font(.system(size: 12, design: .monospaced)).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if records.count > 3 { Text("+\(records.count - 3) more").font(.caption) }
+            }.padding(12).foregroundStyle(.white.opacity(0.9))
+                .background(Color(red: 0.08, green: 0.09, blue: 0.12), in: RoundedRectangle(cornerRadius: 12))
+            ProgressView(value: Double(finished), total: Double(max(1, records.count))).tint(color)
+            Button { details = true } label: { Label("View all", systemImage: "arrow.up.left.and.arrow.down.right").font(.system(size: 12)).frame(minHeight: 36) }.buttonStyle(.plain)
+        }.padding(14).vesperMaterial(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            .sheet(isPresented: $details) {
+                NavigationStack {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 16) {
+                            ForEach(records) { item in MiniTerminal(execution: item["metadata"]["execution"], inlineDetails: true) }
+                        }.padding()
+                    }.background { Background() }
+                        .navigationTitle("Terminal · \(records.count) operations").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { details = false } } }
+                }
+            }
+    }
+}
+
 private struct AssistantMessageHeading: View {
     let message: JSONValue
     var activities: [JSONValue] = []
@@ -1385,9 +1463,10 @@ private struct AssistantMessageHeading: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("时间、思考摘要和工具调用").accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
-                ForEach(activities.filter { $0["metadata"]["execution"] != .null }) { item in
-                    if !ChatTerminalRecords.entries([item]).isEmpty { MiniTerminal(execution: item["metadata"]["execution"]) }
-                    else { ToolCallRow(tool: item["metadata"]["execution"]) }
+                let terminal = ChatTerminalRecords.entries(activities)
+                if !terminal.isEmpty { TerminalOperationGroup(records: terminal, live: isLive) }
+                ForEach(activities.filter { $0["metadata"]["execution"] != .null && ChatTerminalRecords.entries([$0]).isEmpty }) { item in
+                    ToolCallRow(tool: item["metadata"]["execution"])
                 }
                 let toolEvents = liveEvents.isEmpty ? message["metadata"]["toolEvents"].array.map { $0.string } : liveEvents
                 let toolCards = ToolActivityRecords.cards(toolEvents)

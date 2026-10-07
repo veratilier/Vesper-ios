@@ -83,16 +83,10 @@ extension View {
     }
 }
 struct NavigationStyleToggle: View {
-    var showsTitle = false
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     var body: some View {
         Button { navigationStyle = navigationStyle == "native" ? "vesper" : "native" } label: {
-            if showsTitle {
-                Label(navigationStyle == "native" ? "切换到 Vesper" : "切换到 Apple Native",
-                      systemImage: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled")
-            } else {
-                Image(systemName: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled")
-            }
+            Image(systemName: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled")
         }.accessibilityLabel(navigationStyle == "native" ? "Switch to Vesper" : "Switch to Apple Native")
             .accessibilityValue(navigationStyle == "native" ? "Apple Native" : "Vesper")
     }

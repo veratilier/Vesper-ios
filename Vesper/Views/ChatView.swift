@@ -957,17 +957,40 @@ struct ChatMessageRow: View, Equatable {
 struct ChatHeaderMenu: View {
     let onMemory: () -> Void
     let onTerminal: () -> Void
+    @AppStorage("navigationStyle") private var navigationStyle = "vesper"
+    @State private var expanded = false
+    @State private var pendingAction: (() -> Void)?
     var body: some View {
-        Menu {
-            Button("相关记忆", systemImage: "brain", action: onMemory)
-            Button("终端", systemImage: "terminal", action: onTerminal)
-            NavigationStyleToggle(showsTitle: true)
-        } label: {
+        Button { expanded.toggle() } label: {
             Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
                 .frame(width: 44, height: 44)
                 .vesperGlass(in: Circle(), interactive: true)
         }.buttonStyle(.plain).accessibilityLabel("聊天更多选项")
             .accessibilityIdentifier("chat-header-more")
+            .popover(isPresented: $expanded, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                HStack(spacing: 8) {
+                    actionIcon("相关记忆", symbol: "brain", action: onMemory)
+                    actionIcon("终端", symbol: "terminal", action: onTerminal)
+                    actionIcon(navigationStyle == "native" ? "切换到 Vesper" : "切换到 Apple Native",
+                               symbol: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled") {
+                        navigationStyle = navigationStyle == "native" ? "vesper" : "native"
+                    }
+                }.padding(10).foregroundStyle(VesperTheme.ink)
+                    .presentationCompactAdaptation(.popover)
+                    .presentationBackground(.ultraThinMaterial)
+                    .onDisappear {
+                        let action = pendingAction
+                        pendingAction = nil
+                        action?()
+                    }
+            }
+    }
+    private func actionIcon(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button { pendingAction = action; expanded = false } label: {
+            Image(systemName: symbol).font(.system(size: 21))
+                .frame(width: 44, height: 44)
+                .background(VesperTheme.ink.opacity(0.06), in: Circle())
+        }.buttonStyle(.plain).accessibilityLabel(title)
     }
 }
 

@@ -135,7 +135,7 @@ private struct JournalLayoutFixture: View {
 }
 private struct MiniMusicNavigationFixture: View {
     @ObservedObject var state: MiniMusicNavigationState
-    let dockChanged: (Bool, CGRect) -> Void
+    let dockChanged: (Bool?, CGRect) -> Void
     var body: some View {
         TabView {
             NavigationStack {
@@ -149,7 +149,7 @@ private struct MiniMusicNavigationFixture: View {
                     MiniMusicPlayer(openMusic: { state.detail = true })
                         .background { GeometryReader { geometry in
                             Color.clear.onAppear { dockChanged(true, geometry.frame(in: .global)) }
-                                .onChange(of: geometry.frame(in: .global)) { _, frame in dockChanged(true, frame) }
+                                .onChange(of: geometry.frame(in: .global)) { _, frame in dockChanged(nil, frame) }
                                 .onDisappear { dockChanged(false, .zero) }
                         } }
                 }.navigationTitle("Home").navigationBarTitleDisplayMode(.inline)
@@ -290,7 +290,12 @@ private struct GlassOpacityFixture: View {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
             let state = MiniMusicNavigationState()
             var visible = false, dock = CGRect.zero
-            let content = MiniMusicNavigationFixture(state: state) { visible = $0; dock = $1 }
+            let content = MiniMusicNavigationFixture(state: state) { shown, frame in
+                // Geometry can settle after onDisappear during a navigation transition.
+                // Only appearance callbacks establish visibility; frame updates do not.
+                if let shown { visible = shown }
+                dock = frame
+            }
                 .environmentObject(player).foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
                 .preferredColorScheme(palette == "black" ? .dark : .light)
             let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: width, height: width == 320 ? 720 : 852)

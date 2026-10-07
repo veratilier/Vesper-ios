@@ -1003,6 +1003,37 @@ final class ContractTests: XCTestCase {
         XCTAssertTrue(chat.replyIsStillRunning(reply))
     }
 
+    func testUnansweredTerminalTurnSharesOneHeadingWithoutCrossingTurnsOrQuestions() {
+        func command(_ id: String, turn: String = "turn", thread: String = "thread", second: Int) -> JSONValue {
+            .object(["id": .string(id), "conversationId": .string("chat"), "role": .string("system"),
+                "createdAt": .string(String(format: "2026-10-07T01:00:%02dZ", second)),
+                "metadata": .object(["turnId": .string(turn), "threadId": .string(thread),
+                    "execution": .object(["type": .string("commandExecution"), "status": .string("failed"), "command": .string("echo fixture")])])])
+        }
+        let first = command("a", second: 1), second = command("b", second: 2), third = command("c", second: 3)
+        let grouped = ChatPresentation.displayRows([first, second, third])
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertTrue(grouped[0].activity)
+        XCTAssertEqual(grouped[0].activities.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(ChatTerminalRecords.entries(grouped[0].activities).count, 3)
+        XCTAssertEqual(ChatPresentation.liveHeadingID(grouped, turnID: "turn"), "a")
+        XCTAssertEqual(ChatPresentation.displayRows([first, command("other", turn: "other", second: 2)]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([first, command("other", thread: "other", second: 2)]).count, 2)
+        XCTAssertEqual(ChatPresentation.displayRows([command("legacy-a", turn: "", second: 1), command("legacy-b", turn: "", second: 2)]).count, 2)
+        var question = second
+        question["metadata"]["userInput"] = .object(["id": .string("question")])
+        XCTAssertEqual(ChatPresentation.displayRows([first, question, third]).count, 3)
+        var reply = third
+        reply["id"] = .string("reply"); reply["role"] = .string("agent")
+        reply["metadata"]["execution"] = .null
+        let answered = ChatPresentation.displayRows([first, second, reply])
+        XCTAssertEqual(answered.count, 1)
+        XCTAssertEqual(answered[0].id, "reply")
+        XCTAssertEqual(answered[0].activities.map(\.id), ["a", "b"])
+        reply["metadata"]["threadId"] = .string("different-thread")
+        XCTAssertEqual(ChatPresentation.displayRows([first, reply]).count, 2)
+    }
+
     func testLiveHeadingUsesCurrentTurnAndMovesFromToolToReply() {
         func message(_ id: String, role: String = "agent", turn: String) -> JSONValue {
             .object(["id": .string(id), "role": .string(role), "createdAt": .string("2026-10-05T08:00:00Z"), "metadata": .object(["turnId": .string(turn)])])

@@ -315,12 +315,21 @@ private struct GlassOpacityFixture: View {
                 attachment.lifetime = .keepAlways; add(attachment)
             }
             capture("root")
+            func waitForVisibility(_ expected: Bool) async throws {
+                // Navigation lifecycle callbacks may arrive after 600 ms on a busy
+                // simulator. Wait for the observed state with a bounded deadline.
+                let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+                while visible != expected && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(50))
+                    host.view.layoutIfNeeded()
+                }
+            }
             state.detail = true
-            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            try await waitForVisibility(false)
             XCTAssertFalse(visible, "The player must disappear when a detail page is pushed")
             capture("detail")
             state.detail = false
-            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            try await waitForVisibility(true)
             XCTAssertTrue(visible, "Popping back should restore the mini player")
             XCTAssertEqual(dock.minY,originalDock.minY,accuracy:1)
             capture("returned")

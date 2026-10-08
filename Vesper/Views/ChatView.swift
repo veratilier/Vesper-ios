@@ -190,8 +190,6 @@ struct ChatView: View {
     @State private var renameText = ""
     @State private var removingConversation: JSONValue?
     @State private var modelPicker = false
-    @State private var modelExpanded = false
-    @State private var strengthExpanded = false
     @State private var connectionDetails = false
     @State private var terminalVisible = false
     @State private var memoryRecallVisible = false
@@ -499,60 +497,6 @@ struct ChatView: View {
             Button("Delete", role: .destructive) { if let messages = deleting { Task { await chat.deleteMessages(messages) } }; deleting = nil }
         }
     }
-    private var modelSheet: some View {
-            NavigationStack {
-                List {
-                    DisclosureGroup(isExpanded: $modelExpanded) {
-                        Button { chat.selectModel("") } label: {
-                            HStack { Text("Default model"); Spacer(); if chat.model.isEmpty { Image(systemName: "checkmark") } }
-                        }
-                        ForEach(chat.models) { model in
-                            Button { chat.selectModel(model["model"].string) } label: {
-                                HStack {
-                                    Text(model["displayName"].string.isEmpty ? model["model"].string : model["displayName"].string)
-                                    Spacer()
-                                    if chat.model == model["model"].string { Image(systemName: "checkmark") }
-                                }
-                            }
-                        }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Model").font(.headline)
-                            Text(chat.models.first { $0["model"].string == chat.model }?["displayName"].string ?? (chat.model.isEmpty ? "Default" : chat.model))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    DisclosureGroup(isExpanded: $strengthExpanded) {
-                        if chat.model.isEmpty {
-                            Text("Choose a model to see its supported effort levels.").font(.caption).foregroundStyle(VesperTheme.muted)
-                        } else {
-                            ForEach([""] + chat.supportedEfforts, id: \.self) { value in
-                                Button { chat.effort = value } label: {
-                                    HStack {
-                                        Text(value.isEmpty ? "Default" : value == "xhigh" ? "Extra high" : value.capitalized)
-                                        Spacer()
-                                        if chat.effort == value { Image(systemName: "checkmark") }
-                                    }
-                                }
-                            }
-                            if chat.supportedEfforts.isEmpty { Text("This model does not offer adjustable reasoning effort.").font(.caption) }
-                        }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Strength").font(.headline)
-                            Text(chat.effort.isEmpty ? "Default" : chat.effort == "xhigh" ? "Extra high" : chat.effort.capitalized)
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    if chat.loadingModels { ProgressView("Loading models…") }
-                    if chat.modelError != nil {
-                        Button("Retry") { Task { await chat.loadModels() } }.disabled(chat.loadingModels)
-                    }
-                }.navigationTitle("Model").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { modelPicker = false } } }
-                    .task { chat.configure(store); await chat.loadModels() }
-            }.presentationDetents([.medium, .large])
-    }
     var body: some View {
         attachmentContent
         .sheet(isPresented: $connectionDetails) {
@@ -566,7 +510,6 @@ struct ChatView: View {
                 close: { connectionDetails = false })
                 .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $modelPicker) { modelSheet }
         .sheet(isPresented: $memoryRecallVisible) { MemoryRecallView(conversationID: chat.conversationID) }
         .sheet(isPresented: $terminalVisible) {
             ChatTerminalView(conversationID: chat.conversationID).environmentObject(chat).presentationDetents([.medium, .large])
@@ -727,14 +670,29 @@ struct ChatView: View {
             ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
-                Button { focused = false; modelPicker = true } label: { HStack(spacing: 4) { Text((chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 9)) }.font(.system(size: 12)).frame(maxWidth: 160, minHeight: 40, alignment: .leading) }.disabled(chat.busy)
+                Button { focused = false; drawer = false; stickerPicker = false; headerActionsExpanded = false; modelPicker = true } label: {
+                    HStack(spacing: 4) {
+                        Text(store.activeBackend == .vps ? "VPS" : "MAC").fontWeight(.semibold)
+                        Text("· " + (chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1).truncationMode(.middle)
+                        Image(systemName: modelPicker ? "chevron.up" : "chevron.down").font(.system(size: 9))
+                    }.font(.system(size: 12)).frame(maxWidth: 190, minHeight: 40, alignment: .leading)
+                }.disabled(!chat.canSwitchBackend || store.loading)
+                    .accessibilityLabel("Backend, model and strength")
+                    .accessibilityValue((store.activeBackend == .vps ? "VPS" : "MAC") + ", " + (chat.model.isEmpty ? "Default" : chat.model) + ", " + (chat.effort.isEmpty ? "Default" : chat.effort))
+                    .accessibilityIdentifier("chat-model-picker")
+                    .popover(isPresented: $modelPicker, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+                        ChatModelPopover().environmentObject(store).environmentObject(chat)
+                            .presentationCompactAdaptation(.popover)
+                            .presentationBackground(.regularMaterial)
+                            .task { chat.configure(store); if chat.models.isEmpty { await chat.loadModels() } }
+                    }
                 Spacer()
                 Button { focused = false; drawer = false; stickerPicker = false; store.musicPlayer?.pause(); Task { if voiceRecorder.recording { await voiceRecorder.stop() } else { await voiceRecorder.start(context: chat.messages.filter { !ChatPresentation.isActivity($0) }.suffix(12).map { $0["content"].string } + [draft]) } } } label: { Image(systemName: voiceRecorder.recording ? "stop.circle.fill" : "mic").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel(voiceRecorder.recording ? "Finish voice message" : "Record voice message").disabled(chat.busy || voiceRecorder.processing || voiceRecorder.file != nil)
                 if chat.busy { Button { Task { await chat.interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 27)).frame(width: 40, height: 40) } }
                 else {
                     ChatSendButton(text: draftStore.text,
                                    hasNonTextPayload: !images.isEmpty || !files.isEmpty || voiceRecorder.file != nil || pendingMusic != nil || pendingSticker != nil,
-                                   blocked: chat.showingCachedHistory || chat.openingMainRoom || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
+                                   blocked: store.loading || chat.showingCachedHistory || chat.openingMainRoom || voiceRecorder.recording || voiceRecorder.processing || loadingPhotos || chat.loadingModels,
                                    action: send)
                         #if targetEnvironment(macCatalyst)
                         .keyboardShortcut(.return, modifiers: .command)

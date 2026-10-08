@@ -251,7 +251,7 @@ struct BackendConnection: Equatable {
     }
     /// Connection editor owns drafts; failed validation never replaces the active backend.
     func activateBackend(_ backend: VesperBackend, connection: BackendConnection, credential: String, canSwitch: () -> Bool = { true }) async -> Bool {
-        guard !loading, !saving, !syncing else { connectionError = "Wait for the current save to finish before switching."; return false }
+        guard !loading, !saving, !syncing, canSwitch() else { connectionError = "Finish the current reply, call or save before switching."; return false }
         let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             try connection.validate()
@@ -260,13 +260,14 @@ struct BackendConnection: Equatable {
             loading = true
             defer { loading = false }
             let state = try await loadState(candidate)
-            guard case .object = state["documents"] else { throw ServiceError(message: "Invalid backend response.") }
+            guard case .object(let docs) = state["documents"] else { throw ServiceError(message: "Invalid backend response.") }
             if backend == .mac {
                 guard state["backend"]["backend"].string == "mac", !state["backend"]["backendId"].string.isEmpty else { throw ServiceError(message: "This address did not identify itself as the Mac backend.") }
                 let history = try await candidate.request("/health", history: true)
                 guard history["backendId"] == state["backend"]["backendId"] else { throw ServiceError(message: "The history address belongs to a different backend.") }
             }
             guard canSwitch(), !saving, !syncing else { throw ServiceError(message: "Finish the current reply or save before switching.") }
+            try Task.checkCancellation()
             try CredentialStore.save(credential, account: backend.credentialAccount)
             connection.save(backend)
             NotificationCenter.default.post(name: .init("VesperBackendWillChange"), object: nil)
@@ -274,11 +275,23 @@ struct BackendConnection: Equatable {
             baseURL = connection.baseURL; historyURL = connection.historyURL; socketURL = connection.socketURL; token = credential
             restoreLocalDocuments()
             UserDefaults.standard.set(backend.rawValue, forKey: "vesper.activeBackend")
-            // Reload through normal merge rules; never transplant the old backend’s documents or room pointer.
-            loading = false
-            await refresh()
-            return connected
+            // The candidate was already authenticated. Apply that snapshot in its own
+            // local scope rather than adding a second network failure after activation.
+            connected = true; connectionError = nil
+            applyRemoteDocuments(docs)
+            return true
         } catch { connectionError = error.localizedDescription; return false }
+    }
+    private func applyRemoteDocuments(_ docs: [String: JSONValue]) {
+        var values = docs.mapValues { $0["value"] }
+        for (key, pending) in pendingDocuments { values[key] = pending.value }
+        documents = values
+        let now = Date()
+        do { try persist(values, pending: pendingDocuments, syncedAt: now); hasLocalData = true; lastSyncedAt = now }
+        catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
+        rememberProfile(documents["profile"] ?? .null)
+        WidgetSync.notes(document("notes"))
+        scheduleSync()
     }
     private var documentRevision = 0
     private var cleaningLegacyMusic = false
@@ -317,14 +330,7 @@ struct BackendConnection: Equatable {
                 connected = true
                 // A read started before a save must never replace the saved document.
                 guard revision == documentRevision, !saving else { return }
-                var values = docs.mapValues { $0["value"] }
-                for (key, pending) in pendingDocuments { values[key] = pending.value }
-                documents = values
-                do { try persist(values, pending: pendingDocuments, syncedAt: Date()); hasLocalData = true; lastSyncedAt = Date() }
-                catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
-                rememberProfile(documents["profile"] ?? .null)
-                WidgetSync.notes(document("notes"))
-                scheduleSync()
+                applyRemoteDocuments(docs)
                 return
             } catch {
                 guard !Task.isCancelled, !(error is CancellationError),

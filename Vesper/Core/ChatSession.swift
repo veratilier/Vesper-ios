@@ -309,6 +309,7 @@ enum ChatUserInput {
     @Published var models: [JSONValue] = []
     @Published var loadingModels = false
     @Published var modelError: String?
+    private var modelCatalogGeneration = UUID()
     @Published var usageUpdatedAt: Date?
     @Published var usage: JSONValue = .null
     @Published var loadingUsage = false
@@ -318,16 +319,25 @@ enum ChatUserInput {
     @Published var model = ""
     @Published var effort = ""
     private var restoringLatest = false
+    private var selectedModelDescriptor: JSONValue? {
+        models.first { model.isEmpty ? $0["isDefault"].bool : $0["model"].string == model }
+    }
     var supportedEfforts: [String] {
-        models.first(where: { $0["model"].string == model })?["supportedReasoningEfforts"].array.compactMap {
+        selectedModelDescriptor?["supportedReasoningEfforts"].array.compactMap {
             let value = $0["reasoningEffort"].string
             return value.isEmpty ? nil : value
         } ?? []
     }
     func selectModel(_ value: String) {
         model = value
-        let defaultEffort = models.first(where: { $0["model"].string == value })?["defaultReasoningEffort"].string ?? ""
+        // Model and strength are separate choices; keep a compatible explicit strength.
+        if !effort.isEmpty, supportedEfforts.contains(effort) { return }
+        let defaultEffort = value.isEmpty ? "" : selectedModelDescriptor?["defaultReasoningEffort"].string ?? ""
         effort = supportedEfforts.contains(defaultEffort) ? defaultEffort : ""
+    }
+    private func resetModelCatalog() {
+        modelCatalogGeneration = UUID()
+        models = []; model = ""; effort = ""; modelError = nil; loadingModels = false
     }
     func openLatestConversation() async {
         guard !busy, !restoringLatest else { return }
@@ -629,6 +639,7 @@ enum ChatUserInput {
         prepareToolsOnConnect = true
         if let api, api.token != store.api.token || api.baseURL != store.baseURL || api.historyURL != store.historyURL || endpoint != store.socketURL {
             disconnect(); unresolvedSends = [:]; pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
+            resetModelCatalog()
             connectionSuppressed = store.api.token.isEmpty
             showingCachedHistory = false; messages = []; conversations = []; threadID = nil
             let nextID = UUID().uuidString
@@ -1267,11 +1278,13 @@ enum ChatUserInput {
     }
     func loadModels() async {
         guard !loadingModels, !busy else { return }
+        let catalogGeneration = modelCatalogGeneration
         loadingModels = true; modelError = nil
-        defer { loadingModels = false }
+        defer { if modelCatalogGeneration == catalogGeneration { loadingModels = false } }
         do {
             guard api != nil else { throw ServiceError(message: "Configure the connection in Settings first.") }
             try await connect()
+            guard modelCatalogGeneration == catalogGeneration else { return }
             var loaded: [JSONValue] = []
             var cursor = ""
             var seen = Set<String>()
@@ -1279,6 +1292,7 @@ enum ChatUserInput {
                 var params: JSONValue = .object(["limit": .number(100)])
                 if !cursor.isEmpty { params["cursor"] = .string(cursor) }
                 let result = try await rpc("model/list", params)
+                guard modelCatalogGeneration == catalogGeneration else { return }
                 loaded.append(contentsOf: result["data"].array)
                 cursor = result["nextCursor"].string
                 if !cursor.isEmpty && !seen.insert(cursor).inserted { throw ServiceError(message: "The model list could not be fully loaded. Please retry.") }
@@ -1289,9 +1303,13 @@ enum ChatUserInput {
                 guard !name.isEmpty, identifiers.insert(name).inserted else { return nil }
                 var normalized = item; normalized["id"] = .string(name); return normalized
             }
+            if !model.isEmpty, !models.contains(where: { $0["model"].string == model }) { selectModel("") }
             if !effort.isEmpty && !supportedEfforts.contains(effort) { effort = "" }
             if models.isEmpty { modelError = "The server returned no available models." }
-        } catch { modelError = error.localizedDescription; if !initialized { scheduleRecovery() } }
+        } catch {
+            guard modelCatalogGeneration == catalogGeneration, !(error is CancellationError), !Task.isCancelled else { return }
+            modelError = error.localizedDescription; if !initialized { scheduleRecovery() }
+        }
     }
     var liveHeadingID: String? {
         guard busy, let turnID, !turnID.isEmpty else { return nil }

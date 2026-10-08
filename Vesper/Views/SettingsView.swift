@@ -148,6 +148,7 @@ struct DevicePermissionsView: View {
     }
 }
 struct ConnectionView: View {
+    var initialBackend: VesperBackend? = nil
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @State private var selected = VesperBackend.vps
@@ -182,7 +183,7 @@ struct ConnectionView: View {
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
         }.background { Background() }.transparentNavigationTop()
-            .onAppear { selected = store.activeBackend; loadDraft() }
+            .onAppear { selected = initialBackend ?? store.activeBackend; loadDraft() }
             .onChange(of: selected) { _, _ in loadDraft() }
     }
 }

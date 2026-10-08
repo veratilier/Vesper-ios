@@ -36,6 +36,50 @@ final class BackendConnectionTests: XCTestCase {
         XCTAssertEqual(store.token, token)
         XCTAssertEqual(store.document("profile")["mainConversationId"].string, "original-vps-room")
     }
+    @MainActor func testBusyChatPreventsBackendValidationAndActivation() async {
+        var reads = 0
+        let store = AppStore(loadState: { _ in reads += 1; return .object(["documents": .object([:])]) })
+        let original = store.activeBackend
+        let switched = await store.activateBackend(.mac, connection: .load(.mac), credential: "fixture", canSwitch: { false })
+        XCTAssertFalse(switched)
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(store.activeBackend, original)
+    }
+    @MainActor func testSuccessfulSwitchUsesValidatedSnapshotAndTargetLocalEdits() async throws {
+        let defaults = UserDefaults.standard
+        let keys = ["apiURL", "historyURL", "socketURL", "vesper.activeBackend"]
+        let saved = keys.map { ($0, defaults.object(forKey: $0)) }
+        let previousToken = try CredentialStore.load(account: VesperBackend.vps.credentialAccount)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            for (key, value) in saved { if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) } }
+            if previousToken.isEmpty { try? CredentialStore.delete(account: VesperBackend.vps.credentialAccount) }
+            else { try? CredentialStore.save(previousToken, account: VesperBackend.vps.credentialAccount) }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let disk = LocalDocumentDisk(directory: directory)
+        let connection = BackendConnection(baseURL: "https://switch-fixture.invalid", historyURL: "https://switch-fixture.invalid/history", socketURL: "wss://switch-fixture.invalid/chat")
+        let target = APIClient(baseURL: connection.baseURL, historyURL: connection.historyURL, token: "synthetic-switch-token")
+        let localNote: JSONValue = .array([.object(["id": .string("target-note"), "text": .string("Offline edit on this backend")])])
+        try disk.save(LocalDocumentSnapshot(documents: ["notes": localNote], pending: ["notes": PendingDocument(base: .array([]), value: localNote)]), api: target)
+        var reads = 0
+        let store = AppStore(loadState: { candidate in
+            reads += 1
+            XCTAssertEqual(candidate.baseURL, connection.baseURL)
+            return .object(["documents": .object([
+                "profile": .object(["value": .object(["mainConversationId": .string("target-room")])]),
+                "notes": .object(["value": .array([])])])])
+        }, disk: disk, requestDocument: { _, _, _, _ in throw URLError(.notConnectedToInternet) })
+        store.documents["profile"] = .object(["mainConversationId": .string("old-room")])
+        let switched = await store.activateBackend(.vps, connection: connection, credential: target.token)
+        XCTAssertTrue(switched)
+        XCTAssertTrue(store.connected)
+        XCTAssertEqual(reads, 1, "A switch should not add another state read after changing the active connection.")
+        XCTAssertEqual(store.document("profile")["mainConversationId"].string, "target-room")
+        XCTAssertEqual(store.document("notes"), localNote)
+        XCTAssertNotNil(store.pendingDocuments["notes"])
+        XCTAssertEqual(BackendConnection.load(.vps), connection)
+    }
     func testLocalSnapshotsAreSeparatedEvenWithSameCredential() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -757,6 +801,28 @@ final class ContractTests: XCTestCase {
         chat.selectModel("a"); XCTAssertEqual(chat.effort, "medium")
         chat.selectModel("b"); XCTAssertEqual(chat.effort, ""); XCTAssertTrue(chat.supportedEfforts.isEmpty)
     }
+    @MainActor func testSelectingAnotherModelKeepsCompatibleStrength() {
+        let chat = ChatSession()
+        chat.models = ["a", "b"].map { name in
+            .object(["model": .string(name), "defaultReasoningEffort": .string("medium"),
+                     "supportedReasoningEfforts": .array([.object(["reasoningEffort": .string("medium")]), .object(["reasoningEffort": .string("high")])])])
+        }
+        chat.selectModel("a"); chat.effort = "high"
+        chat.selectModel("b")
+        XCTAssertEqual(chat.effort, "high")
+    }
+    @MainActor func testDefaultModelOffersOnlyItsOwnSupportedStrengths() {
+        let chat = ChatSession()
+        chat.models = [.object(["model": .string("default-model"), "isDefault": .bool(true),
+                               "supportedReasoningEfforts": .array([.object(["reasoningEffort": .string("low")]), .object(["reasoningEffort": .string("high")])])]),
+                       .object(["model": .string("other"), "supportedReasoningEfforts": .array([.object(["reasoningEffort": .string("medium")])])])]
+        chat.selectModel("")
+        XCTAssertEqual(chat.supportedEfforts, ["low", "high"])
+        chat.effort = "high"
+        chat.selectModel("other")
+        XCTAssertEqual(chat.effort, "")
+        XCTAssertEqual(chat.supportedEfforts, ["medium"])
+    }
     func testLosslessUnknownFieldsSurviveEditing() throws {
         let data = Data(#"{"id":"n1","text":"旧便笺","futureMetadata":{"source":"agent","pinned":true},"values":[null,1,false]}"#.utf8)
         var value = try JSONDecoder().decode(JSONValue.self, from: data)
@@ -918,6 +984,7 @@ final class ContractTests: XCTestCase {
     var hangHandshake = false
     var hangMethod: String?
     var itemPage: JSONValue?
+    var modelPage: JSONValue?
     var endlessPages = false
     var rejectMethod: String?
     var hangInitialized = false
@@ -963,7 +1030,7 @@ final class ContractTests: XCTestCase {
             return
         }
         if packet["id"] != .null && !method.isEmpty {
-            var response = method == "thread/resume" ? snapshot : (method == "thread/items/list" ? itemPage ?? .object([:]) : .object([:]))
+            var response = method == "thread/resume" ? snapshot : (method == "thread/items/list" ? itemPage ?? .object([:]) : (method == "model/list" ? modelPage ?? .object([:]) : .object([:])))
             if method == "thread/items/list", endlessPages { response["nextCursor"] = .string("page-" + String(packets.count)) }
             try emit(.object(["id": packet["id"], "result": response]))
         }
@@ -1036,6 +1103,33 @@ private final class SendPreparationProtocol: URLProtocol {
         let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
+    }
+    func testBackendChangeDiscardsOldModelCatalogAndLateLoadFailure() async throws {
+        let oldSocket = RecoverySocket(); oldSocket.hangMethod = "model/list"
+        let newSocket = RecoverySocket()
+        newSocket.modelPage = .object(["data": .array([.object(["model": .string("mac-only"), "isDefault": .bool(true)])])])
+        let chat = session([oldSocket, newSocket])
+        defer { chat.disconnect() }
+        chat.models = [.object(["model": .string("vps-only"), "supportedReasoningEfforts": .array([.object(["reasoningEffort": .string("high")])])])]
+        chat.model = "vps-only"; chat.effort = "high"
+        let pending = Task { await chat.loadModels() }
+        await eventually { oldSocket.packets.contains { $0["method"].string == "model/list" } }
+        let store = AppStore()
+        store.baseURL = "https://mac-fixture.invalid"; store.historyURL = "https://mac-fixture.invalid/history"
+        store.socketURL = "wss://mac-fixture.invalid/chat"; store.token = "synthetic-backend-token"
+        chat.configure(store)
+        XCTAssertTrue(chat.models.isEmpty)
+        XCTAssertEqual(chat.model, ""); XCTAssertEqual(chat.effort, "")
+        XCTAssertFalse(chat.loadingModels)
+        await chat.loadModels()
+        await pending.value
+        XCTAssertEqual(chat.models.map { $0["model"].string }, ["mac-only"])
+        XCTAssertNil(chat.modelError)
+        XCTAssertFalse(chat.loadingModels)
+        XCTAssertFalse(newSocket.packets.contains { $0["method"].string == "thread/resume" })
+        chat.selectModel("mac-only")
+        chat.configure(store)
+        XCTAssertEqual(chat.model, "mac-only", "Opening the picker again must keep the same backend's selection.")
     }
     func testRepeatedSendsReuseToolsAndSessionWithoutReadingHistory() async throws {
         SendPreparationProtocol.reset()

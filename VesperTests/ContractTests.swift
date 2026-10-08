@@ -872,6 +872,8 @@ final class ContractTests: XCTestCase {
     var handshakeFailure = false
     var hangHandshake = false
     var hangMethod: String?
+    var itemPage: JSONValue?
+    var endlessPages = false
     var rejectMethod: String?
     var hangInitialized = false
     private var suspended: [CheckedContinuation<Void, Error>] = []
@@ -916,7 +918,9 @@ final class ContractTests: XCTestCase {
             return
         }
         if packet["id"] != .null && !method.isEmpty {
-            try emit(.object(["id": packet["id"], "result": method == "thread/resume" ? snapshot : .object([:])]))
+            var response = method == "thread/resume" ? snapshot : (method == "thread/items/list" ? itemPage ?? .object([:]) : .object([:]))
+            if method == "thread/items/list", endlessPages { response["nextCursor"] = .string("page-" + String(packets.count)) }
+            try emit(.object(["id": packet["id"], "result": response]))
         }
     }
     func ping() async throws {
@@ -1154,6 +1158,64 @@ private final class SendPreparationProtocol: URLProtocol {
         XCTAssertEqual(chat.messages.last?["content"].string, "Must remain recoverable")
         XCTAssertEqual(chat.messages.last?["status"].string, "error")
     }
+    func testPhaseRecoveryStopsAfterTwoPagesEvenWhenCursorNeverEnds() async throws {
+        let socket = RecoverySocket()
+        socket.itemPage = .object(["data": .array([]), "nextCursor": .string("next")]); socket.endlessPages = true
+        let chat = session([socket]); defer { chat.disconnect() }
+        chat.messages = [.object(["id": .string("old"), "role": .string("agent"), "content": .string("Old reply"), "metadata": .object(["threadId": .string("thread")])])]
+        try await chat.connect()
+        await eventually { socket.packets.filter { $0["method"].string == "thread/items/list" }.count == 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/items/list" }.count, 2)
+    }
+    func testSendingCancelsHungPhaseRecoveryWithoutDisconnectingChat() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let socket = RecoverySocket(); socket.hangMethod = "thread/items/list"
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, requestTimeout: 0.1, sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread", prepareToolsOnConnect: true)
+        chat.model = ""; chat.effort = ""
+        chat.messages = [.object(["id": .string("old"), "role": .string("agent"), "content": .string("Old reply")])]
+        defer { chat.disconnect(); outbox.stop() }
+        try await chat.connect()
+        await eventually { socket.packets.contains { $0["method"].string == "thread/items/list" } }
+        let sent = await chat.send("Send takes priority")
+        XCTAssertTrue(sent)
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertEqual(chat.connectionStage, .ready)
+        XCTAssertFalse(chat.connectionNeedsRetry)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/resume" }.count, 1, "Opening must also install tools; sending must not resume again")
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/items/list" }.count, 1)
+        try await outbox.flush(api)
+    }
+    func testSlowReplyStorageDoesNotBlockTurnCompletionOrLaterRPCs() async throws {
+        SendPreparationProtocol.reset(); SendPreparationProtocol.history(hold: true)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config)
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        defer { chat.disconnect(); outbox.stop(); SendPreparationProtocol.releaseHistory(); http.invalidateAndCancel() }
+        try await chat.connect()
+        chat.busy = true
+        try socket.emit(.object(["method": .string("turn/started"), "params": .object(["turn": .object(["id": .string("turn")])])]))
+        try socket.emit(.object(["method": .string("item/completed"), "params": .object(["item": .object(["id": .string("reply"), "type": .string("agentMessage"), "text": .string("Fresh reply"), "phase": .string("final_answer")])])]))
+        try socket.emit(.object(["method": .string("turn/completed"), "params": .object(["turn": .object(["id": .string("turn")])])]))
+        await eventually { !chat.busy }
+        XCTAssertEqual(chat.messages.last?["content"].string, "Fresh reply")
+        let queued = try outbox.pending(api, conversationID: chat.conversationID)
+        XCTAssertEqual(queued.first?["role"].string, "agent")
+        await chat.loadModels()
+        XCTAssertFalse(chat.loadingModels)
+        XCTAssertTrue(socket.packets.contains { $0["method"].string == "model/list" })
+        SendPreparationProtocol.releaseHistory()
+        try await outbox.flush(api)
+    }
     func testToolCatalogCacheCoalescesAndSeparatesAccounts() async throws {
         SendPreparationProtocol.reset()
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
@@ -1171,7 +1233,7 @@ private final class SendPreparationProtocol: URLProtocol {
         XCTAssertEqual(SendPreparationProtocol.captured.last?.value(forHTTPHeaderField: "x-vesper-device-token"), "account-b")
         cache.refresh(api)
         _ = try await cache.load(api)
-        XCTAssertEqual(SendPreparationProtocol.captured.count, 3)
+        await eventually { SendPreparationProtocol.captured.count == 3 }
     }
     func testSendPublishesLocalEchoBeforeConnectingAndConsumesComposerOnce() async throws {
         let socket = RecoverySocket(); socket.hangMethod = "initialize"

@@ -155,3 +155,15 @@ the existing model conversation; this does not shorten that conversation or
 change its model/reasoning setting. Native voice-call recall is unchanged.
 Attachments still upload before submission, and disconnected sessions still need
 to reconnect. First-use tool preparation can also require a network request.
+
+### Receive and reconnect latency
+
+- Automatic legacy phase repair is limited to the visible recent-message window
+  and two history pages in total. Sending or starting a turn cancels that work;
+  cancelled/background page requests cannot time out and disconnect the chat.
+- The production connection installs the cached tool catalog and stable session
+  instructions when resuming, avoiding a second resume on the first send.
+  A background catalog refresh retains the previous valid account-scoped value.
+- Incoming reply, terminal and completion records enter the durable history queue
+  immediately. Network history/memory writes do not block the socket reader or
+  turn completion. Explicit tool delivery keeps its existing save confirmation.

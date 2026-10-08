@@ -418,7 +418,9 @@ enum ChatUserInput {
     // Used by deterministic transport tests without credentials or live requests.
     func configureConnection(api: APIClient, endpoint: String, threadID: String? = nil,
                              historyReader: ((String) async throws -> JSONValue)? = nil,
-                             questionWriter: ((JSONValue) async throws -> Void)? = nil) {
+                             questionWriter: ((JSONValue) async throws -> Void)? = nil,
+                             prepareToolsOnConnect: Bool = false) {
+        self.prepareToolsOnConnect = prepareToolsOnConnect
         self.api = api; self.endpoint = endpoint; self.threadID = threadID; self.historyReader = historyReader
         questionHistoryWriter = questionWriter
         activateSendSync(api)
@@ -586,6 +588,7 @@ enum ChatUserInput {
     }
     private let sendOutbox: ChatSendOutbox
     private let toolCatalog = ChatToolCatalogCache()
+    private var prepareToolsOnConnect = false
     private var installedThreadConfiguration: JSONValue?
     private weak var appStore: AppStore?
     private func activateSendSync(_ api: APIClient) {
@@ -596,8 +599,12 @@ enum ChatUserInput {
         }
     }
     private func queueUserMessage(_ message: JSONValue, api: APIClient) throws {
+        try queueHistoryMessage(message, api: api)
+    }
+    private func queueHistoryMessage(_ message: JSONValue, api: APIClient) throws {
         guard voiceCallContext == nil else { return }
         var message = message
+        if message["status"].string.isEmpty { message["status"] = .string("delivered") }
         if message["metadata"]["threadId"].string.isEmpty { message["metadata"]["threadId"] = .string(threadID ?? "") }
         var conversation: JSONValue = .object(["source": .string("codex")])
         if !message["metadata"]["threadId"].string.isEmpty { conversation["codexThreadId"] = message["metadata"]["threadId"] }
@@ -619,6 +626,7 @@ enum ChatUserInput {
         }
     }
     func configure(_ store: AppStore) {
+        prepareToolsOnConnect = true
         if let api, api.token != store.api.token || api.baseURL != store.baseURL || api.historyURL != store.historyURL || endpoint != store.socketURL {
             disconnect(); unresolvedSends = [:]; pendingTurn = nil; pendingDraftID = nil; unconfirmedSend = false
             connectionSuppressed = store.api.token.isEmpty
@@ -1001,23 +1009,31 @@ enum ChatUserInput {
         // Match the browser and app-server JSON-RPC text-frame transport.
         return .string(String(decoding: data, as: UTF8.self))
     }
-    private func rpc(_ method: String, _ params: JSONValue = .object([:])) async throws -> JSONValue {
+    private func rpc(_ method: String, _ params: JSONValue = .object([:]), disconnectOnTimeout: Bool = true) async throws -> JSONValue {
         try checkCallback()
         let expected = generation
         let timeout = requestTimeout
         let id = UUID().uuidString
-        return try await withCheckedThrowingContinuation { continuation in
-            pending[id] = continuation
-            timeouts[id] = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                guard !Task.isCancelled, let self, let c = self.pending.removeValue(forKey: id) else { return }
-                self.timeouts.removeValue(forKey: id); c.resume(throwing: URLError(.timedOut))
-                if let ws = self.socket { self.connectionFailed(URLError(.timedOut), socket: ws, generation: expected) }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                pending[id] = continuation
+                timeouts[id] = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
+                    guard let self, let c = self.pending.removeValue(forKey: id) else { return }
+                    self.timeouts.removeValue(forKey: id); c.resume(throwing: URLError(.timedOut))
+                    if disconnectOnTimeout, let ws = self.socket { self.connectionFailed(URLError(.timedOut), socket: ws, generation: expected) }
+                }
+                Task { [weak self] in
+                    guard let self, expected == self.generation, self.pending[id] != nil else { return }
+                    do { try await self.sendPacket(.object(["id": .string(id), "method": .string(method), "params": params])) }
+                    catch { self.timeouts.removeValue(forKey: id)?.cancel(); self.pending.removeValue(forKey: id)?.resume(throwing: error) }
+                }
             }
-            Task { [weak self] in
-                guard let self, expected == self.generation, self.pending[id] != nil else { return }
-                do { try await self.sendPacket(.object(["id": .string(id), "method": .string(method), "params": params])) }
-                catch { self.timeouts.removeValue(forKey: id)?.cancel(); self.pending.removeValue(forKey: id)?.resume(throwing: error) }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.timeouts.removeValue(forKey: id)?.cancel()
+                self?.pending.removeValue(forKey: id)?.resume(throwing: CancellationError())
             }
         }
     }
@@ -1084,8 +1100,15 @@ enum ChatUserInput {
                 _ = try await stage(.initialize) { try await self.rpc("initialize", .object(["clientInfo": .object(["name": .string("vesper_ios"), "title": .string("Vesper"), "version": .string("0.1.0")]), "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)])])) }
                 try await stage(.initialize) { try await self.sendPacket(.object(["method": .string("initialized")])) }
                 if let threadID {
-                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", .object(["threadId": .string(threadID), "config": self.config, "excludeTurns": .bool(true)])) }
+                    var configuration: JSONValue = .object(["threadId": .string(threadID), "config": config, "excludeTurns": .bool(true)])
+                    if prepareToolsOnConnect {
+                        configuration["dynamicTools"] = .array(try await preparedTools(api))
+                        configuration["developerInstructions"] = .string(developerContext())
+                    }
+                    let prepared = configuration
+                    let snapshot = try await stage(.resume) { try await self.rpc("thread/resume", prepared) }
                     try checkCallback()
+                    if prepareToolsOnConnect { installedThreadConfiguration = prepared }
                     let returnedThread = snapshot["thread"]["id"].string
                     guard returnedThread.isEmpty || returnedThread == threadID else { throw ServiceError(message: "The server resumed a different thread.") }
                     connectionStage = .history
@@ -1133,8 +1156,9 @@ enum ChatUserInput {
         let expected = generation
         phaseRecoveryTask = Task { [weak self] in
             guard let self else { return }
-            guard !Task.isCancelled, owner == self.intent, expected == self.generation else { return }
-            let candidates = self.messages.filter {
+            guard !Task.isCancelled, !self.busy, !self.sending,
+                  owner == self.intent, expected == self.generation else { return }
+            let candidates = self.messages.suffix(Self.initialHistoryLimit).filter {
                 $0["role"].string == "agent" && !ChatTranscript.isWake($0)
                     && $0["metadata"]["phase"].string.isEmpty && $0["status"].string != "streaming"
             }
@@ -1142,17 +1166,25 @@ enum ChatUserInput {
                 let id = message["metadata"]["threadId"].string
                 return id.isEmpty ? self.threadID : id
             })
-            for thread in threads {
+            var remainingPages = 2
+            for thread in threads.sorted() {
                 do {
                     var cursor = ""
                     var seen = Set<String>()
                     var method = "thread/items/list"
-                    while !Task.isCancelled, owner == self.intent, expected == self.generation {
+                    while !Task.isCancelled, !self.busy, !self.sending, remainingPages > 0,
+                          owner == self.intent, expected == self.generation {
+                        let unresolved = candidates.contains { candidate in
+                            (candidate["metadata"]["threadId"].string.isEmpty ? self.threadID : candidate["metadata"]["threadId"].string) == thread
+                                && self.messages.contains { $0.id == candidate.id && $0["metadata"]["phase"].string.isEmpty }
+                        }
+                        guard unresolved else { break }
+                        remainingPages -= 1
                         var params: JSONValue = .object(["threadId": .string(thread), "limit": .number(20), "sortDirection": .string("desc")])
                         if !cursor.isEmpty { params["cursor"] = .string(cursor) }
                         if method == "thread/turns/list" { params["itemsView"] = .string("summary") }
                         let page: JSONValue
-                        do { page = try await self.rpc(method, params) }
+                        do { page = try await self.rpc(method, params, disconnectOnTimeout: false) }
                         catch let rejection as ChatRPCRejected where method == "thread/items/list" && rejection.code == -32601 {
                             method = "thread/turns/list"; continue
                         }
@@ -1169,7 +1201,7 @@ enum ChatUserInput {
                             guard owner == self.intent, expected == self.generation else { return }
                             guard let current = self.messages.first(where: { $0.id == message.id }),
                                   !ChatTranscript.isDeleted(current, tombstones: self.tombstones) else { continue }
-                            try await self.persist(current)
+                            try self.queueReceivedHistory(current)
                         }
                         cursor = page["nextCursor"].string
                         if cursor.isEmpty || !seen.insert(cursor).inserted { break }
@@ -1263,9 +1295,35 @@ enum ChatUserInput {
     var waitingForReply: Bool { busy && (sending || turnID != nil) }
     var preparingSend: Bool { sending && turnID == nil }
 
+    private func preparedTools(_ api: APIClient) async throws -> [JSONValue] {
+                let catalog: JSONValue
+                if voiceCallContext != nil && onNativeHangupRequested == nil {
+                    // Camera observations run in a separate vision-only session.
+                    catalog = .object(["tools": .array([])])
+                } else if voiceCallContext != nil {
+                    // A catalog outage must not prevent the basic call or its native controls.
+                    catalog = (try? await toolCatalog.load(api)) ?? .object(["tools": .array([])])
+                } else {
+                    catalog = try await toolCatalog.load(api)
+                }
+                try Task.checkCancellation()
+                guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
+                let tools: [JSONValue]
+                if voiceCallContext != nil && onNativeHangupRequested == nil {
+                    tools = []
+                } else {
+                    let builtIns = voiceCallContext == nil
+                        ? [Self.recallTool, Self.callTool, NativeDeviceTools.healthTool, NativeDeviceTools.locationTool, NativeDeviceTools.calendarTool, NativeDeviceTools.plannerWriteTool, NativeDeviceTools.alarmTool, Self.voiceTool, Self.bubblesTool, Self.historyTool, Self.favoriteTool]
+                        : [NativeDeviceTools.healthTool, NativeDeviceTools.locationTool, NativeDeviceTools.calendarTool, NativeDeviceTools.plannerWriteTool, NativeDeviceTools.alarmTool, Self.historyTool, Self.favoriteTool, Self.hangupTool]
+                    let excluded = ["recall_native_memory", "request_native_call", "read_native_health", "read_native_location", "read_native_calendar", "create_native_planner_item", "manage_native_alarm", "send_native_voice", "send_native_bubbles", "search_native_history", "manage_native_favorites", "end_native_call"]
+                    tools = try NativeToolCatalog.normalize(catalog["tools"].array.filter { !excluded.contains($0["name"].string) } + NativeDeviceTools.forCurrentPlatform(builtIns))
+                }
+                return tools.sorted { $0["name"].string < $1["name"].string }
+    }
     func send(_ text: String, images: [Data] = [], files: [ChatFile] = [], music: JSONValue? = nil, sticker: JSONValue? = nil, location: JSONValue? = nil, replyTo: JSONValue? = nil, onAccepted: () -> Void = {}) async -> Bool {
         guard !showingCachedHistory, !openingMainRoom, !sending, !busy, !unconfirmedSend, !loadingModels, let api, (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty || music != nil || sticker != nil || location != nil) else { return false }
         if let location, !ChatSharedLocation.valid(location) { error = "This location is invalid. Nothing was sent."; return false }
+        phaseRecoveryTask?.cancel(); phaseRecoveryTask = nil
         let sendIntent = intent
         sending = true
         defer { if sendIntent == intent { sending = false } }
@@ -1317,28 +1375,8 @@ enum ChatUserInput {
                 }
             }
             try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
-                let catalog: JSONValue
-                if voiceCallContext != nil && onNativeHangupRequested == nil {
-                    // Camera observations run in a separate vision-only session.
-                    catalog = .object(["tools": .array([])])
-                } else if voiceCallContext != nil {
-                    // A catalog outage must not prevent the basic call or its native controls.
-                    catalog = (try? await toolCatalog.load(api)) ?? .object(["tools": .array([])])
-                } else {
-                    catalog = try await toolCatalog.load(api)
-                }
-                try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
-                guard case .array = catalog["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
-                let tools: [JSONValue]
-                if voiceCallContext != nil && onNativeHangupRequested == nil {
-                    tools = []
-                } else {
-                    let builtIns = voiceCallContext == nil
-                        ? [Self.recallTool, Self.callTool, NativeDeviceTools.healthTool, NativeDeviceTools.locationTool, NativeDeviceTools.calendarTool, NativeDeviceTools.plannerWriteTool, NativeDeviceTools.alarmTool, Self.voiceTool, Self.bubblesTool, Self.historyTool, Self.favoriteTool]
-                        : [NativeDeviceTools.healthTool, NativeDeviceTools.locationTool, NativeDeviceTools.calendarTool, NativeDeviceTools.plannerWriteTool, NativeDeviceTools.alarmTool, Self.historyTool, Self.favoriteTool, Self.hangupTool]
-                    let excluded = ["recall_native_memory", "request_native_call", "read_native_health", "read_native_location", "read_native_calendar", "create_native_planner_item", "manage_native_alarm", "send_native_voice", "send_native_bubbles", "search_native_history", "manage_native_favorites", "end_native_call"]
-                    tools = try NativeToolCatalog.normalize(catalog["tools"].array.filter { !excluded.contains($0["name"].string) } + NativeDeviceTools.forCurrentPlatform(builtIns))
-                }
+            let tools = try await preparedTools(api)
+            try Task.checkCancellation(); guard sendIntent == intent else { throw CancellationError() }
             let instructions = developerContext()
             if let threadID {
                 let configuration: JSONValue = .object(["threadId": .string(threadID), "dynamicTools": .array(tools), "config": config, "developerInstructions": .string(instructions), "excludeTurns": .bool(true)])
@@ -1572,6 +1610,11 @@ enum ChatUserInput {
             } catch { try checkCallback(); memoryStatus = "Chat saved; original evidence could not be synced to Memory." }
         }
     }
+    private func queueReceivedHistory(_ message: JSONValue) throws {
+        try checkCallback()
+        guard let api else { return }
+        try queueHistoryMessage(message, api: api)
+    }
     private func handle(_ packet: JSONValue) async {
         guard (try? checkCallback()) != nil else { return }
         let id = packet["id"].string
@@ -1605,7 +1648,7 @@ enum ChatUserInput {
                 if let index = messages.firstIndex(where: { $0.id == record.id }) { messages[index] = record }
                 else { messages.append(record) }
                 if let questionHistoryWriter { try await questionHistoryWriter(record) }
-                else { try await persist(record) }
+                else { try queueReceivedHistory(record) }
             } catch { self.error = "Question received, but could not be displayed or saved: " + error.localizedDescription }
             return
         }
@@ -1672,7 +1715,7 @@ enum ChatUserInput {
             if item["changes"] != .null { execution["files"] = item["changes"] }
             let message: JSONValue = .object(["id": .string("execution-" + id), "conversationId": .string(conversationID), "role": .string("system"), "content": .string(execution["title"].string), "createdAt": .string(index.map { messages[$0]["createdAt"].string } ?? isoNow()), "source": .string("codex"), "metadata": .object(["blockType": item["type"], "execution": execution, "turnId": .string(turnID ?? ""), "threadId": .string(threadID ?? "")])])
             if let index { messages[index] = message } else { messages.append(message) }
-            if method == "item/completed" { do { try await persist(message) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Terminal output received, but history could not be saved." } }
+            if method == "item/completed" { do { try queueReceivedHistory(message) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Terminal output received, but history could not be saved." } }
         }
         else if method == "item/started", p["item"]["type"].string == "agentMessage" {
             let item = p["item"]
@@ -1696,13 +1739,13 @@ enum ChatUserInput {
                 messages[index]["metadata"]["turnId"] = .string(turnID ?? "")
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
                 messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
-                do { try await persist(messages[index]) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
+                do { try queueReceivedHistory(messages[index]) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             } else if !item["text"].string.isEmpty {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 var savedMessage = message
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
                 savedMessage["metadata"]["phase"] = item["phase"]
-                messages.append(savedMessage); do { try await persist(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
+                messages.append(savedMessage); do { try queueReceivedHistory(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
             }
         } else if method == "turn/completed" {
             let completed = p["turn"]["id"].string
@@ -1713,12 +1756,15 @@ enum ChatUserInput {
             if !thinkingSummary.isEmpty || !events.isEmpty, let index = messages.lastIndex(where: { $0["role"].string == "agent" && $0["status"].string == "delivered" }) {
                 messages[index]["metadata"]["thoughtSummary"] = .string(thinkingSummary)
                 messages[index]["metadata"]["toolEvents"] = .array(events.map { .string($0) })
-                do { try await persist(messages[index]); try checkCallback(); thinkingSummary = "" } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but the thinking summary could not be saved." }
+                do { try queueReceivedHistory(messages[index]); try checkCallback(); thinkingSummary = "" } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but the thinking summary could not be saved." }
             }
             guard (try? checkCallback()) != nil else { return }
             busy = false; status = ""; turnID = nil
             if p["turn"]["error"] != .null { error = p["turn"]["error"]["message"].string }
-        } else if method == "turn/started" { busy = true; turnID = p["turn"]["id"].string }
+        } else if method == "turn/started" {
+            phaseRecoveryTask?.cancel(); phaseRecoveryTask = nil
+            busy = true; turnID = p["turn"]["id"].string
+        }
         else if method == "thread/tokenUsage/updated" { contextUsage = p["tokenUsage"] }
         else if method == "error" { error = p["error"]["message"].string; busy = false }
         else if method == "item/started" || method == "item/completed" { events.append("\(p["item"]["type"].string) · \(method == "item/started" ? "running" : "completed")") }
@@ -2514,8 +2560,28 @@ struct ChatInboxCover: Decodable, Equatable {
     private var value: JSONValue?
     private var pending: Task<JSONValue, Error>?
     func refresh(_ api: APIClient) {
-        reset()
-        prefetch(api)
+        let requested = [api.baseURL, api.historyURL, api.token]
+        guard !api.token.isEmpty else { reset(); identity = []; return }
+        if identity != requested { reset(); identity = requested }
+        // Leave a valid catalog available while the refresh is in flight.
+        if pending == nil { pending = fetch(api) }
+        let owner = generation
+        let task = pending!
+        Task {
+            do {
+                let result = try await task.value
+                guard owner == generation else { return }
+                value = result; pending = nil
+            } catch { if owner == generation { pending = nil } }
+        }
+    }
+    private func fetch(_ api: APIClient) -> Task<JSONValue, Error> {
+        Task {
+            let result = try await api.request("/api/codex/tools")
+            guard case .array = result["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
+            _ = try NativeToolCatalog.normalize(result["tools"].array)
+            return result
+        }
     }
     func prefetch(_ api: APIClient) {
         guard !api.token.isEmpty else { reset(); identity = []; return }
@@ -2532,12 +2598,7 @@ struct ChatInboxCover: Decodable, Equatable {
         let task: Task<JSONValue, Error>
         if let pending { task = pending }
         else {
-            task = Task {
-                let result = try await api.request("/api/codex/tools")
-                guard case .array = result["tools"] else { throw ServiceError(message: "The Vesper tool catalog is unavailable.") }
-                _ = try NativeToolCatalog.normalize(result["tools"].array)
-                return result
-            }
+            task = fetch(api)
             pending = task
         }
         do {

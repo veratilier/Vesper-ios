@@ -146,7 +146,7 @@ enum DocumentMerge {
     }
     func enqueue(_ message: JSONValue, conversation: JSONValue, api: APIClient) throws {
         guard !message.id.isEmpty, !message["conversationId"].string.isEmpty,
-              message["role"].string == "user" else { throw ServiceError(message: "Invalid outgoing message.") }
+              ["user", "agent", "system"].contains(message["role"].string) else { throw ServiceError(message: "Invalid chat record.") }
         let lane = try lane(api)
         let entry = Entry(conversation: conversation, message: message)
         var entries = lane.entries
@@ -198,9 +198,11 @@ enum DocumentMerge {
                     try Task.checkCancellation()
                     guard lane.entries.contains(where: { $0.revision == entry.revision }) else { continue }
                     let message = entry.message
-                    if message["status"].string == "delivered", !receipt["deleted"].bool {
+                    if message["status"].string == "delivered", !receipt["deleted"].bool,
+                       ["user", "agent"].contains(message["role"].string), !ChatPresentation.isActivity(message),
+                       !message["content"].string.isEmpty || !message["metadata"]["attachments"].array.isEmpty {
                         _ = try await api.request("/api/memory/messages", method: "POST", body: .object([
-                            "conversationId": .string(id), "messageId": .string(message.id), "role": .string("user"),
+                            "conversationId": .string(id), "messageId": .string(message.id), "role": message["role"],
                             "content": message["content"], "createdAt": message["createdAt"],
                             "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))
                     }

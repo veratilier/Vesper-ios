@@ -937,6 +937,23 @@ final class ContractTests: XCTestCase {
     }
 }
 
+private final class SendPreparationProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var requests: [URLRequest] = []
+    static var captured: [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    static func reset() { lock.lock(); requests = []; lock.unlock() }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "send-preparation.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock(); Self.requests.append(request); Self.lock.unlock()
+        let body = request.url!.path == "/api/codex/tools" ? #"{"tools":[]}"# : #"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type":"application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
     private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, stableInterval: Double = 60, timeout: Double = 5, attemptTimeout: Double? = nil, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
         var index = 0
@@ -952,6 +969,54 @@ final class ContractTests: XCTestCase {
         let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while ContinuousClock.now < deadline { if condition() { return }; try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
+    }
+    func testRepeatedSendsReuseToolsAndSessionWithoutReadingHistory() async throws {
+        SendPreparationProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: configuration)
+        defer { http.invalidateAndCancel() }
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
+        chat.configureConnection(api: APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "fixture", requestSession: http), endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.model = ""; chat.effort = ""
+        defer { chat.disconnect() }
+        let first = await chat.send("first message")
+        XCTAssertTrue(first)
+        let resumed = socket.packets.filter { $0["method"].string == "thread/resume" }.count
+        chat.busy = false
+        let second = await chat.send("second message with different references")
+        XCTAssertTrue(second)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/resume" }.count, resumed)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 2)
+        XCTAssertEqual(SendPreparationProtocol.captured.filter { $0.url?.path == "/api/codex/tools" }.count, 1)
+        XCTAssertFalse(SendPreparationProtocol.captured.contains { $0.httpMethod == "GET" && $0.url!.path.hasPrefix("/conversations/") })
+        let inputs = socket.packets.filter { $0["method"].string == "turn/start" }.last!["params"]["input"].array
+        XCTAssertTrue(inputs.contains { $0["text"].string.contains("first message") })
+        chat.busy = false
+        chat.disconnect()
+        let third = await chat.send("after reconnect")
+        XCTAssertTrue(third)
+        XCTAssertGreaterThan(socket.packets.filter { $0["method"].string == "thread/resume" }.count, resumed)
+    }
+    func testToolCatalogCacheCoalescesAndSeparatesAccounts() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config)
+        defer { http.invalidateAndCancel() }
+        var api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "account-a", requestSession: http)
+        let cache = ChatToolCatalogCache()
+        cache.prefetch(api)
+        _ = try await cache.load(api)
+        _ = try await cache.load(api)
+        XCTAssertEqual(SendPreparationProtocol.captured.count, 1)
+        api.token = "account-b"
+        _ = try await cache.load(api)
+        XCTAssertEqual(SendPreparationProtocol.captured.count, 2)
+        XCTAssertEqual(SendPreparationProtocol.captured.last?.value(forHTTPHeaderField: "x-vesper-device-token"), "account-b")
+        cache.refresh(api)
+        _ = try await cache.load(api)
+        XCTAssertEqual(SendPreparationProtocol.captured.count, 3)
     }
     func testSendPublishesLocalEchoBeforeConnectingAndConsumesComposerOnce() async throws {
         let socket = RecoverySocket(); socket.hangMethod = "initialize"

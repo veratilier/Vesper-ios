@@ -31,12 +31,12 @@ struct ChatModelPopover: View {
     private enum Page { case overview, model, strength }
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
+    @Environment(\.chatWorkspace) private var workspace
     @Environment(\.dismiss) private var dismiss
     @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 44
     @State private var page = Page.overview
-    @State private var switchingTo: VesperBackend?
     @State private var switchError: String?
-    private var locked: Bool { switchingTo != nil || store.loading || !chat.canSwitchBackend }
+    private var locked: Bool { store.loading || !chat.canSwitchBackend }
     private var modelName: String {
         guard !chat.model.isEmpty else { return "Default" }
         let name = chat.models.first { $0["model"].string == chat.model }?["displayName"].string ?? ""
@@ -63,13 +63,8 @@ struct ChatModelPopover: View {
                 case .model: modelChoices
                 case .strength: strengthChoices
                 }
-            }.disabled(locked)
-            if let backend = switchingTo {
-                HStack { ProgressView(); Text("Connecting to \(backend == .vps ? "VPS" : "MAC")…").font(.caption); Spacer() }
-                    .accessibilityIdentifier("chat-backend-connecting")
             }
             if let switchError { Text(switchError).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading) }
-            if !chat.canSwitchBackend { Text("Finish the current reply or call before switching.").font(.caption).foregroundStyle(VesperTheme.muted) }
         }
         .padding(12)
         .frame(width: min(252, UIScreen.main.bounds.width - 32))
@@ -81,7 +76,7 @@ struct ChatModelPopover: View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 ForEach(VesperBackend.allCases) { backend in
-                    Button { Task { await switchBackend(backend) } } label: {
+                    Button { openBackendWindow(backend) } label: {
                         HStack(spacing: 8) {
                             Image(systemName: backend == .vps ? "server.rack" : "laptopcomputer")
                             Text(backend == .vps ? "VPS" : "MAC").fontWeight(.semibold)
@@ -96,7 +91,9 @@ struct ChatModelPopover: View {
             }
             Divider().padding(.vertical, 2)
             selectionRow("Model", value: modelName, symbol: "cpu") { page = .model }
+                .disabled(locked)
             selectionRow("Strength", value: effortName(chat.effort), symbol: "sparkles") { page = .strength }
+                .disabled(locked)
             modelStatus
         }
     }
@@ -151,7 +148,7 @@ struct ChatModelPopover: View {
                 if selected { Image(systemName: "checkmark").font(.subheadline.weight(.semibold)) }
             }.padding(.horizontal, 8).frame(minHeight: rowHeight)
                 .background(selected ? VesperTheme.accent.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 10))
-        }.accessibilityAddTraits(selected ? .isSelected : [])
+        }.disabled(locked).accessibilityAddTraits(selected ? .isSelected : [])
     }
     @ViewBuilder private var modelStatus: some View {
         if chat.loadingModels { ProgressView("Loading models…").font(.caption).frame(maxWidth: .infinity, alignment: .leading) }
@@ -160,23 +157,13 @@ struct ChatModelPopover: View {
             Button("Retry models") { Task { await chat.loadModels() } }.font(.caption).frame(minHeight: 36).disabled(chat.loadingModels)
         }
     }
-    @MainActor private func switchBackend(_ backend: VesperBackend) async {
-        guard backend != store.activeBackend, !locked else { return }
+    @MainActor private func openBackendWindow(_ backend: VesperBackend) {
+        guard backend != store.activeBackend else { return }
         switchError = nil
         do {
-            let credential = try CredentialStore.load(account: backend.credentialAccount)
-            guard !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                switchError = "\(backend == .vps ? "VPS" : "MAC") connection is not configured."
-                return
-            }
-            switchingTo = backend; defer { switchingTo = nil }
-            guard await store.activateBackend(backend, connection: .load(backend), credential: credential, canSwitch: { chat.canSwitchBackend }) else {
-                switchError = store.connectionError ?? "Could not switch backend."
-                return
-            }
-            chat.configure(store)
-            if !(await chat.openMainRoom()) { switchError = chat.error ?? "Connected, but the chat could not be opened. Try again." }
-            await chat.loadModels()
+            guard let workspace else { throw ServiceError(message: "The other chat window is unavailable.") }
+            try workspace.select(backend, openChat: true)
+            dismiss()
         } catch { switchError = error.localizedDescription }
     }
 }

@@ -151,22 +151,27 @@ struct ConnectionView: View {
     var initialBackend: VesperBackend? = nil
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
+    @Environment(\.chatWorkspace) private var workspace
+    @StateObject private var fallbackMacStore = AppStore(backend: .mac)
+    @StateObject private var fallbackMacChat = ChatSession()
     @State private var selected = VesperBackend.vps
     @State private var draft = BackendConnection.load(.vps)
     @State private var credential = ""
     @State private var switching = false
     @State private var showingInfo = false
     @StateObject private var replica = BackendReplicaCopy()
+    private var connectionStore: AppStore { workspace?.runtime(selected).store ?? (selected == store.activeBackend ? store : fallbackMacStore) }
+    private var connectionChat: ChatSession { workspace?.runtime(selected).chat ?? (selected == store.activeBackend ? chat : fallbackMacChat) }
     private func loadDraft() {
         draft = BackendConnection.load(selected)
         do { credential = try CredentialStore.load(account: selected.credentialAccount) }
-        catch { credential = ""; store.connectionError = error.localizedDescription }
+        catch { credential = ""; connectionStore.connectionError = error.localizedDescription }
     }
     var body: some View {
         Page(title: "Connection") {
             SettingsGlassCard { VStack(spacing: 16) {
                 HStack {
-                    Text("Current: \(store.activeBackend == .vps ? "VPS" : "MAC")").font(.headline)
+                    Text("\(selected.title) connection").font(.headline)
                     Spacer()
                     Button { showingInfo = true } label: { Image(systemName: "info.circle").font(.system(size: 20)).frame(width: 44, height: 44) }
                         .buttonStyle(.plain).foregroundStyle(VesperTheme.ink).accessibilityLabel("Connection information")
@@ -190,15 +195,25 @@ struct ConnectionView: View {
                         .accessibilityIdentifier("copy-vps-history")
                     if !replica.status.isEmpty { Text(replica.status).font(.caption).lineLimit(2) }
                 }
-                Button { switching = true; Task { if await store.activateBackend(selected, connection: draft, credential: credential, canSwitch: { chat.canSwitchBackend }) { chat.configure(store) }; switching = false } } label: {
-                    HStack { if switching { ProgressView() }; Text(switching ? "Connecting…" : "Save and switch to \(selected == .vps ? "VPS" : "MAC")") }
+                Button {
+                    let targetStore = connectionStore, targetChat = connectionChat, connection = draft, token = credential
+                    switching = true
+                    Task {
+                        if await targetStore.saveConnection(connection: connection, credential: token, canSave: { targetChat.canSwitchBackend }) {
+                            targetChat.configure(targetStore)
+                        }
+                        switching = false
+                    }
+                } label: {
+                    HStack { if switching { ProgressView() }; Text(switching ? "Saving…" : "Save connection") }
                         .foregroundStyle(VesperTheme.palette == .black ? Color.black : Color.white)
                         .frame(maxWidth: .infinity, minHeight: 46).background(VesperTheme.ink, in: Capsule())
-                }.buttonStyle(.plain).disabled(switching || replica.busy || store.loading || !chat.canSwitchBackend || credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.buttonStyle(.plain).disabled(switching || replica.busy || connectionStore.loading || !connectionChat.canSwitchBackend || credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("save-backend-connection")
-                if !chat.canSwitchBackend { Text("Finish the current reply or call before switching.").font(.caption) }
-                Text(selected != store.activeBackend ? "Not active" : store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
-                if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
+                if !connectionChat.canSwitchBackend { Text("Finish this window’s reply or call before changing its connection.").font(.caption) }
+                Text(connectionStore.connected ? "Connected" : connectionStore.token.isEmpty ? "Not configured" : "Saved")
+                    .font(.caption).foregroundStyle(VesperTheme.muted)
+                if let error = connectionStore.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
         }.background { Background() }.transparentNavigationTop()
             .onAppear { selected = initialBackend ?? store.activeBackend; loadDraft() }
@@ -206,7 +221,7 @@ struct ConnectionView: View {
             .sheet(isPresented: $showingInfo) {
                 NavigationStack {
                     ScrollView { VStack(alignment: .leading, spacing: 20) {
-                        Text("VPS and MAC keep separate addresses, device tokens and live conversations. Switch manually when needed.")
+                        Text("VPS and MAC have separate addresses, device tokens and chat windows. Saving configures only the selected connection. Both windows stay available; opening one does not disconnect the other.")
                         Text("Mac must be awake and connected to the internet. Its HTTPS address also works outside your Wi-Fi.")
                         Text("Copy VPS history & memory creates a manual, one-way copy on Mac. Originals stay on VPS. The copy can be retrieved through chat history search and memory recall; it does not resume VPS threads or write back to VPS.")
                         if !replica.status.isEmpty { Text(replica.status).font(.caption).textSelection(.enabled) }

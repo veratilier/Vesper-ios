@@ -5,8 +5,41 @@ struct NativeChatHome: View {
     var onMenu: (() -> Void)? = nil
     var onOpenMusic: (() -> Void)? = nil
     var onRootVisibilityChange: (Bool) -> Void = { _ in }
+    @Environment(\.chatWorkspace) private var workspace
+    var body: some View {
+        if let workspace {
+            ChatWorkspaceHome(workspace: workspace, sideBySide: sideBySide, onMenu: onMenu,
+                              onOpenMusic: onOpenMusic, onRootVisibilityChange: onRootVisibilityChange)
+        } else {
+            NativeChatBackendHome(sideBySide: sideBySide, onMenu: onMenu,
+                                  onOpenMusic: onOpenMusic, onRootVisibilityChange: onRootVisibilityChange)
+        }
+    }
+}
+
+private struct ChatWorkspaceHome: View {
+    @ObservedObject var workspace: ChatBackendWorkspace
+    var sideBySide: Bool
+    var onMenu: (() -> Void)?
+    var onOpenMusic: (() -> Void)?
+    var onRootVisibilityChange: (Bool) -> Void
+    var body: some View {
+        let runtime = workspace.runtime(workspace.selectedBackend)
+        NativeChatBackendHome(sideBySide: sideBySide, onMenu: onMenu,
+                              onOpenMusic: onOpenMusic, onRootVisibilityChange: onRootVisibilityChange)
+            .environmentObject(runtime.store).environmentObject(runtime.chat).environmentObject(runtime.chat.composer)
+            .id(workspace.selectedBackend)
+    }
+}
+
+private struct NativeChatBackendHome: View {
+    var sideBySide = VesperLayout.isMac
+    var onMenu: (() -> Void)? = nil
+    var onOpenMusic: (() -> Void)? = nil
+    var onRootVisibilityChange: (Bool) -> Void = { _ in }
     @EnvironmentObject private var chat: ChatSession
     @EnvironmentObject private var store: AppStore
+    @Environment(\.chatWorkspace) private var workspace
     @Environment(\.scenePhase) private var phase
     @State private var welcomeLine = "A place for today, too."
     @State private var contactsVisible = false
@@ -25,7 +58,12 @@ struct NativeChatHome: View {
     @State private var contactName = ""
     @State private var savingContactName = false
     @State private var activityRefreshID = 0
-    @State private var selectedBackend = VesperBackend.vps
+    private var selectedBackend: VesperBackend { store.activeBackend }
+    private var backendSelection: Binding<VesperBackend> {
+        Binding(get: { selectedBackend }, set: { backend in
+            do { try workspace?.select(backend) } catch { chat.error = error.localizedDescription }
+        })
+    }
     @StateObject private var backendContacts = ChatBackendContacts()
     private var selectedContacts: ChatBackendContactSnapshot { backendContacts.snapshot(selectedBackend) }
     private var selectedClient: APIClient {
@@ -47,7 +85,7 @@ struct NativeChatHome: View {
                         if loadingChat && !chat.showingCachedHistory {
                             ProgressView("Opening chat…")
                         } else if open {
-                            ChatView(onMenu: { open = false }, restoreLatest: false)
+                            ChatView(onMenu: { open = false }, restoreLatest: false, inbox: workspace?.runtime(store.activeBackend).inbox)
                                 .frame(maxWidth: 920).toolbar(.hidden, for: .navigationBar)
                         } else {
                             ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
@@ -75,7 +113,7 @@ struct NativeChatHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                ChatBackendContactDeck(selected: $selectedBackend) { backend in
+                ChatBackendContactDeck(selected: backendSelection) { backend in
                     let contacts = backendContacts.snapshot(backend)
                     Button { enterChat() } label: {
                         conversationRowContent(contacts.mainConversation, title: contacts.agentName,
@@ -87,7 +125,6 @@ struct NativeChatHome: View {
                             Button { performForSelectedBackend { beginEditingContactName() } } label: { Label("Edit name", systemImage: "pencil") }
                         }
                 }
-                .allowsHitTesting(!rowDisabled)
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -132,7 +169,6 @@ struct NativeChatHome: View {
                 if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
             }
             .refreshable { await refreshContacts(); activityRefreshID += 1 }
-            .disabled(rowDisabled)
     }
 
     private var contactsWithNavigation: some View {
@@ -157,22 +193,26 @@ struct NativeChatHome: View {
                         .background { Background() }
                         .navigationTitle("Chat")
                 } else {
-                    ChatView(restoreLatest: false, native: true)
+                    ChatView(restoreLatest: false, native: true, inbox: workspace?.runtime(store.activeBackend).inbox)
                         .background { Background() }.toolbar(.hidden, for: .navigationBar)
                 }
             }
             .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
             .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
             .task {
-                if !openedOnce { selectedBackend = store.activeBackend }
                 chat.configure(store)
                 captureActiveContacts(); prepareOtherContacts()
+                if !openedOnce, workspace?.isOpen(store.activeBackend) == true {
+                    open = true
+                    if chat.messages.isEmpty { enterChat() }
+                }
                 if VesperLayout.usesSidebar && !store.token.isEmpty && !open { enterChat() }
                 if !store.token.isEmpty { await refreshContacts() }
                 if !openedOnce { openedOnce = true }
             }
             .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(!detail) }
             .onChange(of: open) { _, isOpen in
+                workspace?.setOpen(isOpen, backend: store.activeBackend)
                 if !isOpen {
                     openingTask?.cancel(); openingTask = nil; loadingChat = false
                     Task { await chat.loadConversations(); captureActiveContacts() }
@@ -180,8 +220,7 @@ struct NativeChatHome: View {
             }
             .onChange(of: chat.conversations) { _, _ in captureActiveContacts() }
             .onChange(of: store.documents["profile"]) { _, _ in captureActiveContacts() }
-            .onChange(of: store.activeBackend) { _, backend in
-                selectedBackend = backend
+            .onChange(of: store.token) { _, _ in
                 chat.configure(store); captureActiveContacts(); prepareOtherContacts()
                 Task { await refreshContacts() }
             }
@@ -244,8 +283,8 @@ struct NativeChatHome: View {
     }
 
     private func enterChat(_ item: JSONValue? = nil) {
-        if selectedBackend != store.activeBackend {
-            performForSelectedBackend { enterChat(item) }
+        guard !store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            chat.error = "\(store.activeBackend.title) connection is not configured."
             return
         }
         chat.configure(store)
@@ -292,23 +331,11 @@ struct NativeChatHome: View {
     }
     private func performForSelectedBackend(_ action: @escaping @MainActor () async -> Void) {
         guard !rowDisabled else { return }
-        let backend = selectedBackend
-        if backend == store.activeBackend { Task { await action() }; return }
-        loadingChat = true
-        Task {
-            do {
-                let credential = try CredentialStore.load(account: backend.credentialAccount)
-                guard !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw ServiceError(message: "\(backend == .vps ? "VPS" : "MAC") connection is not configured.")
-                }
-                guard await store.activateBackend(backend, connection: .load(backend), credential: credential, canSwitch: { chat.canSwitchBackend }) else {
-                    throw ServiceError(message: store.connectionError ?? "Could not connect.")
-                }
-                chat.configure(store)
-                loadingChat = false
-                await action()
-            } catch { loadingChat = false; chat.error = error.localizedDescription }
+        guard !store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            chat.error = "\(store.activeBackend.title) connection is not configured."
+            return
         }
+        Task { await action() }
     }
     private func beginEditingContactName() {
         contactName = agentName

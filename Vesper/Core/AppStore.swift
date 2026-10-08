@@ -1,10 +1,11 @@
 import SwiftUI
 import CryptoKit
+import Combine
 
 enum VesperBackend: String, CaseIterable, Identifiable {
     case vps, mac
     var id: String { rawValue }
-    var title: String { self == .vps ? "VPS" : "Mac backup" }
+    var title: String { self == .vps ? "VPS" : "MAC" }
     var credentialAccount: String { self == .vps ? "device-token" : "mac-backend-device-token" }
     func key(_ legacy: String) -> String { self == .vps ? legacy : "mac-backend." + legacy }
 }
@@ -27,6 +28,61 @@ struct BackendConnection: Equatable {
     }
     func save(_ backend: VesperBackend, defaults: UserDefaults = .standard) {
         defaults.set(baseURL, forKey: backend.key("apiURL")); defaults.set(historyURL, forKey: backend.key("historyURL")); defaults.set(socketURL, forKey: backend.key("socketURL"))
+    }
+}
+
+/// Both live sessions stay owned by the app while the visible window changes.
+@MainActor final class ChatBackendWorkspace: ObservableObject {
+    struct Runtime {
+        let store: AppStore
+        let chat: ChatSession
+        let inbox: ChatInbox
+    }
+    let vps: Runtime
+    let mac: Runtime
+    @Published private(set) var selectedBackend = VesperBackend.vps
+    @Published private(set) var incomingBackend: VesperBackend?
+    private var openWindows: Set<VesperBackend> = []
+    private var observations: Set<AnyCancellable> = []
+    init(vpsStore: AppStore, vpsChat: ChatSession, macStore: AppStore? = nil, macChat: ChatSession? = nil) {
+        vps = Runtime(store: vpsStore, chat: vpsChat, inbox: .shared)
+        mac = Runtime(store: macStore ?? AppStore(backend: .mac), chat: macChat ?? ChatSession(), inbox: ChatInbox())
+        for backend in VesperBackend.allCases {
+            runtime(backend).chat.$incomingCall.sink { [weak self] incoming in
+                if incoming { self?.incomingBackend = backend }
+                else if self?.incomingBackend == backend { self?.incomingBackend = nil }
+            }.store(in: &observations)
+        }
+    }
+    func runtime(_ backend: VesperBackend) -> Runtime { backend == .vps ? vps : mac }
+    func isOpen(_ backend: VesperBackend) -> Bool { openWindows.contains(backend) }
+    func setOpen(_ open: Bool, backend: VesperBackend) {
+        if open { openWindows.insert(backend) } else { openWindows.remove(backend) }
+    }
+    func select(_ backend: VesperBackend, openChat: Bool = false) throws {
+        guard backend != selectedBackend else { return }
+        guard !NativeCallPresentation.shared.presented, !vps.chat.callActive, !mac.chat.callActive else {
+            throw ServiceError(message: "Finish the call before opening another chat window.")
+        }
+        if openChat, runtime(backend).store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ServiceError(message: "\(backend.title) connection is not configured.")
+        }
+        setOpen(openChat, backend: backend)
+        selectedBackend = backend
+    }
+    func sceneChanged(active: Bool) {
+        vps.chat.sceneChanged(active: active)
+        mac.chat.sceneChanged(active: active)
+    }
+}
+
+private struct ChatBackendWorkspaceKey: EnvironmentKey {
+    static let defaultValue: ChatBackendWorkspace? = nil
+}
+extension EnvironmentValues {
+    var chatWorkspace: ChatBackendWorkspace? {
+        get { self[ChatBackendWorkspaceKey.self] }
+        set { self[ChatBackendWorkspaceKey.self] = newValue }
     }
 }
 
@@ -96,17 +152,22 @@ struct BackendConnection: Equatable {
 
 @MainActor final class AppStore: ObservableObject {
     private let loadState: (APIClient) async throws -> JSONValue
+    private let loadHistoryHealth: (APIClient) async throws -> JSONValue
     private let retryDelay: () async throws -> Void
     private let disk: LocalDocumentDisk
     private let requestDocument: (APIClient, String, String, JSONValue?) async throws -> JSONValue
-    init(loadState: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/api/state") },
+    init(backend: VesperBackend = .vps,
+         loadState: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/api/state") },
+         loadHistoryHealth: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/health", history: true) },
          retryDelay: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
          disk: LocalDocumentDisk = LocalDocumentDisk(),
          requestDocument: @escaping (APIClient, String, String, JSONValue?) async throws -> JSONValue = { try await $0.request($1, method: $2, body: $3) }) {
         self.loadState = loadState
+        self.loadHistoryHealth = loadHistoryHealth
         self.retryDelay = retryDelay
         self.disk = disk
         self.requestDocument = requestDocument
+        activeBackend = backend
         let saved = BackendConnection.load(activeBackend)
         baseURL = saved.baseURL; historyURL = saved.historyURL; socketURL = saved.socketURL
         do { token = try CredentialStore.load(account: activeBackend.credentialAccount) } catch { connectionError = error.localizedDescription }
@@ -140,7 +201,7 @@ struct BackendConnection: Equatable {
     private var identityGeneration = UUID()
     @Published var legacyMusicCleanupStatus: String?
     @Published var connectionError: String?
-    @Published private(set) var activeBackend: VesperBackend = VesperBackend(rawValue: UserDefaults.standard.string(forKey: "vesper.activeBackend") ?? "") ?? .vps
+    @Published private(set) var activeBackend: VesperBackend = .vps
     @Published var baseURL: String = UserDefaults.standard.string(forKey: "apiURL") ?? "https://api.vesper.r-vera.com" {
         didSet { if oldValue != baseURL { restoreLocalDocuments() } }
     }
@@ -207,7 +268,7 @@ struct BackendConnection: Equatable {
                 documentRevision += 1
                 documents = values; pendingDocuments = pending; lastSyncedAt = now; hasLocalData = true
                 conflictingDocuments.remove(key)
-                if key == "notes" { WidgetSync.notes(document(key)) }
+                if key == "notes", activeBackend == .vps { WidgetSync.notes(document(key)) }
             } catch {
                 guard generation == identityGeneration, !Task.isCancelled else { return }
                 if error is DocumentMerge.Conflict { conflictingDocuments.insert(key) }
@@ -249,9 +310,10 @@ struct BackendConnection: Equatable {
             await refresh()
         } catch { connectionError = error.localizedDescription }
     }
-    /// Connection editor owns drafts; failed validation never replaces the active backend.
-    func activateBackend(_ backend: VesperBackend, connection: BackendConnection, credential: String, canSwitch: () -> Bool = { true }) async -> Bool {
-        guard !loading, !saving, !syncing, canSwitch() else { connectionError = "Finish the current reply, call or save before switching."; return false }
+    /// Each store belongs to one backend. Saving cannot retarget another chat window.
+    func saveConnection(connection: BackendConnection, credential: String, canSave: () -> Bool = { true }) async -> Bool {
+        guard !loading, !saving, !syncing, canSave() else { connectionError = "Finish this window’s current reply, call or save before changing its connection."; return false }
+        let backend = activeBackend
         let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             try connection.validate()
@@ -263,18 +325,16 @@ struct BackendConnection: Equatable {
             guard case .object(let docs) = state["documents"] else { throw ServiceError(message: "Invalid backend response.") }
             if backend == .mac {
                 guard state["backend"]["backend"].string == "mac", !state["backend"]["backendId"].string.isEmpty else { throw ServiceError(message: "This address did not identify itself as the Mac backend.") }
-                let history = try await candidate.request("/health", history: true)
+                let history = try await loadHistoryHealth(candidate)
                 guard history["backendId"] == state["backend"]["backendId"] else { throw ServiceError(message: "The history address belongs to a different backend.") }
             }
-            guard canSwitch(), !saving, !syncing else { throw ServiceError(message: "Finish the current reply or save before switching.") }
+            guard canSave(), !saving, !syncing else { throw ServiceError(message: "Finish this window’s current reply or save before changing its connection.") }
             try Task.checkCancellation()
             try CredentialStore.save(credential, account: backend.credentialAccount)
             connection.save(backend)
-            NotificationCenter.default.post(name: .init("VesperBackendWillChange"), object: nil)
-            activeBackend = backend
+            let changed = baseURL != connection.baseURL || historyURL != connection.historyURL || socketURL != connection.socketURL || token != credential
             baseURL = connection.baseURL; historyURL = connection.historyURL; socketURL = connection.socketURL; token = credential
-            restoreLocalDocuments()
-            UserDefaults.standard.set(backend.rawValue, forKey: "vesper.activeBackend")
+            if changed { restoreLocalDocuments() }
             // The candidate was already authenticated. Apply that snapshot in its own
             // local scope rather than adding a second network failure after activation.
             connected = true; connectionError = nil
@@ -290,7 +350,7 @@ struct BackendConnection: Equatable {
         do { try persist(values, pending: pendingDocuments, syncedAt: now); hasLocalData = true; lastSyncedAt = now }
         catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
         rememberProfile(documents["profile"] ?? .null)
-        WidgetSync.notes(document("notes"))
+        if activeBackend == .vps { WidgetSync.notes(document("notes")) }
         scheduleSync()
     }
     private var documentRevision = 0
@@ -430,7 +490,7 @@ struct BackendConnection: Equatable {
                 values[key] = value
                 try persist(values, pending: pending, syncedAt: lastSyncedAt)
                 documentRevision += 1; documents = values; pendingDocuments = pending
-                if key == "notes" { WidgetSync.notes(value) }
+                if key == "notes", activeBackend == .vps { WidgetSync.notes(value) }
                 scheduleSync()
                 return true
             } catch { if reportErrors { self.error = error.localizedDescription }; return false }
@@ -454,7 +514,7 @@ struct BackendConnection: Equatable {
             documents[key] = pendingDocuments[key]?.value ?? value
             do { try persist(documents, pending: pendingDocuments, syncedAt: lastSyncedAt); hasLocalData = true }
             catch { syncError = "Saved in the cloud, but the local copy could not be saved." }
-            if key == "profile" { rememberProfile(value) }; if key == "notes" { WidgetSync.notes(value) }; return true
+            if key == "profile" { rememberProfile(value) }; if key == "notes", activeBackend == .vps { WidgetSync.notes(value) }; return true
         } catch { if reportErrors, generation == identityGeneration { self.error = error.localizedDescription }; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {

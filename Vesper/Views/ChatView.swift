@@ -676,7 +676,7 @@ struct ChatView: View {
                         Text("· " + (chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1).truncationMode(.middle)
                         Image(systemName: modelPicker ? "chevron.down" : "chevron.up").font(.system(size: 9))
                     }.font(.system(size: 12)).frame(maxWidth: 190, minHeight: 40, alignment: .leading)
-                }.disabled(!chat.canSwitchBackend || store.loading)
+                }.disabled(chat.callActive || store.loading)
                     .accessibilityLabel("Backend, model and strength")
                     .accessibilityValue((store.activeBackend == .vps ? "VPS" : "MAC") + ", " + (chat.model.isEmpty ? "Default" : chat.model) + ", " + (chat.effort.isEmpty ? "Default" : chat.effort))
                     .accessibilityIdentifier("chat-model-picker")

@@ -24,28 +24,28 @@ final class BackendConnectionTests: XCTestCase {
             XCTAssertThrowsError(try BackendConnection(baseURL: "https://backup.example", historyURL: "https://backup.example/history", socketURL: socket).validate())
         }
     }
-    @MainActor func testFailedSwitchPreservesCurrentConnectionAndDocuments() async {
+    @MainActor func testFailedSavePreservesConnectionAndDocuments() async {
         let store = AppStore(loadState: { _ in throw ServiceError(message: "offline test") })
         let before = BackendConnection(baseURL: store.baseURL, historyURL: store.historyURL, socketURL: store.socketURL)
         let backend = store.activeBackend, token = store.token
         store.documents["profile"] = .object(["mainConversationId": .string("original-vps-room")])
-        let switched = await store.activateBackend(.mac, connection: .load(.mac), credential: "synthetic-mac-token")
+        let switched = await store.saveConnection(connection: .load(.mac), credential: "synthetic-mac-token")
         XCTAssertFalse(switched)
         XCTAssertEqual(store.activeBackend, backend)
         XCTAssertEqual(BackendConnection(baseURL: store.baseURL, historyURL: store.historyURL, socketURL: store.socketURL), before)
         XCTAssertEqual(store.token, token)
         XCTAssertEqual(store.document("profile")["mainConversationId"].string, "original-vps-room")
     }
-    @MainActor func testBusyChatPreventsBackendValidationAndActivation() async {
+    @MainActor func testBusyWindowPreventsItsConnectionChange() async {
         var reads = 0
         let store = AppStore(loadState: { _ in reads += 1; return .object(["documents": .object([:])]) })
         let original = store.activeBackend
-        let switched = await store.activateBackend(.mac, connection: .load(.mac), credential: "fixture", canSwitch: { false })
+        let switched = await store.saveConnection(connection: .load(.mac), credential: "fixture", canSave: { false })
         XCTAssertFalse(switched)
         XCTAssertEqual(reads, 0)
         XCTAssertEqual(store.activeBackend, original)
     }
-    @MainActor func testSuccessfulSwitchUsesValidatedSnapshotAndTargetLocalEdits() async throws {
+    @MainActor func testSuccessfulSaveUsesValidatedSnapshotAndTargetLocalEdits() async throws {
         let defaults = UserDefaults.standard
         let keys = ["apiURL", "historyURL", "socketURL", "vesper.activeBackend"]
         let saved = keys.map { ($0, defaults.object(forKey: $0)) }
@@ -71,7 +71,7 @@ final class BackendConnectionTests: XCTestCase {
                 "notes": .object(["value": .array([])])])])
         }, disk: disk, requestDocument: { _, _, _, _ in throw URLError(.notConnectedToInternet) })
         store.documents["profile"] = .object(["mainConversationId": .string("old-room")])
-        let switched = await store.activateBackend(.vps, connection: connection, credential: target.token)
+        let switched = await store.saveConnection(connection: connection, credential: target.token)
         XCTAssertTrue(switched)
         XCTAssertTrue(store.connected)
         XCTAssertEqual(reads, 1, "A switch should not add another state read after changing the active connection.")
@@ -90,6 +90,128 @@ final class BackendConnectionTests: XCTestCase {
         XCTAssertNil(try disk.load(mac))
         try disk.save(LocalDocumentSnapshot(documents: ["profile": .object(["mainConversationId": .string("mac-only")])]), api: mac)
         XCTAssertEqual(try disk.load(vps)?.documents["profile"]?["mainConversationId"].string, "vps-only")
+    }
+}
+
+@MainActor final class ChatBackendWorkspaceTests: XCTestCase {
+    func testOpeningMacWhileVPSRepliesKeepsBothStreamsDraftsAndToolRecords() async throws {
+        let vpsStore = AppStore(backend: .vps), macStore = AppStore(backend: .mac)
+        vpsStore.token = "synthetic-vps-stream"; macStore.token = "synthetic-mac-stream"
+        let vpsSocket = RecoverySocket(), macSocket = RecoverySocket()
+        macSocket.snapshot["thread"]["id"] = .string("mac-thread")
+        let vps = ChatSession(socketFactory: { _ in vpsSocket }, heartbeatInterval: 1000)
+        let mac = ChatSession(socketFactory: { _ in macSocket }, heartbeatInterval: 1000)
+        defer { vps.disconnect(); mac.disconnect() }
+        vps.configureConnection(api: vpsStore.api, endpoint: "wss://vps.fixture", threadID: "thread")
+        mac.configureConnection(api: macStore.api, endpoint: "wss://mac.fixture", threadID: "mac-thread")
+        let workspace = ChatBackendWorkspace(vpsStore: vpsStore, vpsChat: vps, macStore: macStore, macChat: mac)
+        vps.composer.draft = "VPS draft"; mac.composer.draft = "MAC draft"
+        vps.model = "vps-model"; mac.model = "mac-model"
+        vps.effort = "high"; mac.effort = "medium"
+        try await vps.connect(); try await mac.connect()
+        for socket in [vpsSocket, macSocket] {
+            try socket.emit(.object(["method": .string("turn/started"), "params": .object(["turn": .object(["id": .string("same-turn")])])]))
+        }
+        await eventually { vps.busy && mac.busy }
+        // Moving to the other window never disconnects either transport.
+        try workspace.select(.mac)
+        try vpsSocket.emit(.object(["method": .string("item/agentMessage/delta"), "params": .object(["itemId": .string("same-item"), "delta": .string("VPS reply")])]))
+        try macSocket.emit(.object(["method": .string("item/agentMessage/delta"), "params": .object(["itemId": .string("same-item"), "delta": .string("MAC reply")])]))
+        try vpsSocket.emit(.object(["method": .string("item/started"), "params": .object(["item": .object(["id": .string("tool"), "type": .string("commandExecution"), "command": .string("VPS command")])])]))
+        try macSocket.emit(.object(["method": .string("item/started"), "params": .object(["item": .object(["id": .string("tool"), "type": .string("commandExecution"), "command": .string("MAC command")])])]))
+        await eventually { vps.messages.count == 2 && mac.messages.count == 2 }
+        try workspace.select(.vps)
+        XCTAssertEqual(vpsSocket.closeCode, .invalid)
+        XCTAssertEqual(macSocket.closeCode, .invalid)
+        XCTAssertEqual(vps.messages.first { $0.id == "same-item" }?["content"].string, "VPS reply")
+        XCTAssertEqual(mac.messages.first { $0.id == "same-item" }?["content"].string, "MAC reply")
+        XCTAssertEqual(vps.messages.first { $0.id == "execution-tool" }?["metadata"]["execution"]["command"].string, "VPS command")
+        XCTAssertEqual(mac.messages.first { $0.id == "execution-tool" }?["metadata"]["execution"]["command"].string, "MAC command")
+        XCTAssertEqual(vps.composer.draft, "VPS draft"); XCTAssertEqual(mac.composer.draft, "MAC draft")
+        XCTAssertEqual(vps.model, "vps-model"); XCTAssertEqual(mac.model, "mac-model")
+        XCTAssertEqual(vps.effort, "high"); XCTAssertEqual(mac.effort, "medium")
+        XCTAssertTrue(vps.busy); XCTAssertTrue(mac.busy)
+    }
+    func testUnconfiguredWindowDoesNotNavigateOrReplaceCurrentRuntime() throws {
+        let vpsStore = AppStore(), macStore = AppStore(backend: .mac)
+        macStore.token = ""
+        let vps = ChatSession(), mac = ChatSession()
+        let workspace = ChatBackendWorkspace(vpsStore: vpsStore, vpsChat: vps, macStore: macStore, macChat: mac)
+        XCTAssertThrowsError(try workspace.select(.mac, openChat: true))
+        XCTAssertEqual(workspace.selectedBackend, .vps)
+        XCTAssertTrue(workspace.runtime(.vps).chat === vps)
+        XCTAssertTrue(workspace.runtime(.mac).chat === mac)
+    }
+    func testMacCanSendWhileVPSIsStillReplying() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let outbox = ChatSendOutbox(directory: directory)
+        let vpsSocket = RecoverySocket(), macSocket = RecoverySocket()
+        macSocket.snapshot["thread"]["id"] = .string("mac-thread")
+        let vps = ChatSession(socketFactory: { _ in vpsSocket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        let mac = ChatSession(socketFactory: { _ in macSocket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        defer { vps.disconnect(); mac.disconnect(); outbox.stop(); http.invalidateAndCancel(); try? FileManager.default.removeItem(at: directory) }
+        let vpsStore = AppStore(), macStore = AppStore(backend: .mac)
+        vpsStore.token = "synthetic-vps-send"; macStore.token = "synthetic-mac-send"
+        vps.configureConnection(api: APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example/vps", token: vpsStore.token, requestSession: http), endpoint: "wss://send-preparation.example/vps", threadID: "thread")
+        mac.configureConnection(api: APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example/mac", token: macStore.token, requestSession: http), endpoint: "wss://send-preparation.example/mac", threadID: "mac-thread")
+        let workspace = ChatBackendWorkspace(vpsStore: vpsStore, vpsChat: vps, macStore: macStore, macChat: mac)
+        try await vps.connect()
+        vps.busy = true; vps.composer.draft = "Keep the VPS draft"
+        try workspace.select(.mac, openChat: true)
+        let sent = await mac.send("Send only to Mac")
+        XCTAssertTrue(sent, mac.error ?? "Mac send failed")
+        let turn = try XCTUnwrap(macSocket.packets.first { $0["method"].string == "turn/start" })
+        XCTAssertEqual(turn["params"]["threadId"].string, "mac-thread")
+        XCTAssertFalse(vpsSocket.packets.contains { $0["method"].string == "turn/start" })
+        XCTAssertEqual(vpsSocket.closeCode, .invalid)
+        XCTAssertTrue(vps.busy)
+        XCTAssertEqual(vps.composer.draft, "Keep the VPS draft")
+        XCTAssertTrue(mac.messages.contains { $0["content"].string == "Send only to Mac" && $0["status"].string == "delivered" })
+    }
+    func testSavingMacConnectionKeepsVPSWindowAndPreferenceUntouched() async throws {
+        let defaults = UserDefaults.standard, priorSelection = defaults.object(forKey: "vesper.activeBackend")
+        let keys = ["apiURL", "historyURL", "socketURL"].map { VesperBackend.mac.key($0) }
+        let saved = keys.map { ($0, defaults.object(forKey: $0)) }
+        let oldToken = try CredentialStore.load(account: VesperBackend.mac.credentialAccount)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            for (key, value) in saved { if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) } }
+            if let priorSelection { defaults.set(priorSelection, forKey: "vesper.activeBackend") } else { defaults.removeObject(forKey: "vesper.activeBackend") }
+            if oldToken.isEmpty { try? CredentialStore.delete(account: VesperBackend.mac.credentialAccount) }
+            else { try? CredentialStore.save(oldToken, account: VesperBackend.mac.credentialAccount) }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        defaults.set("vps", forKey: "vesper.activeBackend")
+        let vpsStore = AppStore(), vps = ChatSession(), mac = ChatSession()
+        vps.messages = [.object(["id": .string("vps-message"), "content": .string("Still replying")])]
+        vps.composer.draft = "Keep me"
+        let originalAPI = vpsStore.api
+        let macStore = AppStore(backend: .mac, loadState: { _ in .object([
+            "documents": .object(["profile": .object(["value": .object(["mainConversationId": .string("mac-room")])])]),
+            "backend": .object(["backend": .string("mac"), "backendId": .string("fixture-mac")])]) },
+            loadHistoryHealth: { _ in .object(["backendId": .string("fixture-mac")]) }, disk: LocalDocumentDisk(directory: directory))
+        let workspace = ChatBackendWorkspace(vpsStore: vpsStore, vpsChat: vps, macStore: macStore, macChat: mac)
+        let connection = BackendConnection(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", socketURL: "wss://mac.fixture/chat")
+        let savedOK = await macStore.saveConnection(connection: connection, credential: "synthetic-mac-token")
+        XCTAssertTrue(savedOK)
+        XCTAssertEqual(workspace.selectedBackend, .vps)
+        XCTAssertEqual(vpsStore.activeBackend, .vps)
+        XCTAssertEqual(vpsStore.api.baseURL, originalAPI.baseURL)
+        XCTAssertEqual(vpsStore.api.token, originalAPI.token)
+        XCTAssertEqual(vps.messages.first?.id, "vps-message")
+        XCTAssertEqual(vps.composer.draft, "Keep me")
+        XCTAssertEqual(macStore.document("profile")["mainConversationId"].string, "mac-room")
+        XCTAssertEqual(defaults.string(forKey: "vesper.activeBackend"), "vps")
+        XCTAssertEqual(BackendConnection.load(.mac), connection)
+        XCTAssertNotEqual(BackendConnection.load(.vps), connection)
+    }
+    private func eventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(condition(), file: file, line: line)
     }
 }
 

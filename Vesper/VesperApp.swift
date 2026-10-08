@@ -3,10 +3,17 @@ import UserNotifications
 
 @main struct VesperApp: App {
     @UIApplicationDelegateAdaptor(VesperNotificationDelegate.self) private var notificationDelegate
-    @StateObject private var store = AppStore()
+    @StateObject private var store: AppStore
     @StateObject private var player = MusicPlayer()
-    @StateObject private var chat = ChatSession()
+    @StateObject private var chat: ChatSession
+    @StateObject private var chatWorkspace: ChatBackendWorkspace
     @AppStorage("vesperPalette") private var palette = "blue"
+    init() {
+        let store = AppStore(backend: .vps), chat = ChatSession()
+        _store = StateObject(wrappedValue: store)
+        _chat = StateObject(wrappedValue: chat)
+        _chatWorkspace = StateObject(wrappedValue: ChatBackendWorkspace(vpsStore: store, vpsChat: chat))
+    }
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -14,6 +21,7 @@ import UserNotifications
                 .frame(minWidth: 980, minHeight: 650)
                 #endif
                 .environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
+                .environmentObject(chatWorkspace).environment(\.chatWorkspace, chatWorkspace)
                 .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
         }
         #if targetEnvironment(macCatalyst)
@@ -181,6 +189,7 @@ private struct FloatingCallSizeKey: PreferenceKey {
     }
 }
 struct RootView: View {
+    @EnvironmentObject private var chatWorkspace: ChatBackendWorkspace
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
@@ -295,9 +304,13 @@ struct RootView: View {
         .onChange(of: navigationStyle) { _, _ in navigate(destination); sidebar = false }
         .onAppear { navigate(destination) }
         .overlay {
-            if chat.incomingCall {
+            if let backend = chatWorkspace.incomingBackend {
                 Color.black.opacity(0.18).ignoresSafeArea()
-                CallInvitation(accept: { chat.incomingCall = false; navigate(.chat); callPresentation.open(initiator: "agent") }, decline: { chat.incomingCall = false })
+                CallInvitation(accept: {
+                    chatWorkspace.runtime(backend).chat.incomingCall = false
+                    try? chatWorkspace.select(backend, openChat: true)
+                    navigate(.chat); callPresentation.open(initiator: "agent")
+                }, decline: { chatWorkspace.runtime(backend).chat.incomingCall = false })
                     .padding(28).transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
@@ -305,6 +318,8 @@ struct RootView: View {
             if callPresentation.presented {
                 GeometryReader { geometry in
                     NativeCallView(initiator: callPresentation.initiator)
+                        .environmentObject(chatWorkspace.runtime(chatWorkspace.selectedBackend).store)
+                        .environmentObject(chatWorkspace.runtime(chatWorkspace.selectedBackend).chat)
                         .fixedSize(horizontal: callPresentation.minimized, vertical: callPresentation.minimized)
                         .background {
                             if callPresentation.minimized {
@@ -356,9 +371,9 @@ struct RootView: View {
     }
     private var lifecycle: some View {
         scene
-        .onReceive(NotificationCenter.default.publisher(for: .init("VesperBackendWillChange"))) { _ in chat.disconnect() }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
+            guard (try? chatWorkspace.select(.vps, openChat: true)) != nil else { return }
             navigate(.chat)
             Task {
                 chat.configure(store)
@@ -378,6 +393,8 @@ struct RootView: View {
             guard phase == .active else { return }
             while !Task.isCancelled {
                 await chatInbox.sync(store.api)
+                let macRuntime = chatWorkspace.runtime(.mac)
+                if !macRuntime.store.token.isEmpty { await macRuntime.inbox.sync(macRuntime.store.api) }
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
             }
         }
@@ -439,7 +456,7 @@ struct RootView: View {
         .onChange(of: chat.busy) { old, new in if old && !new && sidebar { Task { await refreshUsage() } } }
         .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
         .onChange(of: phase) { _, phase in
-            if phase != .inactive { chat.sceneChanged(active: phase == .active) }
+            if phase != .inactive { chatWorkspace.sceneChanged(active: phase == .active) }
             if phase == .active { Task { await refreshUsage(); await LetterNotifications.sync(store.api) } }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)

@@ -86,14 +86,13 @@ extension View {
 struct NavigationStyleToggle: View {
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     var body: some View {
-        #if targetEnvironment(macCatalyst)
-        MacAppearanceButton()
-        #else
+        if VesperLayout.usesSidebar { MacAppearanceButton() }
+        else {
         Button { navigationStyle = navigationStyle == "native" ? "vesper" : "native" } label: {
             Image(systemName: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled")
         }.accessibilityLabel(navigationStyle == "native" ? "Switch to Vesper" : "Switch to Apple Native")
             .accessibilityValue(navigationStyle == "native" ? "Apple Native" : "Vesper")
-        #endif
+        }
     }
 }
 

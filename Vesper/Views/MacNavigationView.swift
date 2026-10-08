@@ -1,7 +1,18 @@
-#if targetEnvironment(macCatalyst)
 import SwiftUI
 
-/// Desktop navigation is independent of the iPhone's floating bottom bar.
+/// Large devices keep navigation visible independently of the phone tab style.
+enum VesperLayout {
+    static var isMac: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
+        false
+        #endif
+    }
+    static var usesSidebar: Bool { isMac || UIDevice.current.userInterfaceIdiom == .pad }
+}
+
+/// Shared fixed navigation for Mac and iPad.
 struct MacNavigationView<Detail: View>: View {
     @Binding var selection: Destination
     let openMusic: () -> Void
@@ -9,7 +20,7 @@ struct MacNavigationView<Detail: View>: View {
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var inbox = ChatInbox.shared
     private let primary: [Destination] = [.home, .chat, .letters]
-    private var collection: [Destination] { VesperGridOrder.defaults.filter { $0 != .alarms } }
+    private var collection: [Destination] { VesperGridOrder.defaults.filter { !VesperLayout.isMac || $0 != .alarms } }
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -37,7 +48,11 @@ struct MacNavigationView<Detail: View>: View {
             detail(selection).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background { Background() }
-        .background(MacWindowConfiguration())
+        .background {
+            #if targetEnvironment(macCatalyst)
+            MacWindowConfiguration()
+            #endif
+        }
         .task { if store.token.isEmpty { selection = .settings } }
     }
     private func row(_ page: Destination) -> some View {
@@ -47,7 +62,7 @@ struct MacNavigationView<Detail: View>: View {
                 Text(page.title).font(.system(size: 14, weight: selection == page ? .semibold : .regular))
                 Spacer(minLength: 0)
                 if page == .chat && inbox.hasUpdates { Circle().fill(.red).frame(width: 6, height: 6) }
-            }.padding(.horizontal, 12).frame(height: 38)
+            }.padding(.horizontal, 12).frame(height: VesperLayout.isMac ? 38 : 44)
                 .background(selection == page ? VesperTheme.ink.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier("mac-nav-" + page.rawValue)
@@ -88,11 +103,12 @@ private struct MacSidebarPlayer: View {
     private func control(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 13, weight: .semibold))
-                .frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle())
+                .frame(maxWidth: .infinity).frame(height: VesperLayout.isMac ? 28 : 44).contentShape(Rectangle())
         }.accessibilityLabel(label)
     }
 }
 
+#if targetEnvironment(macCatalyst)
 private struct MacWindowConfiguration: UIViewRepresentable {
     final class WindowProbe: UIView {
         override func didMoveToWindow() {
@@ -103,6 +119,8 @@ private struct MacWindowConfiguration: UIViewRepresentable {
     func makeUIView(context: Context) -> WindowProbe { WindowProbe() }
     func updateUIView(_ uiView: WindowProbe, context: Context) {}
 }
+
+#endif
 
 struct MacAppearanceButton: View {
     @State private var showing = false
@@ -118,4 +136,3 @@ struct MacAppearanceButton: View {
             }
     }
 }
-#endif

@@ -994,14 +994,14 @@ struct ChatHeaderMenu: View {
                 HStack(spacing: 8) {
                     actionIcon("相关记忆", symbol: "brain", action: onMemory)
                     actionIcon("终端", symbol: "terminal", action: onTerminal)
-                    #if targetEnvironment(macCatalyst)
-                    MacAppearanceButton().frame(width: 44, height: 44)
-                    #else
+                    if VesperLayout.usesSidebar {
+                        MacAppearanceButton().frame(width: 44, height: 44)
+                    } else {
                     actionIcon(navigationStyle == "native" ? "切换到 Vesper" : "切换到 Apple Native",
                                symbol: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled") {
                         navigationStyle = navigationStyle == "native" ? "vesper" : "native"
                     }
-                    #endif
+                    }
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .trailing)))
             } else {

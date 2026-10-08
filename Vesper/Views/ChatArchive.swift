@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct NativeChatHome: View {
+    var sideBySide = VesperLayout.isMac
     var onMenu: (() -> Void)? = nil
     var onOpenMusic: (() -> Void)? = nil
     var onRootVisibilityChange: (Bool) -> Void = { _ in }
@@ -32,28 +33,28 @@ struct NativeChatHome: View {
     private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
     private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
-        #if targetEnvironment(macCatalyst)
-        HStack(spacing: 0) {
-            NavigationStack { contactsWithDialogs }.frame(width: 300)
-            Divider()
-            NavigationStack {
-                ZStack {
-                    Background()
-                    if loadingChat && !chat.showingCachedHistory {
-                        ProgressView("Opening chat…")
-                    } else if open {
-                        ChatView(onMenu: { open = false }, restoreLatest: false)
-                            .frame(maxWidth: 920).toolbar(.hidden, for: .navigationBar)
-                    } else {
-                        ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
-                                               description: Text("Choose Rowan or a conversation to continue."))
+        if sideBySide {
+            HStack(spacing: 0) {
+                NavigationStack { contactsWithDialogs }.frame(width: 300)
+                Divider()
+                NavigationStack {
+                    ZStack {
+                        Background()
+                        if loadingChat && !chat.showingCachedHistory {
+                            ProgressView("Opening chat…")
+                        } else if open {
+                            ChatView(onMenu: { open = false }, restoreLatest: false)
+                                .frame(maxWidth: 920).toolbar(.hidden, for: .navigationBar)
+                        } else {
+                            ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
+                                                   description: Text("Choose Rowan or a conversation to continue."))
+                        }
                     }
-                }
-            }.frame(maxWidth: .infinity)
+                }.frame(maxWidth: .infinity)
+            }
+        } else {
+            NavigationStack { contactsWithDialogs }
         }
-        #else
-        NavigationStack { contactsWithDialogs }
-        #endif
     }
 
     private var contactList: some View {
@@ -145,8 +146,7 @@ struct NativeChatHome: View {
                         .disabled(rowDisabled || chat.loadingModels)
                 }
             }
-            #if !targetEnvironment(macCatalyst)
-            .navigationDestination(isPresented: $open) {
+            .navigationDestination(isPresented: Binding(get: { open && !sideBySide }, set: { if !sideBySide { open = $0 } })) {
                 if loadingChat {
                     ProgressView("Opening chat…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -157,14 +157,11 @@ struct NativeChatHome: View {
                         .background { Background() }.toolbar(.hidden, for: .navigationBar)
                 }
             }
-            #endif
             .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
             .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
             .task {
                 chat.configure(store)
-                #if targetEnvironment(macCatalyst)
-                if !store.token.isEmpty && !open { enterChat() }
-                #endif
+                if VesperLayout.usesSidebar && !store.token.isEmpty && !open { enterChat() }
                 if !store.token.isEmpty { await chat.loadConversations() }
                 if !openedOnce { openedOnce = true }
             }

@@ -198,28 +198,26 @@ struct RootView: View {
     @State private var floatingCallCenter: CGPoint?
     @State private var floatingCallSize = CGSize(width: 220, height: 64)
     @GestureState private var floatingCallDrag = CGSize.zero
-    #if targetEnvironment(macCatalyst)
-    @State private var opening = false
-    #else
-    @State private var opening = true
-    #endif
+    @State private var opening = !VesperLayout.usesSidebar
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
     @State private var sidebar = false
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder private var navigationSurface: some View {
-        #if targetEnvironment(macCatalyst)
-        MacNavigationView(selection: $destination, openMusic: { showingMusicPlayer = true }) { page in
-            if page == .chat { NativeChatHome() }
-            else { shell(page) }
-        }
-        #else
-        if navigationStyle == "native" { nativeTabs }
+        if VesperLayout.usesSidebar {
+            MacNavigationView(selection: $destination, openMusic: { showingMusicPlayer = true }) { page in
+                if page == .chat {
+                    GeometryReader { geometry in
+                        NativeChatHome(sideBySide: VesperLayout.isMac || geometry.size.width >= 760)
+                    }
+                } else { shell(page) }
+            }
+        } else if navigationStyle == "native" { nativeTabs }
         else if destination == .chat { NativeChatHome(onMenu: { sidebar = true }) }
         else { shell(destination) }
-        #endif
     }
+
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
@@ -470,28 +468,22 @@ struct RootView: View {
         NavigationStack {
             ZStack {
                 Background()
-                #if targetEnvironment(macCatalyst)
-                content(page)
-                #else
-                if page == .home && navigationStyle != "native" { VStack(spacing: 0) { homeHeader; content(page) } }
+                if !VesperLayout.usesSidebar && page == .home && navigationStyle != "native" { VStack(spacing: 0) { homeHeader; content(page) } }
                 else { content(page) }
-                #endif
             }
             .safeAreaInset(edge: .bottom, spacing: 4) {
-                if navigationStyle == "native" && !NativeMusicAccessory.isSupported && [.home, .letters, .settings].contains(page) { musicDock }
+                if !VesperLayout.usesSidebar && navigationStyle == "native" && !NativeMusicAccessory.isSupported && [.home, .letters, .settings].contains(page) { musicDock }
             }
             .onAppear { updateMusicRoot(page, visible: true) }
             .onDisappear { updateMusicRoot(page, visible: false) }
             .transparentNavigationTop()
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(page == .chat || (page == .home && navigationStyle != "native") ? .hidden : .visible, for: .navigationBar)
+            .toolbar(page == .chat || (!VesperLayout.usesSidebar && page == .home && navigationStyle != "native") ? .hidden : .visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    #if !targetEnvironment(macCatalyst)
-                    if navigationStyle == "vesper" {
+                    if !VesperLayout.usesSidebar && navigationStyle == "vesper" {
                         Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
                     }
-                    #endif
                 }
                 if page != .letters {
                     ToolbarItem(placement: .principal) {
@@ -508,7 +500,7 @@ struct RootView: View {
     }
     @ViewBuilder private func content(_ page: Destination) -> some View {
         switch page {
-        case .home: HomeView(navigate: { navigate($0) }, showsInlineMusic: navigationStyle != "native")
+        case .home: HomeView(navigate: { navigate($0) }, showsInlineMusic: !VesperLayout.usesSidebar && navigationStyle != "native")
         case .chat: ChatView(onMenu: { withAnimation { sidebar = true } }, native: navigationStyle == "native")
         case .desire: DesireView()
         case .journal: JournalView()

@@ -670,11 +670,11 @@ struct ChatView: View {
             ChatDraftField(text: draftStore.text, listening: speech.listening, focused: $focused)
             HStack(spacing: 4) {
                 Button { focused = false; speech.stop(); withAnimation(.easeOut(duration: 0.2)) { if stickerPicker { stickerPicker = false; drawer = false } else { drawer.toggle() } } } label: { Image(systemName: drawer || stickerPicker ? "xmark" : "plus").font(.system(size: 20)).frame(width: 40, height: 40) }.accessibilityLabel("Attachments").disabled(chat.busy)
-                Button { focused = false; drawer = false; stickerPicker = false; headerActionsExpanded = false; modelPicker = true } label: {
+                Button { focused = false; drawer = false; stickerPicker = false; headerActionsExpanded = false; modelPicker.toggle() } label: {
                     HStack(spacing: 4) {
                         Text(store.activeBackend == .vps ? "VPS" : "MAC").fontWeight(.semibold)
                         Text("· " + (chat.model.isEmpty ? "Default" : chat.model) + (chat.effort.isEmpty ? "" : " · " + chat.effort.capitalized)).lineLimit(1).truncationMode(.middle)
-                        Image(systemName: modelPicker ? "chevron.up" : "chevron.down").font(.system(size: 9))
+                        Image(systemName: modelPicker ? "chevron.down" : "chevron.up").font(.system(size: 9))
                     }.font(.system(size: 12)).frame(maxWidth: 190, minHeight: 40, alignment: .leading)
                 }.disabled(!chat.canSwitchBackend || store.loading)
                     .accessibilityLabel("Backend, model and strength")

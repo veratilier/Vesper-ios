@@ -661,6 +661,10 @@ enum ChatUserInput {
         }
     }
     var canSwitchBackend: Bool { !busy && !sending && !callActive }
+    func conversations(for client: APIClient) -> [JSONValue] {
+        guard api?.baseURL == client.baseURL, api?.historyURL == client.historyURL, api?.token == client.token else { return [] }
+        return conversations
+    }
     /// Show a read-only preview immediately; only a fresh validated read may restore its thread.
     func previewConversation(_ requestedID: String? = nil) -> Bool {
         guard !busy, !callActive, let api, !api.token.isEmpty else { return false }

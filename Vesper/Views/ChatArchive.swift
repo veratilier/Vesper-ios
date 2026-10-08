@@ -25,13 +25,17 @@ struct NativeChatHome: View {
     @State private var contactName = ""
     @State private var savingContactName = false
     @State private var activityRefreshID = 0
-    private var mainConversationID: String {
-        let saved = store.document("profile")["mainConversationId"].string
-        return saved.isEmpty ? (chat.conversations.first?.id ?? "") : saved
+    @State private var selectedBackend = VesperBackend.vps
+    @StateObject private var backendContacts = ChatBackendContacts()
+    private var selectedContacts: ChatBackendContactSnapshot { backendContacts.snapshot(selectedBackend) }
+    private var selectedClient: APIClient {
+        backendContacts.client(selectedBackend) ?? APIClient(baseURL: selectedContacts.baseURL, historyURL: BackendConnection.load(selectedBackend).historyURL, token: "")
     }
-    private var mainConversation: JSONValue? { chat.conversations.first { $0.id == mainConversationID } }
-    private var otherConversations: [JSONValue] { chat.conversations.filter { $0.id != mainConversationID } }
-    private var rowDisabled: Bool { loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
+    private var mainConversationID: String {
+        selectedContacts.mainID
+    }
+    private var otherConversations: [JSONValue] { selectedContacts.conversations.filter { $0.id != mainConversationID } }
+    private var rowDisabled: Bool { store.loading || loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
         if sideBySide {
             HStack(spacing: 0) {
@@ -59,7 +63,7 @@ struct NativeChatHome: View {
 
     private var contactList: some View {
         List {
-                Button { searching = true } label: {
+                Button { performForSelectedBackend { searching = true } } label: {
                     Label("Search messages", systemImage: "magnifyingglass")
                         .font(.subheadline)
                         .foregroundStyle(VesperTheme.muted)
@@ -71,34 +75,34 @@ struct NativeChatHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                HStack {
+                ChatBackendContactDeck(selected: $selectedBackend) { backend in
+                    let contacts = backendContacts.snapshot(backend)
                     Button { enterChat() } label: {
-                        conversationRowContent(mainConversation, title: agentName, emptyPreview: "Start chatting")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(agentName), \(preview(mainConversation, empty: "Start chatting"))")
+                        conversationRowContent(contacts.mainConversation, title: contacts.agentName,
+                                               emptyPreview: contacts.configured ? "Start chatting" : "Not configured", contacts: contacts, showBackend: true)
+                    }.buttonStyle(.plain)
+                        .contactGlassSurface()
+                        .accessibilityLabel("\(contacts.agentName), \(backend == .vps ? "VPS" : "MAC"), \(preview(contacts.mainConversation, empty: "Start chatting"))")
+                        .contextMenu {
+                            Button { performForSelectedBackend { beginEditingContactName() } } label: { Label("Edit name", systemImage: "pencil") }
+                        }
                 }
-                .contactGlassSurface()
+                .allowsHitTesting(!rowDisabled)
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button { beginEditingContactName() } label: { Label("Edit name", systemImage: "pencil") }.tint(.blue)
-                }
 
                 ForEach(otherConversations) { item in
                     Button { enterChat(item) } label: {
                         conversationRow(item, title: item["title"].string.isEmpty ? agentName : item["title"].string, emptyPreview: "No messages yet")
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
-                        Button(role: .destructive) { deletingConversation = item } label: { Label("Delete", systemImage: "trash") }
+                        Button { performForSelectedBackend { conversationTitle = item["title"].string; renamingConversation = item } } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
+                        Button(role: .destructive) { performForSelectedBackend { deletingConversation = item } } label: { Label("Delete", systemImage: "trash") }
                     }
                     .contextMenu {
-                        Button { conversationTitle = item["title"].string; renamingConversation = item } label: { Label("Rename conversation", systemImage: "pencil") }
-                        Button(role: .destructive) { deletingConversation = item } label: { Label("Delete conversation", systemImage: "trash") }
+                        Button { performForSelectedBackend { conversationTitle = item["title"].string; renamingConversation = item } } label: { Label("Rename conversation", systemImage: "pencil") }
+                        Button(role: .destructive) { performForSelectedBackend { deletingConversation = item } } label: { Label("Delete conversation", systemImage: "trash") }
                     }
                     .buttonStyle(.plain)
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -116,7 +120,7 @@ struct NativeChatHome: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("chat-contact-greeting")
-                ChatActivityHeatmap(refreshID: activityRefreshID)
+                ChatActivityHeatmap(refreshID: activityRefreshID, client: selectedClient).id(selectedBackend)
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -127,7 +131,7 @@ struct NativeChatHome: View {
             .onChange(of: phase) { _, value in
                 if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
             }
-            .refreshable { await chat.loadConversations(); activityRefreshID += 1 }
+            .refreshable { await refreshContacts(); activityRefreshID += 1 }
             .disabled(rowDisabled)
     }
 
@@ -139,9 +143,9 @@ struct NativeChatHome: View {
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { showingFavorites = true } label: { Image(systemName: "bookmark") }
+                    Button { performForSelectedBackend { showingFavorites = true } } label: { Image(systemName: "bookmark") }
                         .buttonStyle(.plain).accessibilityLabel("Favorite messages")
-                    Button { Task { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
+                    Button { performForSelectedBackend { if await chat.createConversation() { open = true } } } label: { Image(systemName: "plus") }
                         .buttonStyle(.plain).accessibilityLabel("New Chat")
                         .disabled(rowDisabled || chat.loadingModels)
                 }
@@ -160,17 +164,26 @@ struct NativeChatHome: View {
             .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
             .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
             .task {
+                if !openedOnce { selectedBackend = store.activeBackend }
                 chat.configure(store)
+                captureActiveContacts(); prepareOtherContacts()
                 if VesperLayout.usesSidebar && !store.token.isEmpty && !open { enterChat() }
-                if !store.token.isEmpty { await chat.loadConversations() }
+                if !store.token.isEmpty { await refreshContacts() }
                 if !openedOnce { openedOnce = true }
             }
             .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(!detail) }
             .onChange(of: open) { _, isOpen in
                 if !isOpen {
                     openingTask?.cancel(); openingTask = nil; loadingChat = false
-                    Task { await chat.loadConversations() }
+                    Task { await chat.loadConversations(); captureActiveContacts() }
                 }
+            }
+            .onChange(of: chat.conversations) { _, _ in captureActiveContacts() }
+            .onChange(of: store.documents["profile"]) { _, _ in captureActiveContacts() }
+            .onChange(of: store.activeBackend) { _, backend in
+                selectedBackend = backend
+                chat.configure(store); captureActiveContacts(); prepareOtherContacts()
+                Task { await refreshContacts() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
     }
@@ -231,6 +244,10 @@ struct NativeChatHome: View {
     }
 
     private func enterChat(_ item: JSONValue? = nil) {
+        if selectedBackend != store.activeBackend {
+            performForSelectedBackend { enterChat(item) }
+            return
+        }
         chat.configure(store)
         if (item?.id ?? mainConversationID) == chat.conversationID,
            !chat.messages.isEmpty, !chat.showingCachedHistory {
@@ -254,8 +271,44 @@ struct NativeChatHome: View {
     }
 
     private var agentName: String {
-        let name = store.document("profile")["agentName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "Rowan" : name
+        selectedContacts.agentName
+    }
+    private func captureActiveContacts() {
+        backendContacts.capture(store.activeBackend, api: store.api, profile: store.document("profile"), conversations: chat.conversations(for: store.api))
+    }
+    private func otherClient() throws -> (VesperBackend, APIClient) {
+        let backend: VesperBackend = store.activeBackend == .vps ? .mac : .vps
+        let connection = BackendConnection.load(backend)
+        return (backend, APIClient(baseURL: connection.baseURL, historyURL: connection.historyURL, token: try CredentialStore.load(account: backend.credentialAccount)))
+    }
+    private func prepareOtherContacts() {
+        if let (backend, api) = try? otherClient() { backendContacts.prepare(backend, api: api) }
+    }
+    private func refreshContacts() async {
+        await chat.loadConversations()
+        guard !Task.isCancelled else { return }
+        captureActiveContacts()
+        if let (backend, api) = try? otherClient() { await backendContacts.refresh(backend, api: api) }
+    }
+    private func performForSelectedBackend(_ action: @escaping @MainActor () async -> Void) {
+        guard !rowDisabled else { return }
+        let backend = selectedBackend
+        if backend == store.activeBackend { Task { await action() }; return }
+        loadingChat = true
+        Task {
+            do {
+                let credential = try CredentialStore.load(account: backend.credentialAccount)
+                guard !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ServiceError(message: "\(backend == .vps ? "VPS" : "MAC") connection is not configured.")
+                }
+                guard await store.activateBackend(backend, connection: .load(backend), credential: credential, canSwitch: { chat.canSwitchBackend }) else {
+                    throw ServiceError(message: store.connectionError ?? "Could not connect.")
+                }
+                chat.configure(store)
+                loadingChat = false
+                await action()
+            } catch { loadingChat = false; chat.error = error.localizedDescription }
+        }
     }
     private func beginEditingContactName() {
         contactName = agentName
@@ -272,11 +325,18 @@ struct NativeChatHome: View {
             .contentShape(Rectangle())
     }
     private func conversationRowContent(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
+        conversationRowContent(item, title: title, emptyPreview: emptyPreview, contacts: selectedContacts)
+    }
+    private func conversationRowContent(_ item: JSONValue?, title: String, emptyPreview: String, contacts: ChatBackendContactSnapshot, showBackend: Bool = false) -> some View {
         HStack(spacing: 13) {
-            ChatListAvatar(source: store.document("profile")["agentAvatar"].string, baseURL: store.baseURL)
+            ChatListAvatar(source: contacts.profile["agentAvatar"].string, baseURL: contacts.baseURL)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(title).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    if showBackend {
+                        Text(contacts.backend == .vps ? "VPS" : "MAC").font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 3).background(VesperTheme.ink.opacity(0.1), in: Capsule())
+                    }
                     Spacer(minLength: 4)
                     if let item {
                         Text(ChatPresentation.time(item["updatedAt"].string.isEmpty ? item["createdAt"].string : item["updatedAt"].string))
@@ -287,6 +347,128 @@ struct NativeChatHome: View {
                     .font(.subheadline).foregroundStyle(VesperTheme.muted).lineLimit(1)
             }
         }
+    }
+}
+
+struct ChatBackendContactSnapshot {
+    let backend: VesperBackend
+    let scope: String
+    let baseURL: String
+    var profile: JSONValue
+    var conversations: [JSONValue]
+    var configured: Bool
+    var error: String?
+    var mainID: String {
+        let saved = profile["mainConversationId"].string
+        return saved.isEmpty ? conversations.first?.id ?? "" : saved
+    }
+    var mainConversation: JSONValue? { conversations.first { $0.id == mainID } }
+    var agentName: String {
+        let name = profile["agentName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Rowan" : name
+    }
+}
+
+/// Read-only contact previews. Viewing the other card never retargets ChatSession.
+@MainActor final class ChatBackendContacts: ObservableObject {
+    @Published private(set) var snapshots: [VesperBackend: ChatBackendContactSnapshot] = [:]
+    private var revisions: [VesperBackend: UUID] = [:]
+    private var clients: [VesperBackend: APIClient] = [:]
+    private let cacheRoot: URL?
+    private let disk: LocalDocumentDisk
+    private let request: (APIClient, String, Bool) async throws -> JSONValue
+    init(cacheRoot: URL? = nil, disk: LocalDocumentDisk = LocalDocumentDisk(),
+         request: @escaping (APIClient, String, Bool) async throws -> JSONValue = { try await $0.request($1, history: $2) }) {
+        self.cacheRoot = cacheRoot; self.disk = disk; self.request = request
+    }
+    func snapshot(_ backend: VesperBackend) -> ChatBackendContactSnapshot {
+        snapshots[backend] ?? ChatBackendContactSnapshot(backend: backend, scope: "", baseURL: BackendConnection.load(backend).baseURL,
+                                                       profile: .null, conversations: [], configured: false)
+    }
+    func client(_ backend: VesperBackend) -> APIClient? { clients[backend] }
+    private func file(_ api: APIClient) -> URL? { ChatRecentCache.directory(api: api, root: cacheRoot)?.appendingPathComponent("contacts.json") }
+    private func scope(_ api: APIClient) -> String { ChatRecentCache.directory(api: api, root: cacheRoot)?.lastPathComponent ?? "" }
+    func prepare(_ backend: VesperBackend, api: APIClient) {
+        clients[backend] = api
+        guard snapshots[backend]?.scope != scope(api) else { return }
+        revisions[backend] = UUID()
+        let cached = file(api).flatMap { url -> JSONValue? in
+            guard let data = try? Data(contentsOf: url), data.count <= 1_000_000 else { return nil }
+            return try? JSONDecoder().decode(JSONValue.self, from: data)
+        }
+        let local = try? disk.load(api)
+        snapshots[backend] = ChatBackendContactSnapshot(backend: backend, scope: scope(api), baseURL: api.baseURL,
+                                                       profile: local?.documents["profile"] ?? cached?["profile"] ?? .null,
+                                                       conversations: cached?["conversations"].array ?? [], configured: !api.token.isEmpty)
+    }
+    func capture(_ backend: VesperBackend, api: APIClient, profile: JSONValue, conversations: [JSONValue]) {
+        clients[backend] = api
+        revisions[backend] = UUID()
+        snapshots[backend] = ChatBackendContactSnapshot(backend: backend, scope: scope(api), baseURL: api.baseURL,
+                                                       profile: profile, conversations: conversations, configured: !api.token.isEmpty)
+        save(backend, api: api)
+    }
+    func refresh(_ backend: VesperBackend, api: APIClient) async {
+        prepare(backend, api: api)
+        guard !api.token.isEmpty else { return }
+        let revision = UUID(); revisions[backend] = revision
+        do {
+            async let profile = request(api, "/api/state?key=profile", false)
+            async let listing = request(api, "/conversations", true)
+            let (state, rooms) = try await (profile, listing)
+            try Task.checkCancellation()
+            guard revisions[backend] == revision, snapshots[backend]?.scope == scope(api) else { return }
+            guard case .object = state["value"], case .array(let conversations) = rooms["conversations"] else {
+                throw ServiceError(message: "Contact list unavailable.")
+            }
+            snapshots[backend] = ChatBackendContactSnapshot(backend: backend, scope: scope(api), baseURL: api.baseURL,
+                                                           profile: state["value"], conversations: conversations, configured: true)
+            save(backend, api: api)
+        } catch {
+            guard revisions[backend] == revision, !Task.isCancelled, !(error is CancellationError) else { return }
+            snapshots[backend]?.error = error.localizedDescription
+        }
+    }
+    private func save(_ backend: VesperBackend, api: APIClient) {
+        guard let snapshot = snapshots[backend], let file = file(api) else { return }
+        let value: JSONValue = .object(["profile": snapshot.profile, "conversations": .array(snapshot.conversations)])
+        guard let data = try? JSONEncoder().encode(value), data.count <= 1_000_000 else { return }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+}
+
+private struct ChatBackendContactDeck<Content: View>: View {
+    @Binding var selected: VesperBackend
+    @ViewBuilder var card: (VesperBackend) -> Content
+    @GestureState private var drag: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var other: VesperBackend { selected == .vps ? .mac : .vps }
+    private func flip() {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { selected = other }
+    }
+    var body: some View {
+        ZStack {
+            card(other).mask(alignment: .top) { Rectangle().frame(height: 14) }
+                .scaleEffect(x: 0.95, y: 0.95, anchor: .top).offset(y: -14)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            card(selected).offset(y: drag)
+        }.padding(.top, 18).contentShape(Rectangle())
+            .highPriorityGesture(DragGesture(minimumDistance: 14)
+                .updating($drag) { value, state, _ in
+                    if abs(value.translation.height) > abs(value.translation.width) * 1.25 {
+                        state = min(12, max(-12, value.translation.height / 4))
+                    }
+                }
+                .onEnded { value in
+                    if abs(value.translation.height) >= 28, abs(value.translation.height) > abs(value.translation.width) * 1.25 { flip() }
+                })
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Chat backend cards")
+            .accessibilityValue(selected == .vps ? "VPS, 1 of 2" : "MAC, 2 of 2")
+            .accessibilityAction(named: Text("Next backend")) { flip() }
+            .accessibilityAction(named: Text("Previous backend")) { flip() }
+            .accessibilityIdentifier("chat-backend-contact-deck")
     }
 }
 

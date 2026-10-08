@@ -155,6 +155,7 @@ struct ChatActivityHeatmap: View {
     @AppStorage("vesperPalette") private var palette = "blue"
     @Environment(\.scenePhase) private var phase
     var refreshID = 0
+    var client: APIClient? = nil
     @State private var month = Date()
     @State private var selected: String?
     @State private var activity: JSONValue = .null
@@ -163,7 +164,8 @@ struct ChatActivityHeatmap: View {
     private var ready: Bool { activity["month"].string == monthKey && !activityError }
     private var days: [Date] { JournalDates.days(month) }
     private var offset: Int { JournalDates.mondayOffset(month) }
-    private var refreshKey: String { [monthKey, store.historyURL, store.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
+    private var activityAPI: APIClient { client ?? store.api }
+    private var refreshKey: String { [monthKey, activityAPI.baseURL, activityAPI.historyURL, activityAPI.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
     private func heatColor(_ level: Int) -> Color {
         // Stable dark-mode cell surfaces keep custom wallpapers from washing out the numbers.
         if palette == "black" { return Color(white: [0.12, 0.25, 0.38, 0.68, 0.84][level]) }
@@ -184,7 +186,7 @@ struct ChatActivityHeatmap: View {
             }
             #endif
             calendarGrid
-            if store.token.isEmpty {
+            if activityAPI.token.isEmpty {
                 Text("Connect Vesper to see your days together.").font(.caption).foregroundStyle(VesperTheme.muted)
             } else if activityError {
                 Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
@@ -193,7 +195,7 @@ struct ChatActivityHeatmap: View {
             .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
             .accessibilityIdentifier("chat-activity-heatmap")
             .task(id: refreshKey) {
-                guard phase == .active, !store.token.isEmpty else { return }; await loadActivity()
+                guard phase == .active, !activityAPI.token.isEmpty else { return }; await loadActivity()
             }
             .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
                 NavigationStack {
@@ -253,7 +255,7 @@ struct ChatActivityHeatmap: View {
     private func loadActivity() async {
         let requested = monthKey
         do {
-            let result = try await store.api.request("/activity?month=\(requested)", history: true)
+            let result = try await activityAPI.request("/activity?month=\(requested)", history: true)
             try Task.checkCancellation()
             guard result["month"].string == requested, case .object = result["days"] else { throw ServiceError(message: "Invalid activity response") }
             guard requested == monthKey else { return }; activity = result; activityError = false

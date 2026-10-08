@@ -93,6 +93,85 @@ final class BackendConnectionTests: XCTestCase {
     }
 }
 
+@MainActor private final class SuspendedContactRequests {
+    private(set) var waits: [(String, CheckedContinuation<JSONValue, Error>)] = []
+    private var released = false
+    private func response(_ path: String) -> JSONValue {
+        path.contains("profile") ? .object(["value": .object(["agentName": .string("Old Mac"), "mainConversationId": .string("old-room")])])
+            : .object(["conversations": .array([.object(["id": .string("old-room")])])])
+    }
+    func read(_ path: String) async throws -> JSONValue {
+        if released { return response(path) }
+        return try await withCheckedThrowingContinuation { waits.append((path, $0)) }
+    }
+    func release() {
+        released = true; let pending = waits; waits = []
+        for (path, continuation) in pending { continuation.resume(returning: response(path)) }
+    }
+}
+
+@MainActor final class ChatBackendContactTests: XCTestCase {
+    func testEqualRoomIDsKeepBackendAvatarsAndPreviewsInSeparateLocalCaches() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let disk = LocalDocumentDisk(directory: directory.appendingPathComponent("documents"))
+        let contacts = ChatBackendContacts(cacheRoot: directory, disk: disk, request: { api, path, _ in
+            let label = api.baseURL.contains("vps") ? "VPS" : "MAC"
+            if path.contains("profile") { return .object(["value": .object(["agentName": .string(label), "agentAvatar": .string(label + "-avatar"), "mainConversationId": .string("same-room")])]) }
+            return .object(["conversations": .array([.object(["id": .string("same-room"), "preview": .string(label + " message")])])])
+        })
+        let vps = APIClient(baseURL: "https://vps.fixture", historyURL: "https://vps.fixture/history", token: "same-synthetic-token")
+        let mac = APIClient(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", token: "same-synthetic-token")
+        await contacts.refresh(.vps, api: vps); await contacts.refresh(.mac, api: mac)
+        XCTAssertEqual(contacts.snapshot(.vps).mainConversation?["preview"].string, "VPS message")
+        XCTAssertEqual(contacts.snapshot(.mac).mainConversation?["preview"].string, "MAC message")
+        let reopened = ChatBackendContacts(cacheRoot: directory, disk: disk)
+        reopened.prepare(.vps, api: vps); reopened.prepare(.mac, api: mac)
+        XCTAssertEqual(reopened.snapshot(.vps).profile["agentAvatar"].string, "VPS-avatar")
+        XCTAssertEqual(reopened.snapshot(.mac).profile["agentAvatar"].string, "MAC-avatar")
+        XCTAssertNotEqual(reopened.snapshot(.vps).scope, reopened.snapshot(.mac).scope)
+    }
+    func testLateInactiveReadCannotReplaceFreshActiveContacts() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = SuspendedContactRequests()
+        let contacts = ChatBackendContacts(cacheRoot: directory, disk: LocalDocumentDisk(directory: directory), request: { _, path, _ in try await gate.read(path) })
+        let api = APIClient(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", token: "fixture")
+        let pending = Task { await contacts.refresh(.mac, api: api) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while gate.waits.count < 2 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(gate.waits.count, 2)
+        contacts.capture(.mac, api: api, profile: .object(["agentName": .string("Fresh Mac"), "mainConversationId": .string("fresh-room")]), conversations: [.object(["id": .string("fresh-room")])])
+        gate.release(); await pending.value
+        XCTAssertEqual(contacts.snapshot(.mac).agentName, "Fresh Mac")
+        XCTAssertEqual(contacts.snapshot(.mac).mainID, "fresh-room")
+        XCTAssertNil(contacts.snapshot(.mac).error)
+    }
+    func testUnconfiguredCardDoesNotRequestOrBorrowAnotherBackendsHistory() async {
+        var requests = 0
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let contacts = ChatBackendContacts(cacheRoot: directory, disk: LocalDocumentDisk(directory: directory), request: { _, _, _ in requests += 1; return .null })
+        let vps = APIClient(baseURL: "https://vps.fixture", historyURL: "https://vps.fixture/history", token: "fixture")
+        contacts.capture(.vps, api: vps, profile: .object(["mainConversationId": .string("vps-only")]), conversations: [])
+        await contacts.refresh(.mac, api: APIClient(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", token: ""))
+        XCTAssertEqual(requests, 0)
+        XCTAssertFalse(contacts.snapshot(.mac).configured)
+        XCTAssertTrue(contacts.snapshot(.mac).mainID.isEmpty)
+        XCTAssertEqual(contacts.snapshot(.vps).mainID, "vps-only")
+    }
+    func testVisibleHistoryIsNotAttributedToAnotherConnectionDuringSwitch() {
+        let chat = ChatSession()
+        let vps = APIClient(baseURL: "https://vps.fixture", historyURL: "https://vps.fixture/history", token: "fixture")
+        let mac = APIClient(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", token: "fixture")
+        chat.configureConnection(api: vps, endpoint: "wss://vps.fixture")
+        defer { chat.disconnect() }
+        chat.conversations = [.object(["id": .string("vps-room")])]
+        XCTAssertEqual(chat.conversations(for: vps).count, 1)
+        XCTAssertTrue(chat.conversations(for: mac).isEmpty)
+    }
+}
+
 private final class StickerAssetProtocol: URLProtocol {
     static var requestedURL: URL?
     override class func canInit(with request: URLRequest) -> Bool { true }

@@ -1,0 +1,1 @@
+{"name":"vesper-mac-backend","private":true,"type":"module","engines":{"node":">=24"},"scripts":{"test":"node --test test.mjs","start":"node server.mjs"},"dependencies":{"ws":"^8.18.3"}}

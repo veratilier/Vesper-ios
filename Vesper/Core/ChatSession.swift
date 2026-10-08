@@ -649,6 +649,7 @@ enum ChatUserInput {
             monitor.start(queue: DispatchQueue(label: "Vesper.ChatNetwork"))
         }
     }
+    var canSwitchBackend: Bool { !busy && !sending && !callActive }
     /// Show a read-only preview immediately; only a fresh validated read may restore its thread.
     func previewConversation(_ requestedID: String? = nil) -> Bool {
         guard !busy, !callActive, let api, !api.token.isEmpty else { return false }
@@ -679,7 +680,11 @@ enum ChatUserInput {
     }
     func loadConversations() async {
         guard let api else { return }
-        do { let r = try await api.request("/conversations", history: true); conversations = r["conversations"].array }
+        do {
+            let r = try await api.request("/conversations", history: true)
+            guard self.api?.baseURL == api.baseURL, self.api?.historyURL == api.historyURL, self.api?.token == api.token else { return }
+            conversations = r["conversations"].array
+        }
         catch { self.error = error.localizedDescription }
     }
     func renameConversation(_ item: JSONValue, title: String) async {

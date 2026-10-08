@@ -4,6 +4,51 @@ import SwiftUI
 import UIKit
 @testable import Vesper
 
+final class BackendConnectionTests: XCTestCase {
+    func testMacProfileNeverOverwritesLegacyVPSAddresses() throws {
+        let suite = "VesperBackendTests-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = BackendConnection(baseURL: "https://original.example", historyURL: "https://original.example/history", socketURL: "wss://original.example")
+        original.save(.vps, defaults: defaults)
+        let backup = BackendConnection(baseURL: "https://backup.example", historyURL: "https://backup.example/history", socketURL: "wss://backup.example/chat")
+        backup.save(.mac, defaults: defaults)
+        XCTAssertEqual(BackendConnection.load(.vps, defaults: defaults), original)
+        XCTAssertEqual(BackendConnection.load(.mac, defaults: defaults), backup)
+        XCTAssertEqual(VesperBackend.vps.credentialAccount, "device-token")
+        XCTAssertNotEqual(VesperBackend.vps.credentialAccount, VesperBackend.mac.credentialAccount)
+    }
+    func testOnlySecureAddressesWithoutInlineChatCredentialsAreAccepted() throws {
+        try BackendConnection.load(.mac).validate()
+        for socket in ["ws://backup.example/chat", "wss://backup.example/chat?token=secret", "wss://user:secret@backup.example/chat"] {
+            XCTAssertThrowsError(try BackendConnection(baseURL: "https://backup.example", historyURL: "https://backup.example/history", socketURL: socket).validate())
+        }
+    }
+    @MainActor func testFailedSwitchPreservesCurrentConnectionAndDocuments() async {
+        let store = AppStore(loadState: { _ in throw ServiceError(message: "offline test") })
+        let before = BackendConnection(baseURL: store.baseURL, historyURL: store.historyURL, socketURL: store.socketURL)
+        let backend = store.activeBackend, token = store.token
+        store.documents["profile"] = .object(["mainConversationId": .string("original-vps-room")])
+        let switched = await store.activateBackend(.mac, connection: .load(.mac), credential: "synthetic-mac-token")
+        XCTAssertFalse(switched)
+        XCTAssertEqual(store.activeBackend, backend)
+        XCTAssertEqual(BackendConnection(baseURL: store.baseURL, historyURL: store.historyURL, socketURL: store.socketURL), before)
+        XCTAssertEqual(store.token, token)
+        XCTAssertEqual(store.document("profile")["mainConversationId"].string, "original-vps-room")
+    }
+    func testLocalSnapshotsAreSeparatedEvenWithSameCredential() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let disk = LocalDocumentDisk(directory: directory)
+        let vps = APIClient(baseURL: "https://vps.example", historyURL: "https://vps.example/history", token: "fixture")
+        let mac = APIClient(baseURL: "https://mac.example", historyURL: "https://mac.example/history", token: "fixture")
+        try disk.save(LocalDocumentSnapshot(documents: ["profile": .object(["mainConversationId": .string("vps-only")])]), api: vps)
+        XCTAssertNil(try disk.load(mac))
+        try disk.save(LocalDocumentSnapshot(documents: ["profile": .object(["mainConversationId": .string("mac-only")])]), api: mac)
+        XCTAssertEqual(try disk.load(vps)?.documents["profile"]?["mainConversationId"].string, "vps-only")
+    }
+}
+
 private final class StickerAssetProtocol: URLProtocol {
     static var requestedURL: URL?
     override class func canInit(with request: URLRequest) -> Bool { true }

@@ -149,19 +149,41 @@ struct DevicePermissionsView: View {
 }
 struct ConnectionView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var chat: ChatSession
+    @State private var selected = VesperBackend.vps
+    @State private var draft = BackendConnection.load(.vps)
+    @State private var credential = ""
+    @State private var switching = false
+    @StateObject private var replica = BackendReplicaCopy()
+    private func loadDraft() {
+        draft = BackendConnection.load(selected)
+        do { credential = try CredentialStore.load(account: selected.credentialAccount) }
+        catch { credential = ""; store.connectionError = error.localizedDescription }
+    }
     var body: some View {
-        Page(title: "Connection", subtitle: "Use the same device token as your existing Vesper.") {
+        Page(title: "Connection", subtitle: "Separate connections. Switch manually when needed.") {
             SettingsGlassCard { VStack(spacing: 16) {
-                FormField(label: "API address", text: $store.baseURL)
-                FormField(label: "History address", text: $store.historyURL)
-                FormField(label: "Chat address", text: $store.socketURL)
+                Text("Current: \(store.activeBackend.title)").font(.headline)
+                Picker("Backend", selection: $selected) { ForEach(VesperBackend.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).disabled(switching)
+                FormField(label: "API address", text: $draft.baseURL)
+                FormField(label: "History address", text: $draft.historyURL)
+                FormField(label: "Chat address", text: $draft.socketURL)
                 Text("Device token").font(.caption).foregroundStyle(VesperTheme.muted)
-                SecureField("Device token", text: $store.token).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-                Button { Task { await store.connect() } } label: { HStack { if store.loading { ProgressView() }; Text(store.loading ? "Connecting…" : "Save and connect") }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(store.loading)
+                SecureField(selected == .mac ? "Mac device token" : "VPS device token", text: $credential).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                if selected == .mac {
+                    Text("Mac must be awake and connected to the internet. Each backend keeps its own live conversations.").font(.caption).foregroundStyle(VesperTheme.muted)
+                    Button(replica.busy ? "Copying…" : "Copy VPS history & memory to Mac") { Task { await replica.copyToMac(connection: draft, token: credential) } }.disabled(replica.busy || switching || credential.isEmpty)
+                    Text("Copies are retrieved through chat history search and memory recall. This is a manual, one-way copy; it does not resume VPS threads or write back to VPS.").font(.caption).foregroundStyle(VesperTheme.muted)
+                    if !replica.status.isEmpty { Text(replica.status).font(.caption).textSelection(.enabled) }
+                }
+                Button { switching = true; Task { if await store.activateBackend(selected, connection: draft, credential: credential, canSwitch: { chat.canSwitchBackend }) { chat.configure(store) }; switching = false } } label: { HStack { if switching { ProgressView() }; Text(switching ? "Connecting…" : "Save and switch to \(selected.title)") }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44).background(VesperTheme.ink, in: Capsule()) }.buttonStyle(.plain).disabled(switching || store.loading || !chat.canSwitchBackend)
+                if !chat.canSwitchBackend { Text("Finish the current reply or call before switching.").font(.caption) }
                 Text(store.connected ? "Connected" : "Not connected").font(.caption).foregroundStyle(VesperTheme.muted)
                 if let error = store.connectionError { Text(error).font(.caption).foregroundStyle(.red) }
             }.textInputAutocapitalization(.never).autocorrectionDisabled() }
         }.background { Background() }.transparentNavigationTop()
+            .onAppear { selected = store.activeBackend; loadDraft() }
+            .onChange(of: selected) { _, _ in loadDraft() }
     }
 }
 struct WakeView: View {

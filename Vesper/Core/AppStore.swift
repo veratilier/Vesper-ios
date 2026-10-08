@@ -1,6 +1,99 @@
 import SwiftUI
 import CryptoKit
 
+enum VesperBackend: String, CaseIterable, Identifiable {
+    case vps, mac
+    var id: String { rawValue }
+    var title: String { self == .vps ? "VPS" : "Mac backup" }
+    var credentialAccount: String { self == .vps ? "device-token" : "mac-backend-device-token" }
+    func key(_ legacy: String) -> String { self == .vps ? legacy : "mac-backend." + legacy }
+}
+struct BackendConnection: Equatable {
+    var baseURL: String
+    var historyURL: String
+    var socketURL: String
+    static func load(_ backend: VesperBackend, defaults: UserDefaults = .standard) -> Self {
+        Self(baseURL: defaults.string(forKey: backend.key("apiURL")) ?? (backend == .vps ? "https://api.vesper.r-vera.com" : "https://mac-vesper.r-vera.com"),
+             historyURL: defaults.string(forKey: backend.key("historyURL")) ?? (backend == .vps ? "https://codex.r-vera.com/history" : "https://mac-vesper.r-vera.com/history"),
+             socketURL: defaults.string(forKey: backend.key("socketURL")) ?? (backend == .vps ? "wss://codex.r-vera.com" : "wss://mac-vesper.r-vera.com/chat"))
+    }
+    func validate() throws {
+        _ = try APIClient.validatedURL(baseURL, path: "api/state")
+        _ = try APIClient.validatedURL(historyURL, path: "conversations")
+        guard let url = URLComponents(string: socketURL), url.scheme == "wss", url.host != nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw ServiceError(message: "Enter a valid WSS chat address without a token in the URL.")
+        }
+    }
+    func save(_ backend: VesperBackend, defaults: UserDefaults = .standard) {
+        defaults.set(baseURL, forKey: backend.key("apiURL")); defaults.set(historyURL, forKey: backend.key("historyURL")); defaults.set(socketURL, forKey: backend.key("socketURL"))
+    }
+}
+
+@MainActor final class BackendReplicaCopy: ObservableObject {
+    @Published private(set) var busy = false
+    @Published private(set) var status = ""
+    func copyToMac(connection: BackendConnection, token: String) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        status = "Checking both backends…"
+        do {
+            try connection.validate()
+            let original = BackendConnection.load(.vps)
+            let source = APIClient(baseURL: original.baseURL, historyURL: original.historyURL, token: try CredentialStore.load(account: VesperBackend.vps.credentialAccount))
+            let target = APIClient(baseURL: connection.baseURL, historyURL: connection.historyURL, token: token.trimmingCharacters(in: .whitespacesAndNewlines))
+            let health = try await target.request("/api/backend")
+            guard health["backend"].string == "mac" else { throw ServiceError(message: "The destination is not the Mac backend.") }
+            let sourceID = SHA256.hash(data: Data((original.baseURL + "\n" + original.historyURL).utf8)).map { String(format: "%02x", $0) }.joined()
+            let started = try await target.request("/api/backend/import", method: "POST", body: .object(["action": .string("begin"), "source": .string(sourceID)]))
+            let job = started["jobId"].string
+            guard !job.isEmpty else { throw ServiceError(message: "The Mac did not create an import session.") }
+            func append(_ kind: String, _ rows: [JSONValue]) async throws {
+                // Small batches stay within both services’ request bounds.
+                for offset in stride(from: 0, to: rows.count, by: 10) {
+                    try Task.checkCancellation()
+                    _ = try await target.request("/api/backend/import", method: "POST", body: .object(["action": .string("append"), "jobId": .string(job), "kind": .string(kind), "rows": .array(Array(rows[offset..<min(offset + 10, rows.count)]))]))
+                }
+            }
+            let listing = try await source.request("/conversations", history: true)
+            guard case .array(let rooms) = listing["conversations"], rooms.count < 100 else { throw ServiceError(message: "The VPS room list is incomplete. The previous Mac copy was kept.") }
+            var messageCount = 0
+            for (index, room) in rooms.enumerated() {
+                try Task.checkCancellation()
+                guard !room.id.isEmpty else { throw ServiceError(message: "A VPS conversation is missing its ID.") }
+                status = "Copying conversation \(index + 1)/\(rooms.count)…"
+                try await append("room", [room])
+                var cursor = "", seen: Set<String> = []
+                while true {
+                    var query = URLComponents(); query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "100")]
+                    if !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
+                    let page = try await source.request("/conversations/\(room.id)?" + (query.percentEncodedQuery ?? ""), history: true)
+                    try ChatSession.validateHistoryRecord(page, expectedID: room.id)
+                    guard case .array(let messages) = page["messages"] else { throw ServiceError(message: "Invalid source history page.") }
+                    let originals = messages.map { item -> JSONValue in var item = item; item["conversationId"] = .string(room.id); return item }
+                    try await append("message", originals); messageCount += messages.count
+                    if !page["hasMore"].bool { break }
+                    cursor = page["before"].string
+                    guard !cursor.isEmpty, seen.insert(cursor).inserted else { throw ServiceError(message: "The VPS history cursor stopped advancing. Previous Mac copy was kept.") }
+                }
+            }
+            var offset = 0
+            while true {
+                status = "Copying shared memories (\(offset))…"
+                var query = URLComponents(); query.queryItems = [URLQueryItem(name: "path", value: "/api/memories?limit=100&offset=\(offset)&include_superseded=false")]
+                let page = try await source.request("/api/shared-memory?" + (query.percentEncodedQuery ?? ""))
+                guard case .array(let rows) = page["items"], case .number(let total) = page["total"] else { throw ServiceError(message: "Shared Memory did not return a complete page.") }
+                try await append("memory", rows); offset += rows.count
+                if offset >= Int(total) { break }
+                guard !rows.isEmpty else { throw ServiceError(message: "Shared Memory pagination was incomplete.") }
+            }
+            let result = try await target.request("/api/backend/import", method: "POST", body: .object(["action": .string("commit"), "jobId": .string(job)]))
+            guard result["ok"].bool else { throw ServiceError(message: "Mac did not confirm the copy.") }
+            status = "Copied \(messageCount) messages and \(offset) memories. Originals stay on VPS; Mac can retrieve this copy."
+        } catch { status = "Copy not completed. Previous copy kept. " + error.localizedDescription }
+    }
+}
+
 @MainActor final class AppStore: ObservableObject {
     private let loadState: (APIClient) async throws -> JSONValue
     private let retryDelay: () async throws -> Void
@@ -14,7 +107,9 @@ import CryptoKit
         self.retryDelay = retryDelay
         self.disk = disk
         self.requestDocument = requestDocument
-        do { token = try CredentialStore.load() } catch { connectionError = error.localizedDescription }
+        let saved = BackendConnection.load(activeBackend)
+        baseURL = saved.baseURL; historyURL = saved.historyURL; socketURL = saved.socketURL
+        do { token = try CredentialStore.load(account: activeBackend.credentialAccount) } catch { connectionError = error.localizedDescription }
         cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
         restoreLocalDocuments()
         // Remove the former NetEase login even when the server is offline.
@@ -45,6 +140,7 @@ import CryptoKit
     private var identityGeneration = UUID()
     @Published var legacyMusicCleanupStatus: String?
     @Published var connectionError: String?
+    @Published private(set) var activeBackend: VesperBackend = VesperBackend(rawValue: UserDefaults.standard.string(forKey: "vesper.activeBackend") ?? "") ?? .vps
     @Published var baseURL: String = UserDefaults.standard.string(forKey: "apiURL") ?? "https://api.vesper.r-vera.com" {
         didSet { if oldValue != baseURL { restoreLocalDocuments() } }
     }
@@ -145,16 +241,44 @@ import CryptoKit
         connectionError = nil
         do {
             guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ServiceError(message: "Add your device token in Settings to connect.") }
-            _ = try APIClient.validatedURL(baseURL, path: "api/state")
-            _ = try APIClient.validatedURL(historyURL, path: "conversations")
-            guard let s = URL(string: socketURL), s.scheme == "wss", s.host != nil else { throw ServiceError(message: "Enter a valid WSS chat address.") }
-            try CredentialStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines))
-            token = try CredentialStore.load()
-            UserDefaults.standard.set(baseURL, forKey: "apiURL")
-            UserDefaults.standard.set(historyURL, forKey: "historyURL")
-            UserDefaults.standard.set(socketURL, forKey: "socketURL")
+            let connection = BackendConnection(baseURL: baseURL, historyURL: historyURL, socketURL: socketURL)
+            try connection.validate()
+            try CredentialStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines), account: activeBackend.credentialAccount)
+            token = try CredentialStore.load(account: activeBackend.credentialAccount)
+            connection.save(activeBackend)
             await refresh()
         } catch { connectionError = error.localizedDescription }
+    }
+    /// Connection editor owns drafts; failed validation never replaces the active backend.
+    func activateBackend(_ backend: VesperBackend, connection: BackendConnection, credential: String, canSwitch: () -> Bool = { true }) async -> Bool {
+        guard !loading, !saving, !syncing else { connectionError = "Wait for the current save to finish before switching."; return false }
+        let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try connection.validate()
+            guard !credential.isEmpty else { throw ServiceError(message: "Enter this backend’s own device token.") }
+            let candidate = APIClient(baseURL: connection.baseURL, historyURL: connection.historyURL, token: credential)
+            loading = true
+            defer { loading = false }
+            let state = try await loadState(candidate)
+            guard case .object = state["documents"] else { throw ServiceError(message: "Invalid backend response.") }
+            if backend == .mac {
+                guard state["backend"]["backend"].string == "mac", !state["backend"]["backendId"].string.isEmpty else { throw ServiceError(message: "This address did not identify itself as the Mac backend.") }
+                let history = try await candidate.request("/health", history: true)
+                guard history["backendId"] == state["backend"]["backendId"] else { throw ServiceError(message: "The history address belongs to a different backend.") }
+            }
+            guard canSwitch(), !saving, !syncing else { throw ServiceError(message: "Finish the current reply or save before switching.") }
+            try CredentialStore.save(credential, account: backend.credentialAccount)
+            connection.save(backend)
+            NotificationCenter.default.post(name: .init("VesperBackendWillChange"), object: nil)
+            activeBackend = backend
+            baseURL = connection.baseURL; historyURL = connection.historyURL; socketURL = connection.socketURL; token = credential
+            restoreLocalDocuments()
+            UserDefaults.standard.set(backend.rawValue, forKey: "vesper.activeBackend")
+            // Reload through normal merge rules; never transplant the old backend’s documents or room pointer.
+            loading = false
+            await refresh()
+            return connected
+        } catch { connectionError = error.localizedDescription; return false }
     }
     private var documentRevision = 0
     private var cleaningLegacyMusic = false

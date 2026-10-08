@@ -356,6 +356,7 @@ struct RootView: View {
     }
     private var lifecycle: some View {
         scene
+        .onReceive(NotificationCenter.default.publisher(for: .init("VesperBackendWillChange"))) { _ in chat.disconnect() }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
             navigate(.chat)

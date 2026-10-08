@@ -168,6 +168,7 @@ struct WakeView: View {
     @EnvironmentObject private var store: AppStore
     @State private var runtime: JSONValue = .null
     @State private var enabled = false
+    @State private var intervalMinutes = 0
     @State private var allowedTools: Set<String> = []
     @State private var allowedMessages: Set<String> = []
     @State private var busy = false
@@ -175,6 +176,15 @@ struct WakeView: View {
     private var supported: Bool { runtime["permissionVersion"].number >= 1 }
     private var jobs: [JSONValue] { runtime["jobs"].array.sorted { $0["created"].number > $1["created"].number } }
     private var recovery: JSONValue { runtime["recovery"] }
+    private var intervalOptions: [Int] {
+        // Keep any previously saved custom duration selectable when opening the page.
+        Array(Set([0, 30, 45, 60, 90, 120, 180, 240, 360, 720, 1440, intervalMinutes])).sorted()
+    }
+    private func intervalLabel(_ minutes: Int) -> String {
+        if minutes == 0 { return "Automatic" }
+        if minutes % 60 == 0 { return "\(minutes / 60) \(minutes == 60 ? "hour" : "hours")" }
+        return "\(minutes) minutes"
+    }
     private var nextWakeAt: Date? {
         guard case .number(let timestamp) = runtime["nextAt"], timestamp.isFinite, timestamp > 0 else { return nil }
         return Date(timeIntervalSince1970: timestamp)
@@ -183,6 +193,16 @@ struct WakeView: View {
         List {
             Section {
                 Toggle("Automatic wake-up", isOn: $enabled).disabled(!supported || busy)
+                Picker("Wake interval", selection: $intervalMinutes) {
+                    ForEach(intervalOptions, id: \.self) { minutes in
+                        Text(intervalLabel(minutes)).tag(minutes)
+                    }
+                }.pickerStyle(.menu).disabled(!supported || busy)
+                    .accessibilityIdentifier("wake-interval")
+                Text(intervalMinutes == 0
+                     ? "Automatic follows Rowan’s wake plan. Sleep time and recent-message quiet periods still apply."
+                     : "A fixed interval sets how often Rowan wakes, not how often he sends a message. Sleep time and recent-message quiet periods still apply.")
+                    .font(.caption).foregroundStyle(VesperTheme.muted)
                 if runtime != .null { nextWakeRow }
                 if runtime["recoveryVersion"].number >= 1 {
                     Button("Check service connection") { Task { await checkService() } }.disabled(busy)
@@ -318,6 +338,7 @@ struct WakeView: View {
     }
     private func apply(_ value: JSONValue) {
         runtime = value; enabled = value["config"]["enabled"].bool
+        intervalMinutes = Int(value["config"]["intervalMinutes"].number)
         allowedTools = Set(value["permissions"]["tools"].array.map { $0.string })
         allowedMessages = Set(value["permissions"]["messages"].array.map { $0.string })
     }
@@ -335,7 +356,7 @@ struct WakeView: View {
     }
     private func save() async {
         guard supported, !busy else { return }; busy = true; defer { busy = false }
-        let interval = runtime["config"]["intervalMinutes"]
+        let interval: JSONValue = intervalMinutes == 0 ? .null : .number(Double(intervalMinutes))
         let permissions: JSONValue = .object(["tools": .array(allowedTools.sorted().map { .string($0) }), "messages": .array(allowedMessages.sorted().map { .string($0) })])
         let body: JSONValue = .object(["action": .string("configure"), "enabled": .bool(enabled), "intervalMinutes": interval, "permissions": permissions])
         do {
@@ -343,9 +364,9 @@ struct WakeView: View {
             guard result["permissionVersion"].number >= 1, result["permissions"] == permissions,
                   result["config"]["enabled"].bool == enabled,
                   result["config"]["intervalMinutes"] == interval else {
-                throw ServiceError(message: "The server did not confirm these permissions.")
+                throw ServiceError(message: "The server did not confirm these wake settings.")
             }
-            apply(result); status = "Saved. New permissions are checked before each tool call and message."
+            apply(result); status = "Saved. Wake interval and permissions are now active on the server."
         } catch { status = error.localizedDescription }
     }
 }

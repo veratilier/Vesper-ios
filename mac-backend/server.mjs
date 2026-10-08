@@ -1,23 +1,27 @@
 import http from 'node:http';
 import {readFileSync,mkdirSync} from 'node:fs';
 import {join} from 'node:path';
-import {timingSafeEqual,randomUUID} from 'node:crypto';
+import {timingSafeEqual,randomUUID,createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {WebSocketServer,WebSocket} from 'ws';
 import {Store,now} from './storage.mjs';
+import {Media,fileTool} from './media.mjs';
 
-const tools=[{name:'mac_backend_status',description:'Read the active Mac backup backend status and whether history/memory is local or synchronized.',inputSchema:{type:'object',properties:{},additionalProperties:false}},
+const tools=[fileTool,{name:'mac_backend_status',description:'Read the active Mac backup backend status and whether history/memory is local or synchronized.',inputSchema:{type:'object',properties:{},additionalProperties:false}},
  {name:'read_vesper_state',description:'Read one local Vesper section. section=journal reads diary, reminders reads todos, dates reads anniversaries. This does not read live VPS data.',inputSchema:{type:'object',properties:{section:{type:'string',enum:['today','notes','reminders','dates','journal','music','memory','settings']}},required:['section'],additionalProperties:false}}];
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 const validID=id=>typeof id==='string'&&/^[a-zA-Z0-9_.:-]{1,180}$/.test(id);
+const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
 function equal(a,b){const x=Buffer.from(a||''),y=Buffer.from(b||'');return x.length===y.length&&timingSafeEqual(x,y);}
-async function body(req){let size=0,chunks=[];for await(const c of req){size+=c.length;if(size>4*1024*1024)throw fail('Request too large',413);chunks.push(c);}try{return JSON.parse(Buffer.concat(chunks).toString()||'{}');}catch{throw fail('Invalid JSON');}}
+async function body(req,limit=4*1024*1024){let size=0,chunks=[];for await(const c of req){size+=c.length;if(size>limit)throw fail('Request too large',413);chunks.push(c);}try{return JSON.parse(Buffer.concat(chunks).toString()||'{}');}catch{throw fail('Invalid JSON');}}
 function json(res,status,value){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value));}
 const methods=new Set(['initialize','initialized','account/read','account/rateLimits/read','model/list','thread/start','thread/resume','thread/read','thread/items/list','thread/turns/list','turn/start','turn/interrupt']);
 
-export function createBackend({home,token,upstream='ws://127.0.0.1:47632',workspace=join(home,'workspace'),fullAccess=false}){
+export function createBackend({home,token,upstream='ws://127.0.0.1:47632',workspace=join(home,'workspace'),fullAccess=false,publicOrigin='https://mac-vesper.r-vera.com'}){
   const store=new Store(home);mkdirSync(workspace,{recursive:true,mode:0o700});
+  const media=new Media({home,workspace,store,token,fullAccess});
+  const fileJobs=new Map();
   const watchers=new WebSocketServer({noServer:true,maxPayload:1024});
   const live=new Map();
   const send=(socket,packet)=>{if(socket.readyState===WebSocket.OPEN){if(socket.bufferedAmount>32*1024*1024){socket.close(1013,'Client too slow');return;}socket.send(JSON.stringify(packet));}};
@@ -36,14 +40,18 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
     if(/^(turn\/(started|completed)|item\/(started|completed|agentMessage\/delta|commandExecution\/outputDelta|tool\/call))$/.test(packet.method))publish({type:'event',method:packet.method,params:p});
     if(packet.method==='turn/completed')live.delete(thread);
   };
-  const status=()=>({ok:true,backendId:store.get('backendId'),backend:'mac',history:'local',memory:'local',syncEnabled:false,lastImport:store.get('lastImport'),access:fullAccess?'full':'workspace',activeTurns:live.size,version:2});
+  const status=()=>({ok:true,backendId:store.get('backendId'),backend:'mac',history:'local',memory:'local',syncEnabled:false,lastImport:store.get('lastImport'),access:fullAccess?'full':'workspace',activeTurns:live.size,version:3,capabilities:{sendChatFiles:true,localMedia:true}});
   const authorize=req=>equal(req.headers['x-vesper-device-token'],token)||equal(req.headers.authorization,'Bearer '+token);
   const server=http.createServer(async(req,res)=>{
     try{
+      const url=new URL(req.url,'http://localhost'),p=url.pathname,method=req.method;
+      // Like VPS media URLs, a random-looking capability key allows native image/file previews
+      // without placing the backend device token in a link or image request.
+      if(p.startsWith('/api/media/')&&['GET','HEAD'].includes(method))return await media.serve(p.slice('/api/media/'.length),req,res);
       if(req.headers.origin)throw fail('Browser origins are not accepted',403);
       if(!authorize(req))throw fail('Unauthorized',401);
-      const url=new URL(req.url,'http://localhost'),p=url.pathname,method=req.method;
       if(p==='/health'||p==='/api/backend')return json(res,200,status());
+      if(p==='/api/media'&&method==='POST')return json(res,200,await media.upload(req,publicOrigin));
       if(p==='/api/backend/import'&&method==='POST'){
         const b=await body(req);
         if(b.action==='begin')return json(res,200,{jobId:store.beginImport(b.source)});
@@ -58,7 +66,29 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
       if(p==='/api/codex/tools'){
         if(method==='GET')return json(res,200,{tools,backend:status()});
         if(method==='POST'){
-          const b=await body(req);if(b.name==='mac_backend_status')return json(res,200,{result:status()});
+          const b=await body(req,12*1024*1024);if(b.name==='mac_backend_status')return json(res,200,{result:status()});
+          if(b.name==='send_chat_file'){
+            const context={conversationId:b.conversationId,threadId:b.threadId,turnId:b.turnId,itemId:b.itemId,origin:publicOrigin};
+            if(!validID(context.conversationId)||!validID(context.threadId)||!validID(context.turnId))throw fail('Current Mac conversation, thread and turn are required');
+            const identity=b.itemId?'file-receipt:'+b.threadId+':'+b.turnId+':'+String(b.itemId):null;
+            const signature=createHash('sha256').update(JSON.stringify(canonical({conversationId:b.conversationId,arguments:b.arguments}))).digest('hex');
+            const previous=identity&&store.get(identity);
+            store.requireThread(b.threadId);
+            const room=store.room(b.conversationId);if(!room||room.codexThreadId!==b.threadId)throw fail('Use the current Mac conversation and thread',409);
+            if(previous&&previous.signature!==signature)throw fail('This tool call ID belongs to a different file request',409);
+            let result=previous?.result;
+            if(!previous){
+              const current=identity&&fileJobs.get(identity);
+              if(current&&current.signature!==signature)throw fail('This tool call ID belongs to a different file request',409);
+              if(current)result=await current.promise;
+              else{
+                const promise=media.deliver(b.arguments||{},context).then(result=>{if(identity)store.set(identity,{signature,result});return result;});
+                if(identity)fileJobs.set(identity,{signature,promise});
+                try{result=await promise;}finally{if(identity)fileJobs.delete(identity);}
+              }
+            }
+            return json(res,200,{ok:true,name:b.name,result});
+          }
           if(b.name==='read_vesper_state'){
             const section=b.arguments?.section||'notes',key={today:'todos',notes:'notes',reminders:'todos',dates:'anniversaries',journal:'diary',music:'music',settings:'settings'}[section];
             if(section!=='memory'&&!key)throw fail('Unknown section');
@@ -101,7 +131,7 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
         }
       }
       throw fail('This feature is not yet available on the Mac backend',501);
-    }catch(e){json(res,e.status||500,{error:e.status?e.message:'Mac backend request failed'});}
+    }catch(e){if(res.headersSent)res.destroy();else json(res,e.status||500,{error:e.status?e.message:'Mac backend request failed'});}
   });
   const wss=new WebSocketServer({noServer:true,maxPayload:20*1024*1024});
   server.on('upgrade',(req,socket,head)=>{
@@ -134,7 +164,9 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
           for(const key of ['path','history','environment','environmentId'])if(params[key])throw fail('Imported thread state is not supported');
           const allowedConfig=['features.default_mode_request_user_input','compact_prompt'];
           const accessInstructions=fullAccess?'\nThis Mac backend has user-authorized Full Access: local filesystem and network commands are available without sandbox approval. For desktop app and browser UI tasks, use the vesper_computer MCP tools with platform=macos and session=vesper-rowan. macOS privacy permissions still apply. Do not send messages to other people without the user explicitly asking.':'';
-          packet.params={...params,config:Object.fromEntries(Object.entries(params.config||{}).filter(([k])=>allowedConfig.includes(k))),cwd:workspace,sandbox:fullAccess?'danger-full-access':'workspace-write',approvalPolicy:fullAccess?'never':'on-request',...(accessInstructions?{developerInstructions:(params.developerInstructions||'')+accessInstructions}:{})};
+          // Refresh the attachment capability even when a mobile client has the old catalog cached.
+          const dynamicTools=[...(Array.isArray(params.dynamicTools)?params.dynamicTools:[]).filter(t=>t.name!==fileTool.name),fileTool];
+          packet.params={...params,dynamicTools,config:Object.fromEntries(Object.entries(params.config||{}).filter(([k])=>allowedConfig.includes(k))),cwd:workspace,sandbox:fullAccess?'danger-full-access':'workspace-write',approvalPolicy:fullAccess?'never':'on-request',...(accessInstructions?{developerInstructions:(params.developerInstructions||'')+accessInstructions}:{})};
         }
         if(packet.method==='turn/start'){
           const receiptKey='receipt:'+params.threadId+':'+params.clientUserMessageId;

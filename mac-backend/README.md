@@ -81,9 +81,29 @@ noninteractively. The iPhone copy button uses its own existing credential.
 ## Supported first-stage scope
 
 Text chat, streaming, local durable history, local memory recall, status/document
-tools and the native client's tool callbacks. VPS-specific remote MCP catalog,
-media uploads, music server integrations and autonomous wake are not mirrored.
+tools, `send_chat_file`, phone media uploads and the native client's tool callbacks.
+VPS-specific remote MCP catalog, music server integrations and autonomous wake are not mirrored.
 Unsupported endpoints return an explicit error rather than claiming success.
+
+## Chat files and pictures
+
+The Mac exposes the VPS-compatible `send_chat_file` tool and attachment message
+shape. It accepts 1–8 files up to 8 MiB each, using a real local path, complete text
+or base64. Full Access allows explicitly requested ordinary documents outside the
+workspace. Current-thread generated images resolve inside this backend's own
+`CODEX_HOME/generated_images/<thread-id>`; foreign generated-image threads and
+private backend configuration/credentials are rejected. The server reads actual
+bytes directly, so a model does not need to print large base64 strings. Phone
+multipart uploads support files up to 32 MiB through `/api/media`.
+
+Files remain in private Application Support `media/`, with metadata and attachment
+messages in local SQLite. Nothing is uploaded to VPS or Cloudflare R2. Cloudflare's
+existing tunnel serves the bytes from Mac; preview/download URLs contain a
+token-derived unguessable key, never the device token. Like VPS links, someone
+with the full file URL can open it. Successful delivery is recorded before returning
+the tool result; repeated call IDs replay the existing result instead of adding a
+second message. The native app retains its existing grouped image layout and file
+preview/download UI. File links work while the Mac backend is available.
 
 ## Live terminal viewer
 
@@ -118,3 +138,8 @@ on start/resume/turn, foreign-token rejection and a read-only viewer unable to
 submit commands. `node mac-backend/access-smoke.mjs` verifies a real model copying
 a synthetic file outside the workspace and invoking the Mac snapshot MCP tool.
 Public smoke testing verified HTTPS auth, streaming, tool results and history.
+
+`node mac-backend/media-smoke.mjs` uses a fresh isolated Mac thread to make an actual
+model call `send_chat_file` for a synthetic PNG and a UTF-8 Markdown file. It verifies
+public HTTPS download bytes, headers, one grouped attachment message, history after
+resume, then deletes the synthetic room and media. Existing user chats are untouched.

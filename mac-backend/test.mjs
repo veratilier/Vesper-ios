@@ -41,6 +41,7 @@ test('explicit Full Access applies to start, resume and every turn; spectator ca
       const p=JSON.parse(raw);received.push(p);
       if(['thread/start','thread/resume'].includes(p.method)){
         assert.equal(p.params.sandbox,'danger-full-access');assert.equal(p.params.approvalPolicy,'never');
+        assert.equal(p.params.dynamicTools.filter(t=>t.name==='send_chat_file').length,1,'Cached client tools must gain one attachment tool on start/resume');
         assert.match(p.params.developerInstructions,/vesper_computer/);
         socket.send(JSON.stringify({id:p.id,result:{thread:{id:'local-thread'}}}));
       }else if(p.method==='turn/start'){

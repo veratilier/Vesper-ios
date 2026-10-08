@@ -137,3 +137,21 @@ dismissal, expired credentials, connection interruption, and wake config version
 ## Shared Memory library
 
 Memory uses the existing Vesper device connection via `/api/shared-memory`; no separate Memory login or password is required. Deploy the Vesper-web shared-memory endpoint and its SHARED_MEMORY_DB binding first (see that repository's docs/shared-memory.md). The backend accesses the same memory-db used by the independent Memory page/MCP. Nothing is packaged as a stale data snapshot. Existing Vesper records remain under the legacy entry, with no automatic import or deletion. Chat-side automatic memory retrieval is unchanged. Real-account and physical-device verification is separate from CI.
+
+## Native chat sending and synchronization
+
+Regular chat sends save the outgoing message to an account-scoped local outbox
+before submitting the model turn. Confirmed messages and their memory evidence
+sync to the existing services asynchronously. Failed uploads remain on disk and
+retry while the app can run, including after relaunch or reconnection. The outbox
+never replays model turns; uncertain sends require an actual server receipt.
+Message deletion waits for outstanding uploads so a late write cannot restore a
+deleted row. Existing IDs make history retries idempotent.
+
+Regular chat no longer calls memory recall before sending. Rowan can use
+`recall_native_memory` during a reply when past experiences or preferences are
+relevant. Its results remain untrusted historical context. Ordinary messages use
+the existing model conversation; this does not shorten that conversation or
+change its model/reasoning setting. Native voice-call recall is unchanged.
+Attachments still upload before submission, and disconnected sessions still need
+to reconnect. First-use tool preparation can also require a network request.

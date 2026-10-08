@@ -940,18 +940,36 @@ final class ContractTests: XCTestCase {
 private final class SendPreparationProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var requests: [URLRequest] = []
+    private static var held: [SendPreparationProtocol] = []
+    private static var holdHistory = false
+    private static var failHistory = false
+    static func history(hold: Bool = false, fail: Bool = false) {
+        lock.lock(); holdHistory = hold; failHistory = fail; lock.unlock()
+    }
+    static func releaseHistory() {
+        lock.lock(); let pending = held; held = []; holdHistory = false; lock.unlock()
+        for request in pending { request.finish(status: 200) }
+    }
     static var captured: [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
-    static func reset() { lock.lock(); requests = []; lock.unlock() }
+    static func reset() { lock.lock(); requests = []; holdHistory = false; failHistory = false; lock.unlock() }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "send-preparation.example" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock(); Self.requests.append(request); Self.lock.unlock()
+        Self.lock.lock(); Self.requests.append(request)
+        let history = request.url!.path.hasPrefix("/conversations/")
+        let held = history && Self.holdHistory, failed = history && Self.failHistory
+        if held { Self.held.append(self) }
+        Self.lock.unlock()
+        if held { return }
+        finish(status: failed ? 503 : 200)
+    }
+    private func finish(status: Int) {
         let body = request.url!.path == "/api/codex/tools" ? #"{"tools":[]}"# : #"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type":"application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type":"application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
-    override func stopLoading() {}
+    override func stopLoading() { Self.lock.lock(); Self.held.removeAll { $0 === self }; Self.lock.unlock() }
 }
 
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
@@ -977,8 +995,11 @@ private final class SendPreparationProtocol: URLProtocol {
         let http = URLSession(configuration: configuration)
         defer { http.invalidateAndCancel() }
         let socket = RecoverySocket()
-        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000)
-        chat.configureConnection(api: APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "fixture", requestSession: http), endpoint: "wss://send-preparation.example", threadID: "thread")
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { outbox.stop() }
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "fixture", requestSession: http)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
         chat.model = ""; chat.effort = ""
         defer { chat.disconnect() }
         let first = await chat.send("first message")
@@ -993,11 +1014,145 @@ private final class SendPreparationProtocol: URLProtocol {
         XCTAssertFalse(SendPreparationProtocol.captured.contains { $0.httpMethod == "GET" && $0.url!.path.hasPrefix("/conversations/") })
         let inputs = socket.packets.filter { $0["method"].string == "turn/start" }.last!["params"]["input"].array
         XCTAssertTrue(inputs.contains { $0["text"].string.contains("first message") })
+        XCTAssertFalse(SendPreparationProtocol.captured.contains { $0.url?.path == "/api/memory/context" })
         chat.busy = false
         chat.disconnect()
         let third = await chat.send("after reconnect")
         XCTAssertTrue(third)
         XCTAssertGreaterThan(socket.packets.filter { $0["method"].string == "thread/resume" }.count, resumed)
+        try await outbox.flush(api)
+    }
+    func testSendDoesNotWaitForCloudAndRecallRunsOnlyAsATool() async throws {
+        SendPreparationProtocol.reset(); SendPreparationProtocol.history(hold: true)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config)
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.model = ""; chat.effort = ""
+        defer { chat.disconnect(); outbox.stop(); SendPreparationProtocol.releaseHistory(); http.invalidateAndCancel() }
+        let task = Task { await chat.send("A new message without waiting for history storage") }
+        await eventually { socket.packets.contains { $0["method"].string == "turn/start" } }
+        let accepted = await task.value
+        XCTAssertTrue(accepted)
+        XCTAssertFalse(SendPreparationProtocol.captured.contains { $0.url?.path == "/api/memory/context" })
+        XCTAssertEqual(try outbox.pending(api, conversationID: chat.conversationID).count, 1)
+        XCTAssertEqual(chat.messages.last?["status"].string, "delivered")
+        let tools = socket.packets.last { $0["method"].string == "thread/resume" }!["params"]["dynamicTools"].array
+        XCTAssertTrue(tools.contains { $0["name"].string == "recall_native_memory" })
+        try socket.emit(.object(["id": .string("recall"), "method": .string("item/tool/call"), "params": .object([
+            "name": .string("recall_native_memory"), "callId": .string("recall"), "threadId": .string("thread"),
+            "turnId": .string("turn"), "arguments": .object(["query": .string("An earlier agreement")])])]))
+        await eventually { socket.packets.contains { $0["id"].string == "recall" && $0["result"] != .null } }
+        XCTAssertTrue(SendPreparationProtocol.captured.contains { $0.url?.path == "/api/memory/context" })
+        XCTAssertEqual(socket.packets.last { $0["id"].string == "recall" }?["result"]["success"], .bool(true))
+        SendPreparationProtocol.releaseHistory()
+        try await outbox.flush(api)
+        XCTAssertTrue(try outbox.pending(api, conversationID: chat.conversationID).isEmpty)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 1)
+    }
+    func testOutboxSurvivesRelaunchAndKeepsAccountsSeparate() async throws {
+        SendPreparationProtocol.reset(); SendPreparationProtocol.history(fail: true)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "queue-account-a", requestSession: http)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let first = ChatSendOutbox(directory: root); defer { first.stop() }
+        let message: JSONValue = .object(["id": .string("local-message"), "conversationId": .string("room"), "role": .string("user"), "content": .string("Saved locally"), "status": .string("delivered")])
+        try first.enqueue(message, conversation: .object(["codexThreadId": .string("thread")]), api: api)
+        do { try await first.flush(api); XCTFail("A failed upload must remain queued") } catch {}
+        XCTAssertEqual(try first.pending(api, conversationID: "room"), [message])
+        first.stop()
+        let restored = ChatSendOutbox(directory: root); defer { restored.stop() }
+        var other = api; other.token = "queue-account-b"
+        XCTAssertTrue(try restored.pending(other, conversationID: "room").isEmpty)
+        XCTAssertEqual(try restored.pending(api, conversationID: "room"), [message])
+        SendPreparationProtocol.history()
+        try await restored.flush(api)
+        XCTAssertTrue(try restored.pending(api, conversationID: "room").isEmpty)
+        let reloaded = ChatSendOutbox(directory: root)
+        XCTAssertTrue(try reloaded.pending(api, conversationID: "room").isEmpty)
+        XCTAssertTrue(SendPreparationProtocol.captured.contains { $0.url?.path == "/api/memory/messages" })
+    }
+    func testOutboxDoesNotUploadUnconfirmedSendsOrLoseNewerReceipts() async throws {
+        SendPreparationProtocol.reset(); SendPreparationProtocol.history(hold: true)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "revisions", requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { outbox.stop(); SendPreparationProtocol.releaseHistory() }
+        var message: JSONValue = .object(["id": .string("m"), "conversationId": .string("room"), "role": .string("user"), "content": .string("message"), "status": .string("pending")])
+        try outbox.enqueue(message, conversation: .object([:]), api: api)
+        XCTAssertTrue(SendPreparationProtocol.captured.isEmpty)
+        message["status"] = .string("error")
+        try outbox.enqueue(message, conversation: .object([:]), api: api)
+        await eventually { !SendPreparationProtocol.captured.isEmpty }
+        message["status"] = .string("delivered"); message["metadata"]["turnId"] = .string("confirmed-turn")
+        try outbox.enqueue(message, conversation: .object([:]), api: api)
+        SendPreparationProtocol.releaseHistory()
+        try await outbox.flush(api)
+        XCTAssertTrue(try outbox.pending(api, conversationID: "room").isEmpty)
+        XCTAssertEqual(SendPreparationProtocol.captured.filter { $0.url?.path == "/conversations/room/messages" }.count, 1)
+        XCTAssertEqual(SendPreparationProtocol.captured.filter { $0.url?.path == "/api/memory/messages" }.count, 1)
+    }
+    func testRelaunchRecoversPendingReceiptWithoutResendingTheTurn() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "recover-receipt", requestSession: http)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let first = ChatSendOutbox(directory: directory)
+        let message: JSONValue = .object(["id": .string("m"), "conversationId": .string("room"), "role": .string("user"), "content": .string("Previously submitted"), "status": .string("pending"), "metadata": .object(["threadId": .string("thread")])])
+        try first.enqueue(message, conversation: .object(["codexThreadId": .string("thread")]), api: api)
+        first.stop()
+        let restored = ChatSendOutbox(directory: directory); defer { restored.stop() }
+        let socket = RecoverySocket()
+        socket.snapshot = .object(["thread": .object(["id": .string("thread"), "turns": .array([
+            .object(["id": .string("accepted-turn"), "clientUserMessageId": .string("m"), "status": .string("completed"), "items": .array([])])])])])
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: restored)
+        chat.newConversation(id: "room")
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.messages = try restored.pending(api, conversationID: "room")
+        defer { chat.disconnect() }
+        try await chat.connect()
+        try await restored.flush(api)
+        XCTAssertTrue(try restored.pending(api, conversationID: "room").isEmpty)
+        XCTAssertEqual(chat.messages.first?["status"].string, "delivered")
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "turn/start" })
+    }
+    func testDeletingUnconfirmedLocalRecordDoesNotUploadOrReplayIt() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "pending-delete", requestSession: http)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let outbox = ChatSendOutbox(directory: directory); defer { outbox.stop() }
+        let message: JSONValue = .object(["id": .string("m"), "conversationId": .string("room"), "role": .string("user"), "content": .string("Unconfirmed"), "status": .string("pending")])
+        try outbox.enqueue(message, conversation: .object([:]), api: api)
+        try await outbox.flush(api)
+        try outbox.discard(api, conversationID: "room", messageID: "m")
+        let restored = ChatSendOutbox(directory: directory)
+        XCTAssertTrue(try restored.pending(api, conversationID: "room").isEmpty)
+        XCTAssertTrue(SendPreparationProtocol.captured.isEmpty)
+    }
+    func testFailedLocalSavePreventsModelSubmission() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel() }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("file, not directory".utf8).write(to: root)
+        let outbox = ChatSendOutbox(directory: root); defer { outbox.stop() }
+        let socket = RecoverySocket()
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        chat.configureConnection(api: APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "fixture", requestSession: http), endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.model = ""; chat.effort = ""; defer { chat.disconnect() }
+        let sent = await chat.send("Must remain recoverable")
+        XCTAssertFalse(sent)
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "turn/start" })
+        XCTAssertEqual(chat.messages.last?["content"].string, "Must remain recoverable")
+        XCTAssertEqual(chat.messages.last?["status"].string, "error")
     }
     func testToolCatalogCacheCoalescesAndSeparatesAccounts() async throws {
         SendPreparationProtocol.reset()

@@ -92,3 +92,134 @@ enum DocumentMerge {
         throw Conflict()
     }
 }
+
+/// Durable history uploads only. Never replays turn/start or sends a message to the model.
+@MainActor final class ChatSendOutbox {
+    static let shared = ChatSendOutbox()
+    struct Entry: Codable {
+        var revision = UUID().uuidString
+        var conversation: JSONValue
+        var message: JSONValue
+        var key: String { message["conversationId"].string + "/" + message.id }
+    }
+    private final class Lane {
+        var entries: [Entry]
+        var worker: Task<Void, Never>?
+        var retry: Task<Void, Never>?
+        var failures = 0
+        var error: Error?
+        var notice: ((String) -> Void)?
+        init(_ entries: [Entry]) { self.entries = entries }
+    }
+    private var lanes: [String: Lane] = [:]
+    private let directory: URL
+    init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ChatSendOutbox")) {
+        self.directory = directory
+    }
+    private func key(_ api: APIClient) -> String {
+        SHA256.hash(data: Data((api.baseURL + "\n" + api.historyURL + "\n" + api.token).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    private func lane(_ api: APIClient) throws -> Lane {
+        guard !api.token.isEmpty else { throw ServiceError(message: "Connect your device before saving messages.") }
+        let id = key(api)
+        if let lane = lanes[id] { return lane }
+        let url = directory.appendingPathComponent(id + ".json")
+        let entries = FileManager.default.fileExists(atPath: url.path)
+            ? try JSONDecoder().decode([Entry].self, from: Data(contentsOf: url)) : []
+        let lane = Lane(entries); lanes[id] = lane; return lane
+    }
+    private func save(_ entries: [Entry], api: APIClient) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(key(api) + ".json")
+        try JSONEncoder().encode(entries).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    func activate(_ api: APIClient, notice: ((String) -> Void)? = nil) {
+        guard !api.token.isEmpty else { return }
+        do {
+            let lane = try lane(api)
+            if let notice { lane.notice = notice }
+            lane.notice?(lane.error == nil ? "" : "消息已保存在本机，云端同步暂未完成；联网后会自动重试。")
+            lane.retry?.cancel(); lane.retry = nil
+            start(lane, api: api)
+        } catch { notice?("本地待同步记录无法读取：" + error.localizedDescription) }
+    }
+    func enqueue(_ message: JSONValue, conversation: JSONValue, api: APIClient) throws {
+        guard !message.id.isEmpty, !message["conversationId"].string.isEmpty,
+              message["role"].string == "user" else { throw ServiceError(message: "Invalid outgoing message.") }
+        let lane = try lane(api)
+        let entry = Entry(conversation: conversation, message: message)
+        var entries = lane.entries
+        if let index = entries.firstIndex(where: { $0.key == entry.key }) { entries[index] = entry }
+        else { entries.append(entry) }
+        // A failed disk write must leave both the previous queue and the draft intact.
+        try save(entries, api: api); lane.entries = entries
+        start(lane, api: api)
+    }
+    func pending(_ api: APIClient, conversationID: String) throws -> [JSONValue] {
+        try lane(api).entries.filter { $0.message["conversationId"].string == conversationID }.map(\.message)
+    }
+    /// Deletion/renaming waits for queued writes, so a late upload cannot resurrect a message.
+    func flush(_ api: APIClient) async throws {
+        let lane = try lane(api)
+        lane.retry?.cancel(); lane.retry = nil
+        start(lane, api: api)
+        await lane.worker?.value
+        if lane.entries.contains(where: { $0.message["status"].string != "pending" }) {
+            throw lane.error ?? ServiceError(message: "Messages are still waiting to sync. Try again when connected.")
+        }
+    }
+    /// Call after flush and the server's delete receipt. Pending entries are never uploaded.
+    func discard(_ api: APIClient, conversationID: String, messageID: String? = nil) throws {
+        let lane = try lane(api)
+        let remaining = lane.entries.filter {
+            $0.message["conversationId"].string != conversationID || (messageID != nil && $0.message.id != messageID)
+        }
+        try save(remaining, api: api); lane.entries = remaining
+    }
+    func stop() {
+        for lane in lanes.values { lane.worker?.cancel(); lane.retry?.cancel(); lane.retry = nil }
+    }
+    private func start(_ lane: Lane, api: APIClient) {
+        guard lane.worker == nil, lane.entries.contains(where: { $0.message["status"].string != "pending" }) else { return }
+        lane.worker = Task { [self] in
+            defer { lane.worker = nil }
+            do {
+                // Unconfirmed model sends stay on disk; never publish an old pending state
+                // over a delivered receipt recovered by another client.
+                while let entry = lane.entries.first(where: { $0.message["status"].string != "pending" }) {
+                    try Task.checkCancellation()
+                    let id = entry.message["conversationId"].string
+                    // Existing server endpoints upsert by conversation/message ID.
+                    _ = try await api.request("/conversations/\(id)", method: "POST", body: entry.conversation, history: true)
+                    try Task.checkCancellation()
+                    guard lane.entries.contains(where: { $0.revision == entry.revision }) else { continue }
+                    let receipt = try await api.request("/conversations/\(id)/messages", method: "POST", body: entry.message, history: true)
+                    try Task.checkCancellation()
+                    guard lane.entries.contains(where: { $0.revision == entry.revision }) else { continue }
+                    let message = entry.message
+                    if message["status"].string == "delivered", !receipt["deleted"].bool {
+                        _ = try await api.request("/api/memory/messages", method: "POST", body: .object([
+                            "conversationId": .string(id), "messageId": .string(message.id), "role": .string("user"),
+                            "content": message["content"], "createdAt": message["createdAt"],
+                            "turnId": message["metadata"]["turnId"], "attachments": message["metadata"]["attachments"]]))
+                    }
+                    try Task.checkCancellation()
+                    guard lane.entries.contains(where: { $0.revision == entry.revision }) else { continue }
+                    let remaining = lane.entries.filter { $0.revision != entry.revision }
+                    try save(remaining, api: api); lane.entries = remaining
+                }
+                lane.error = nil; lane.failures = 0; lane.notice?("")
+            } catch {
+                guard !Task.isCancelled else { return }
+                lane.error = error; lane.failures += 1
+                lane.notice?("消息已保存在本机，云端同步暂未完成；联网后会自动重试。")
+                lane.retry = Task { [self] in
+                    do { try await Task.sleep(for: .seconds(min(60, pow(2, Double(min(lane.failures, 5))) * 2))) }
+                    catch { return }
+                    lane.retry = nil; start(lane, api: api)
+                }
+            }
+        }
+    }
+}

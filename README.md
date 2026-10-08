@@ -140,6 +140,26 @@ Memory uses the existing Vesper device connection via `/api/shared-memory`; no s
 
 ## Native chat sending and synchronization
 
+### VPS monitor
+
+In a VPS chat, open the top-right menu and tap the display icon. **画面** shows
+Rowan's actual current VPS browser page and its capture time; **终端** shows the
+existing current-chat commands, outputs and terminal controls. Pinch to zoom the
+browser frame. Idle, login maintenance, capture failure and disconnected states
+are shown explicitly. A retained disconnected image is labelled as the last frame.
+
+The screen reads the exact HTTPS `/browser/display` route on the paired history
+origin, using the existing device bearer token. Redirects are rejected. Frame
+polling runs only while the screen tab is visible and the app is active. Viewing
+does not submit a model turn or browse on Rowan's behalf. The VPS adapter masks
+browser inputs and preserves its existing page/element state and idle lifetime.
+The Mac chat retains its own terminal entry.
+
+Verification: three iOS simulator tests passed for paired origin/authentication,
+invalid/live/idle frame handling and preserved zoom when frames update. Server
+verification and deployment instructions are in Vesper-web's
+`vps/BROWSER_DISPLAY.md`.
+
 Regular chat sends save the outgoing message to an account-scoped local outbox
 before submitting the model turn. Confirmed messages and their memory evidence
 sync to the existing services asynchronously. Failed uploads remain on disk and

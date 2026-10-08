@@ -564,7 +564,7 @@ struct ChatView: View {
             }
             .overlay(alignment: .trailing) {
                 // Expand above the avatars without participating in their layout.
-                ChatHeaderMenu(expanded: $headerActionsExpanded, onMemory: { memoryRecallVisible = true }, onTerminal: { terminalVisible = true })
+                ChatHeaderMenu(expanded: $headerActionsExpanded, onMemory: { memoryRecallVisible = true }, onTerminal: { terminalVisible = true }, showsVPSDisplay: store.activeBackend == .vps)
                     .animation(.easeInOut(duration: 0.2), value: headerActionsExpanded)
             }
             .font(.system(size: 20)).padding(.horizontal, 12).padding(.vertical, 4)
@@ -945,13 +945,14 @@ struct ChatHeaderMenu: View {
     @Binding var expanded: Bool
     let onMemory: () -> Void
     let onTerminal: () -> Void
+    var showsVPSDisplay = false
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     var body: some View {
         ZStack(alignment: .trailing) {
             if expanded {
                 HStack(spacing: 8) {
                     actionIcon("相关记忆", symbol: "brain", action: onMemory)
-                    actionIcon("终端", symbol: "terminal", action: onTerminal)
+                    actionIcon(showsVPSDisplay ? "查看 VPS" : "终端", symbol: showsVPSDisplay ? "display" : "terminal", action: onTerminal)
                     if VesperLayout.usesSidebar {
                         MacAppearanceButton().frame(width: 44, height: 44)
                     } else {

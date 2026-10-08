@@ -3,6 +3,46 @@ import SwiftUI
 @testable import Vesper
 
 @MainActor final class ChatTerminalSharingTests: XCTestCase {
+    func testVPSDisplayUsesPairedHistoryOriginAndBearerAuthWithoutChangingTheAPI() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [VPSDisplayHTTPProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let api = APIClient(baseURL: "https://api.example.com", historyURL: "https://history.example.com/history/", token: "fixture-device-token")
+        let client = try VPSDisplaySource.client(api, session: session)
+        let result = try await client.request("/browser/display", history: true)
+        XCTAssertEqual(result["state"].string, "idle")
+        XCTAssertEqual(api.historyURL, "https://history.example.com/history/")
+        XCTAssertThrowsError(try VPSDisplaySource.client(APIClient(baseURL: "https://api.example.com", historyURL: "http://history.example.com/history", token: "fixture")))
+        XCTAssertThrowsError(try VPSDisplaySource.client(APIClient(baseURL: "https://api.example.com", historyURL: "https://history.example.com/other", token: "fixture")))
+    }
+
+    func testVPSDisplayRejectsInvalidFramesAndDistinguishesIdleFromLive() throws {
+        let idle = try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("idle")]))
+        XCTAssertNil(idle.data)
+        XCTAssertEqual(idle.label, "当前没有打开的网页")
+        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("live")])))
+        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("unknown")])))
+        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("live"), "mimeType": .string("image/jpeg"), "capturedAt": .string("2026-10-09T01:00:00Z"), "image": .string(String(repeating: "A", count: 700_001))])))
+    }
+
+    func testVPSBrowserFrameFitsTheViewportAndKeepsZoomWhenTheImageUpdates() async throws {
+        let first = UIGraphicsImageRenderer(size: CGSize(width: 1100, height: 800)).image { context in UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 1100, height: 800)) }
+        let second = UIGraphicsImageRenderer(size: CGSize(width: 1100, height: 800)).image { context in UIColor.green.setFill(); context.fill(CGRect(x: 0, y: 0, width: 1100, height: 800)) }
+        let host = UIHostingController(rootView: VPSFrameViewport(image: first))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 320, height: 500)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        try await Task.sleep(for: .milliseconds(150)); host.view.frame = window.bounds; host.view.layoutIfNeeded()
+        func find(_ v: UIView) -> VPSZoomScrollView? { (v as? VPSZoomScrollView) ?? v.subviews.compactMap(find).first }
+        let view = try XCTUnwrap(find(host.view)); view.layoutIfNeeded()
+        XCTAssertEqual(view.minimumZoomScale, 320 / 1100, accuracy: 0.01)
+        view.setZoomScale(1.2, animated: false)
+        host.rootView = VPSFrameViewport(image: second)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(view.zoomScale, 1.2, accuracy: 0.01)
+        XCTAssertNotNil(view.picture.image)
+    }
     func testGroupedTerminalCardRendersOperationsInOneSurface() async throws {
         let records: [JSONValue] = (1...4).map { index in
             .object(["id": .string("operation-\(index)"), "metadata": .object(["execution": .object([
@@ -164,4 +204,17 @@ import SwiftUI
         XCTAssertEqual(ChatMusicShare.normalized(.object(["trackId":.string("apple-987")])).id,"apple-987")
         XCTAssertTrue(ChatMusicShare.links(in:"https://example.com").isEmpty)
     }
+}
+
+private final class VPSDisplayHTTPProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "history.example.com" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let authorized = request.url?.absoluteString == "https://history.example.com/browser/display" && request.httpMethod == "GET" && request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token"
+        let response = HTTPURLResponse(url: request.url!, statusCode: authorized ? 200 : 401, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data((authorized ? "{\"kind\":\"browser\",\"state\":\"idle\"}" : "{\"error\":\"Unauthorized\"}").utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() { }
 }

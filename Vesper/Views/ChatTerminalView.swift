@@ -68,10 +68,21 @@ struct ChatTerminalView: View {
     @State private var columns = 48
     @State private var resizeSupported = false
     @State private var resizeRejected = false
+    @State private var displaySelected = true
+    private var showingDisplay: Bool { store.activeBackend == .vps && displaySelected }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
+                if store.activeBackend == .vps {
+                    Picker("VPS view", selection: $displaySelected) {
+                        Text("画面").tag(true)
+                        Text("终端").tag(false)
+                    }.pickerStyle(.segmented).accessibilityIdentifier("vps-monitor-tabs")
+                }
+                if showingDisplay {
+                    VPSBrowserDisplay(api: store.api)
+                } else {
                 HStack(spacing: 6) {
                     Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
                     Text(connected ? (running ? "Live · This chat" : "No active terminal") : "Disconnected")
@@ -117,12 +128,13 @@ struct ChatTerminalView: View {
                 }.padding(12).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
                 Text("Persistent VPS session · closing this window keeps it running")
                     .font(.caption2).foregroundStyle(.white.opacity(0.65))
+                }
             }.padding(16).background(Color(red: 0.07, green: 0.08, blue: 0.10))
-                .navigationTitle("Chat terminal").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle(store.activeBackend == .vps ? "VPS" : "Chat terminal").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.foregroundStyle(.white) } }
         }.preferredColorScheme(.dark).tint(.white).foregroundStyle(.white)
-            .task(id: "\(scenePhase)-\(retry)") {
-                guard scenePhase == .active else { connected = false; return }
+            .task(id: "\(scenePhase)-\(retry)-\(showingDisplay)-\(store.activeBackend.rawValue)") {
+                guard scenePhase == .active, !showingDisplay else { connected = false; return }
                 await followScreen()
             }
     }
@@ -204,5 +216,172 @@ struct ChatTerminalView: View {
                 error = "Not confirmed. Check the live screen before sending again. " + failure.localizedDescription
             }
         }
+    }
+}
+
+enum VPSDisplaySource {
+    static func client(_ api: APIClient, session: URLSession? = nil) throws -> APIClient {
+        guard var origin = URLComponents(string: api.historyURL), origin.scheme == "https",
+              origin.host != nil, origin.user == nil, origin.password == nil,
+              origin.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "history" else {
+            throw ServiceError(message: "This connection does not provide a VPS display address.")
+        }
+        origin.path = ""; origin.query = nil; origin.fragment = nil
+        guard let address = origin.url?.absoluteString else { throw ServiceError(message: "Invalid VPS display address.") }
+        let config = URLSessionConfiguration.ephemeral; config.urlCache = nil
+        return APIClient(baseURL: address, historyURL: address, token: api.token,
+            requestSession: session ?? URLSession(configuration: config, delegate: VPSDisplayRedirectPolicy(), delegateQueue: nil))
+    }
+}
+
+private final class VPSDisplayRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+}
+
+struct VPSDisplayFrame {
+    let state: String
+    let title: String
+    let url: String
+    let busy: Bool
+    let capturedAt: String
+    let data: Data?
+    init(_ value: JSONValue) throws {
+        guard value["kind"].string == "browser", ["live", "working", "idle", "owner_login", "private", "unavailable"].contains(value["state"].string) else {
+            throw ServiceError(message: "The VPS returned an invalid display status.")
+        }
+        state = value["state"].string; title = value["title"].string; url = value["url"].string
+        busy = value["busy"].bool; capturedAt = value["capturedAt"].string
+        let encoded = value["image"].string
+        if encoded.isEmpty { data = nil }
+        else {
+            guard value["mimeType"].string == "image/jpeg", encoded.utf8.count <= 700_000,
+                  let bytes = Data(base64Encoded: encoded), bytes.count <= 512 * 1024, UIImage(data: bytes) != nil,
+                  !capturedAt.isEmpty else { throw ServiceError(message: "The VPS returned an invalid browser frame.") }
+            data = bytes
+        }
+        if state == "live", data == nil { throw ServiceError(message: "The VPS did not return the live browser frame.") }
+    }
+    var label: String {
+        switch state {
+        case "live": return busy ? "浏览器正在操作" : "实时浏览器画面"
+        case "working": return "浏览器正在更新"
+        case "idle": return "当前没有打开的网页"
+        case "owner_login": return "浏览器正在由你维护登录"
+        case "private": return "当前网页含敏感会话信息"
+        default: return "暂时无法取得画面"
+        }
+    }
+}
+
+struct VPSBrowserDisplay: View {
+    let api: APIClient
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var frame: VPSDisplayFrame?
+    @State private var connected = false
+    @State private var error = ""
+    @State private var retry = 0
+    private var taskID: String { "\(scenePhase)-\(retry)-\(api.historyURL)-\(api.token.hashValue)" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
+                Text(connected ? (frame?.label ?? "连接中…") : (error.isEmpty ? "连接中…" : "连接中断"))
+                    .font(.caption).foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                Button { retry += 1 } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("重新连接 VPS 画面")
+            }
+            if let frame, !frame.title.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(frame.title).font(.subheadline).lineLimit(2)
+                    Text(frame.url).font(.caption2).foregroundStyle(.white.opacity(0.6)).lineLimit(2)
+                }
+            }
+            if let data = frame?.data, let image = UIImage(data: data) {
+                VPSFrameViewport(image: image).accessibilityLabel("VPS 当前网页画面，可双指缩放")
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "display").font(.system(size: 36)).foregroundStyle(.white.opacity(0.45))
+                    Text(frame?.label ?? "正在连接 VPS…").font(.subheadline)
+                    if frame?.state == "idle" { Text("Rowan 打开网页时，画面会自动出现在这里。").font(.caption).foregroundStyle(.white.opacity(0.65)) }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if let captured = frame?.capturedAt, !captured.isEmpty {
+                Text((connected ? "画面更新于 " : "最后画面 · ") + displayTime(captured))
+                    .font(.caption2).foregroundStyle(.white.opacity(0.65))
+            }
+            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            Text("VPS 浏览器 · 双指缩放 · 仅查看").font(.caption2).foregroundStyle(.white.opacity(0.65))
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: taskID) { await follow() }
+    }
+    private func displayTime(_ value: String) -> String {
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return value }
+        return date.formatted(date: .omitted, time: .standard)
+    }
+    private func follow() async {
+        connected = false; frame = nil; error = ""
+        guard scenePhase == .active else { return }
+        do {
+            let client = try VPSDisplaySource.client(api)
+            defer { client.requestSession.invalidateAndCancel() }
+            while !Task.isCancelled {
+                do {
+                    let value = try await client.request("/browser/display", history: true)
+                    try Task.checkCancellation()
+                    frame = try VPSDisplayFrame(value); connected = true; error = ""
+                } catch is CancellationError { return }
+                catch {
+                    guard !Task.isCancelled else { return }
+                    connected = false; self.error = error.localizedDescription
+                    // Retry only read-only frames, with backoff; never submit a model/tool turn.
+                    try await Task.sleep(for: .seconds(5))
+                }
+                try await Task.sleep(for: .milliseconds(1500))
+            }
+        } catch is CancellationError { }
+        catch { guard !Task.isCancelled else { return }; self.error = error.localizedDescription }
+    }
+}
+
+struct VPSFrameViewport: UIViewRepresentable {
+    let image: UIImage
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> VPSZoomScrollView {
+        let view = VPSZoomScrollView(); view.delegate = context.coordinator
+        view.backgroundColor = UIColor(white: 0.04, alpha: 1); view.addSubview(view.picture)
+        context.coordinator.picture = view.picture
+        view.maximumZoomScale = 4; view.bouncesZoom = true
+        return view
+    }
+    func updateUIView(_ view: VPSZoomScrollView, context: Context) {
+        if view.picture.image?.size != image.size {
+            view.setZoomScale(1, animated: false); view.picture.frame = CGRect(origin: .zero, size: image.size)
+            view.contentSize = image.size; view.resetFit = true
+        }
+        view.picture.image = image; view.setNeedsLayout()
+    }
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var picture: UIImageView?
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
+    }
+}
+
+final class VPSZoomScrollView: UIScrollView {
+    let picture = UIImageView()
+    var resetFit = true
+    private var lastBounds = CGSize.zero
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let size = picture.image?.size, size.width > 0, size.height > 0, bounds.width > 0, bounds.height > 0 else { return }
+        if resetFit || lastBounds != bounds.size {
+            let fit = min(bounds.width / size.width, bounds.height / size.height)
+            minimumZoomScale = fit; setZoomScale(fit, animated: false)
+            resetFit = false; lastBounds = bounds.size
+        }
+        contentInset = UIEdgeInsets(top: max(0, (bounds.height - picture.frame.height) / 2), left: max(0, (bounds.width - picture.frame.width) / 2), bottom: 0, right: 0)
     }
 }

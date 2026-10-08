@@ -8,7 +8,7 @@ home=Path.home()/'Library/Application Support/VesperBackend'
 home.mkdir(parents=True,exist_ok=True,mode=0o700)
 os.chmod(home,0o700)
 runtime=home/'service';runtime.mkdir(exist_ok=True)
-for name in ['server.mjs','storage.mjs','media.mjs','watch.mjs','package.json','package-lock.json']:
+for name in ['server.mjs','storage.mjs','media.mjs','tool-migration.mjs','watch.mjs','package.json','package-lock.json']:
     shutil.copy2(source/name,runtime/name)
 subprocess.run(['npm','ci','--ignore-scripts','--omit=dev'],cwd=runtime,check=True)
 token=home/'device-token'

@@ -7,6 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {WebSocketServer,WebSocket} from 'ws';
 import {Store,now} from './storage.mjs';
 import {Media,fileTool} from './media.mjs';
+import {migrateAttachmentTool} from './tool-migration.mjs';
 
 const tools=[fileTool,{name:'mac_backend_status',description:'Read the active Mac backup backend status and whether history/memory is local or synchronized.',inputSchema:{type:'object',properties:{},additionalProperties:false}},
  {name:'read_vesper_state',description:'Read one local Vesper section. section=journal reads diary, reminders reads todos, dates reads anniversaries. This does not read live VPS data.',inputSchema:{type:'object',properties:{section:{type:'string',enum:['today','notes','reminders','dates','journal','music','memory','settings']}},required:['section'],additionalProperties:false}}];
@@ -40,7 +41,7 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
     if(/^(turn\/(started|completed)|item\/(started|completed|agentMessage\/delta|commandExecution\/outputDelta|tool\/call))$/.test(packet.method))publish({type:'event',method:packet.method,params:p});
     if(packet.method==='turn/completed')live.delete(thread);
   };
-  const status=()=>({ok:true,backendId:store.get('backendId'),backend:'mac',history:'local',memory:'local',syncEnabled:false,lastImport:store.get('lastImport'),access:fullAccess?'full':'workspace',activeTurns:live.size,version:3,capabilities:{sendChatFiles:true,localMedia:true}});
+  const status=()=>({ok:true,backendId:store.get('backendId'),backend:'mac',history:'local',memory:'local',syncEnabled:false,lastImport:store.get('lastImport'),access:fullAccess?'full':'workspace',activeTurns:live.size,version:4,capabilities:{sendChatFiles:true,localMedia:true,legacyFileTools:true}});
   const authorize=req=>equal(req.headers['x-vesper-device-token'],token)||equal(req.headers.authorization,'Bearer '+token);
   const server=http.createServer(async(req,res)=>{
     try{
@@ -164,9 +165,11 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
           for(const key of ['path','history','environment','environmentId'])if(params[key])throw fail('Imported thread state is not supported');
           const allowedConfig=['features.default_mode_request_user_input','compact_prompt'];
           const accessInstructions=fullAccess?'\nThis Mac backend has user-authorized Full Access: local filesystem and network commands are available without sandbox approval. For desktop app and browser UI tasks, use the vesper_computer MCP tools with platform=macos and session=vesper-rowan. macOS privacy permissions still apply. Do not send messages to other people without the user explicitly asking.':'';
-          // Refresh the attachment capability even when a mobile client has the old catalog cached.
-          const dynamicTools=[...(Array.isArray(params.dynamicTools)?params.dynamicTools:[]).filter(t=>t.name!==fileTool.name),fileTool];
-          packet.params={...params,dynamicTools,config:Object.fromEntries(Object.entries(params.config||{}).filter(([k])=>allowedConfig.includes(k))),cwd:workspace,sandbox:fullAccess?'danger-full-access':'workspace-write',approvalPolicy:fullAccess?'never':'on-request',...(accessInstructions?{developerInstructions:(params.developerInstructions||'')+accessInstructions}:{})};
+          // This Codex version persists tools on start and ignores dynamicTools on resume.
+          // Old rollouts are migrated before app-server starts; never rely on a resume override.
+          const updated={...params};delete updated.dynamicTools;
+          if(packet.method==='thread/start')updated.dynamicTools=[...(Array.isArray(params.dynamicTools)?params.dynamicTools:[]).filter(t=>t.name!==fileTool.name),fileTool];
+          packet.params={...updated,config:Object.fromEntries(Object.entries(params.config||{}).filter(([k])=>allowedConfig.includes(k))),cwd:workspace,sandbox:fullAccess?'danger-full-access':'workspace-write',approvalPolicy:fullAccess?'never':'on-request',...(accessInstructions?{developerInstructions:(params.developerInstructions||'')+accessInstructions}:{})};
         }
         if(packet.method==='turn/start'){
           const receiptKey='receipt:'+params.threadId+':'+params.clientUserMessageId;
@@ -209,13 +212,16 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const home=process.env.VESPER_BACKEND_HOME;if(!home)throw new Error('VESPER_BACKEND_HOME required');
   const token=readFileSync(join(home,'device-token'),'utf8').trim();if(token.length<32)throw new Error('Invalid local token');
   const workspace=join(home,'workspace');mkdirSync(workspace,{recursive:true,mode:0o700});
+  let access={};try{access=JSON.parse(readFileSync(join(home,'access.json'),'utf8'));}catch{}
+  const backend=createBackend({home,token,workspace,fullAccess:access.mode==='full'});
+  // Run with no model process/writer active. Backups are private and only Mac-owned IDs qualify.
+  const migration=migrateAttachmentTool({home,store:backend.store});
+  if(migration.changed)console.log('Registered attachment tool for existing Mac conversations:',migration.changed);
   const binary=process.env.VESPER_CODEX_BIN||'codex';
   const args=['app-server','--listen','ws://127.0.0.1:47632','--ws-auth','capability-token','--ws-token-file',join(home,'device-token')];
   const child=spawn(binary,args,{cwd:workspace,env:{...process.env,CODEX_HOME:join(home,'codex')},stdio:['ignore','ignore','pipe']});
   child.stderr.on('data',()=>{});child.on('error',()=>{console.error('Could not start Mac app-server');process.exit(1);});
   child.on('exit',()=>{console.error('Mac app-server exited');process.exit(1);});
-  let access={};try{access=JSON.parse(readFileSync(join(home,'access.json'),'utf8'));}catch{}
-  const backend=createBackend({home,token,workspace,fullAccess:access.mode==='full'});
   backend.server.listen(47631,'127.0.0.1',()=>console.log('Vesper Mac backend listening on loopback:47631'));
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{child.kill('SIGTERM');backend.server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),1500).unref();});
 }

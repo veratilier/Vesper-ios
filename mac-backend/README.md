@@ -105,6 +105,15 @@ the tool result; repeated call IDs replay the existing result instead of adding 
 second message. The native app retains its existing grouped image layout and file
 preview/download UI. File links work while the Mac backend is available.
 
+The installed Codex version accepts `dynamicTools` on `thread/start`, but not on
+`thread/resume`. Existing Mac conversations therefore need a cold-start tool
+registry upgrade. Before starting app-server, the backend appends `send_chat_file`
+to the session metadata of registered, active Mac conversations. It saves a private
+original rollout backup and preserves every byte after the metadata line, including
+all prior messages, timestamps and tool events. Thread IDs and existing tools stay
+the same. Rollouts outside this independent Mac backend are rejected; repeated
+starts do not duplicate the tool. Codex's state database is only read.
+
 ## Live terminal viewer
 
 Run `~/.local/bin/vesper-watch` on this Mac to see recent saved messages plus live
@@ -143,3 +152,11 @@ Public smoke testing verified HTTPS auth, streaming, tool results and history.
 model call `send_chat_file` for a synthetic PNG and a UTF-8 Markdown file. It verifies
 public HTTPS download bytes, headers, one grouped attachment message, history after
 resume, then deletes the synthetic room and media. Existing user chats are untouched.
+
+`node mac-backend/media-legacy-smoke.mjs --prepare` creates an isolated real thread
+without the file tool and completes one turn. After reinstalling/restarting the
+backend, run the same script without arguments. It checks that the original history
+bytes were preserved, resumes the same thread ID, makes a real file tool call, and
+verifies PNG/Markdown bytes through public HTTPS plus grouped durable history. The
+verification removes its test room and media. This test passed against the installed
+Codex `0.162.0-alpha.2`; new-thread acceptance alone does not cover legacy tool restore.

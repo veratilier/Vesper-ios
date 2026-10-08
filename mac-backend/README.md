@@ -17,7 +17,7 @@ and never routes through the VPS. The Mac must remain awake, online and logged i
 The installer preserves an existing device token; it never prints it or embeds it
 in the app. `Mac connection.txt` in that private directory contains pairing details.
 In iPhone Settings → Connection → Mac backup, enter that token and choose
-**Save and switch to Mac backup**. VPS addresses and its Keychain token remain under
+**Save connection**. VPS and Mac remain separate chat windows. VPS addresses and its Keychain token remain under
 their original keys. The new token uses a distinct Keychain account. No automatic
 failover or replay occurs. A failed preflight preserves the current connection.
 
@@ -25,8 +25,14 @@ Codex uses a separate `CODEX_HOME`, configuration, workspace, SQLite database an
 thread registry. Its login file links to this Mac's existing ChatGPT login; the
 model account is shared, while Vesper's backend access token is independent. No VPS
 or Codex Desktop thread/state database is copied. Server RPC rejects foreign thread
-IDs and import paths. Filesystem commands retain workspace sandbox and approval
-handling; authenticated native tools execute through the connected client.
+IDs and import paths. The default installation confines writes to its workspace.
+The user-authorized `python3 mac-backend/install.py --full-access` option enables
+`danger-full-access` and `approvalPolicy=never` for every start, resume and turn,
+including clients that still request workspace sandboxing. This enables local
+files, commands and network access. It also installs the `vesper_computer` stdio
+MCP provider using the existing agent-device binary, with a separate daemon state
+directory and Mac session. macOS privacy permissions still apply. Runtime access
+settings live in private `access.json`; tokens and configuration are not in Git.
 
 Stop only these services using `launchctl bootout gui/$(id -u)/<label>`.
 Re-run install to update/restart them. Original VPS, Mac client and other tunnels
@@ -79,6 +85,19 @@ tools and the native client's tool callbacks. VPS-specific remote MCP catalog,
 media uploads, music server integrations and autonomous wake are not mirrored.
 Unsupported endpoints return an explicit error rather than claiming success.
 
+## Live terminal viewer
+
+Run `~/.local/bin/vesper-watch` on this Mac to see recent saved messages plus live
+reply text, command output and tool activity. The viewer reads the private token
+from disk and uses authenticated `/watch` on loopback. It never starts/resumes a
+model thread or submits input; the server closes spectators that send messages.
+Reconnects include current partial replies. Terminal control characters are
+removed from output. Press Ctrl+C to close the viewer.
+
+The MAC chat can control this computer from outside through the existing HTTPS/WSS
+tunnel while the Mac is awake, online and logged in. VPS chats remain on the VPS;
+they do not gain Mac filesystem access from this option.
+
 ## Verification
 
 `npm ci --ignore-scripts && npm test` runs isolated HTTP/WebSocket/SQLite contract
@@ -93,3 +112,9 @@ It never reads/resumes production VPS or Desktop threads. It consumes model usag
 
 Native verification: 4 connection-profile tests plus 53 existing connection recovery
 tests passed; iOS simulator test build and signed iPhone build succeeded.
+
+Full Access verification: 4 backend contracts passed, including forced permissions
+on start/resume/turn, foreign-token rejection and a read-only viewer unable to
+submit commands. `node mac-backend/access-smoke.mjs` verifies a real model copying
+a synthetic file outside the workspace and invoking the Mac snapshot MCP tool.
+Public smoke testing verified HTTPS auth, streaming, tool results and history.

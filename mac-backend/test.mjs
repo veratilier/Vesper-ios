@@ -7,10 +7,10 @@ import {once} from 'node:events';
 import {WebSocketServer,WebSocket} from 'ws';
 import {createBackend} from './server.mjs';
 
-async function fixture(t){
+async function fixture(t,options={}){
   const home=mkdtempSync(join(tmpdir(),'vesper-mac-test-')),token='synthetic-backend-token-12345678901234567890';
   const upstream=new WebSocketServer({port:0,host:'127.0.0.1'});await once(upstream,'listening');
-  const backend=createBackend({home,token,upstream:'ws://127.0.0.1:'+upstream.address().port});
+  const backend=createBackend({home,token,upstream:'ws://127.0.0.1:'+upstream.address().port,...options});
   backend.server.listen(0,'127.0.0.1');await once(backend.server,'listening');
   const origin='http://127.0.0.1:'+backend.server.address().port;
   t.after(async()=>{for(const c of upstream.clients)c.terminate();upstream.close();await backend.close();rmSync(home,{recursive:true,force:true});});
@@ -31,6 +31,42 @@ test('independent auth, documents, thread ownership, idempotent history and dele
   f.backend.store.record('mac-thread',{id:'m1',role:'user',content:'do not resurrect',metadata:{threadId:'mac-thread'}});
   assert.equal((await f.req('/history/conversations/room')).value.messages.length,0);
   await f.req('/history/conversations/room','DELETE');assert.equal((await f.req('/history/conversations/room','POST',{})).status,410);
+});
+test('explicit Full Access applies to start, resume and every turn; spectator cannot send commands',async t=>{
+  const f=await fixture(t,{fullAccess:true}),received=[];let connections=0;
+  f.backend.store.register('local-thread');
+  f.upstream.on('connection',socket=>{
+    connections++;
+    socket.on('message',raw=>{
+      const p=JSON.parse(raw);received.push(p);
+      if(['thread/start','thread/resume'].includes(p.method)){
+        assert.equal(p.params.sandbox,'danger-full-access');assert.equal(p.params.approvalPolicy,'never');
+        assert.match(p.params.developerInstructions,/vesper_computer/);
+        socket.send(JSON.stringify({id:p.id,result:{thread:{id:'local-thread'}}}));
+      }else if(p.method==='turn/start'){
+        assert.deepEqual(p.params.sandboxPolicy,{type:'dangerFullAccess'});assert.equal(p.params.approvalPolicy,'never');
+        socket.send(JSON.stringify({id:p.id,result:{turn:{id:'t'}}}));
+        socket.send(JSON.stringify({method:'turn/started',params:{threadId:'local-thread',turn:{id:'t'}}}));
+        socket.send(JSON.stringify({method:'item/agentMessage/delta',params:{threadId:'local-thread',itemId:'a',delta:'中英 mixed'}}));
+      }
+    });
+  });
+  const spectator=new WebSocket(f.origin.replace('http','ws')+'/watch',{headers:{'x-vesper-device-token':f.token}}),events=[];
+  t.after(()=>spectator.terminate());spectator.on('message',raw=>events.push(JSON.parse(raw)));
+  await once(spectator,'open');assert.equal(connections,0);
+  const client=new WebSocket(f.origin.replace('http','ws')+'/chat',{headers:{'x-vesper-device-token':f.token}});
+  t.after(()=>client.terminate());await once(client,'open');
+  for(const [id,method,params] of [[1,'thread/start',{}],[2,'thread/resume',{threadId:'local-thread'}],[3,'turn/start',{threadId:'local-thread',clientUserMessageId:'user',input:[{type:'text',text:'hello'}]}]]){
+    const reply=once(client,'message');client.send(JSON.stringify({id,method,params}));await reply;
+  }
+  for(let i=0;i<30&&!events.some(e=>e.method==='item/agentMessage/delta');i++)await new Promise(r=>setTimeout(r,10));
+  assert.ok(events.some(e=>e.type==='user'&&e.text==='hello'));
+  assert.ok(events.some(e=>e.method==='item/agentMessage/delta'&&e.params.delta==='中英 mixed'));
+  assert.equal((await f.req('/health')).value.access,'full');
+  const closed=once(spectator,'close');spectator.send(JSON.stringify({method:'turn/start'}));assert.equal((await closed)[0],1008);
+  assert.equal(received.length,3);assert.equal(connections,1);
+  const bad=new WebSocket(f.origin.replace('http','ws')+'/watch',{headers:{'x-vesper-device-token':'vps-token'}});
+  const rejected=await once(bad,'error');assert.match(rejected[0].message,/401/);
 });
 test('websocket streams events, returns tools and refuses foreign threads/config imports',async t=>{
   const f=await fixture(t);let requests=0,toolResult=false;

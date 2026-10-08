@@ -198,11 +198,7 @@ struct RootView: View {
     @State private var floatingCallCenter: CGPoint?
     @State private var floatingCallSize = CGSize(width: 220, height: 64)
     @GestureState private var floatingCallDrag = CGSize.zero
-    #if targetEnvironment(macCatalyst)
-    @State private var opening = false
-    #else
-    @State private var opening = true
-    #endif
+    @State private var opening = !VesperLayout.usesSidebar
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
     @State private var sidebar = false

@@ -52,6 +52,15 @@ open navigation and settings but cannot read private history or send messages.
 - Resizable window, centered chat content, native file pickers and saved appearance.
 - The top-right appearance button opens the shared wallpaper/glass controls.
 
+## iPad layout
+
+The native iPad app shares the fixed 190-point sidebar and music controls with Mac,
+with 44-point touch targets. The sidebar remains visible in portrait and landscape.
+Chat shows the conversation list beside the transcript when its content area is at
+least 760 points wide; in narrower windows it navigates within the detail pane.
+The iPhone keeps its existing navigation choices. iPad continues to use the iOS
+platform services, signing and local storage.
+
 ## Platform boundaries and verification
 
 - iPhone alarms, HealthKit reads, iPhone widgets, Live Activities and the iPhone

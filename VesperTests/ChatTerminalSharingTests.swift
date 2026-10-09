@@ -8,7 +8,8 @@ import SwiftUI
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
         let api = APIClient(baseURL: "https://api.example.com", historyURL: "https://history.example.com/history/", token: "fixture-device-token")
         let client = try VPSDisplaySource.client(api, session: session)
-        let result = try await client.request("/browser/display", history: true)
+        let result = try await client.request("/desktop/display", history: true)
+        XCTAssertEqual(result["kind"].string, "desktop")
         XCTAssertEqual(result["state"].string, "idle")
         XCTAssertEqual(api.historyURL, "https://history.example.com/history/")
         XCTAssertThrowsError(try VPSDisplaySource.client(APIClient(baseURL: "https://api.example.com", historyURL: "http://history.example.com/history", token: "fixture")))
@@ -16,12 +17,12 @@ import SwiftUI
     }
 
     func testVPSDisplayRejectsInvalidFramesAndDistinguishesIdleFromLive() throws {
-        let idle = try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("idle")]))
+        let idle = try VPSDisplayFrame(.object(["kind": .string("desktop"), "state": .string("idle")]))
         XCTAssertNil(idle.data)
-        XCTAssertEqual(idle.label, "当前没有打开的网页")
-        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("live")])))
-        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("unknown")])))
-        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("browser"), "state": .string("live"), "mimeType": .string("image/jpeg"), "capturedAt": .string("2026-10-09T01:00:00Z"), "image": .string(String(repeating: "A", count: 700_001))])))
+        XCTAssertEqual(idle.label, "桌面暂未启动")
+        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("desktop"), "state": .string("live")])))
+        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("desktop"), "state": .string("unknown")])))
+        XCTAssertThrowsError(try VPSDisplayFrame(.object(["kind": .string("desktop"), "state": .string("live"), "mimeType": .string("image/jpeg"), "capturedAt": .string("2026-10-09T01:00:00Z"), "image": .string(String(repeating: "A", count: 700_001))])))
     }
 
     func testVPSBrowserFrameFitsTheViewportAndKeepsZoomWhenTheImageUpdates() async throws {
@@ -210,10 +211,10 @@ private final class VPSDisplayHTTPProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "history.example.com" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let authorized = request.url?.absoluteString == "https://history.example.com/browser/display" && request.httpMethod == "GET" && request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token"
+        let authorized = request.url?.absoluteString == "https://history.example.com/desktop/display" && request.httpMethod == "GET" && request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-device-token"
         let response = HTTPURLResponse(url: request.url!, statusCode: authorized ? 200 : 401, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data((authorized ? "{\"kind\":\"browser\",\"state\":\"idle\"}" : "{\"error\":\"Unauthorized\"}").utf8))
+        client?.urlProtocol(self, didLoad: Data((authorized ? "{\"kind\":\"desktop\",\"state\":\"idle\"}" : "{\"error\":\"Unauthorized\"}").utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() { }

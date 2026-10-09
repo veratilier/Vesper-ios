@@ -142,17 +142,17 @@ Memory uses the existing Vesper device connection via `/api/shared-memory`; no s
 
 ### VPS monitor
 
-In a VPS chat, open the top-right menu and tap the display icon. **画面** shows
-Rowan's actual current VPS browser page and its capture time; **终端** shows the
+In a VPS chat, open the top-right menu and tap the display icon. **桌面** shows
+the VPS's actual full X11 desktop, visible windows and taskbar; **终端** shows the
 existing current-chat commands, outputs and terminal controls. Pinch to zoom the
-browser frame. Idle, login maintenance, capture failure and disconnected states
+desktop frame. Idle, login maintenance, capture failure and disconnected states
 are shown explicitly. A retained disconnected image is labelled as the last frame.
 
-The screen reads the exact HTTPS `/browser/display` route on the paired history
+The screen reads the exact HTTPS `/desktop/display` route on the paired history
 origin, using the existing device bearer token. Redirects are rejected. Frame
 polling runs only while the screen tab is visible and the app is active. Viewing
-does not submit a model turn or browse on Rowan's behalf. The VPS adapter masks
-browser inputs and preserves its existing page/element state and idle lifetime.
+does not submit a model turn or browse on Rowan's behalf. The desktop remains
+visible when no browser page is open. Owner browser login suppresses capture.
 The Mac chat retains its own terminal entry.
 
 Verification: three iOS simulator tests passed for paired origin/authentication,

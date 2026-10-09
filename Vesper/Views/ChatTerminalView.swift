@@ -76,12 +76,12 @@ struct ChatTerminalView: View {
             VStack(spacing: 12) {
                 if store.activeBackend == .vps {
                     Picker("VPS view", selection: $displaySelected) {
-                        Text("画面").tag(true)
+                        Text("桌面").tag(true)
                         Text("终端").tag(false)
                     }.pickerStyle(.segmented).accessibilityIdentifier("vps-monitor-tabs")
                 }
                 if showingDisplay {
-                    VPSBrowserDisplay(api: store.api)
+                    VPSDesktopDisplay(api: store.api)
                 } else {
                 HStack(spacing: 6) {
                     Circle().fill(connected ? Color.green : Color.orange).frame(width: 7, height: 7)
@@ -247,7 +247,7 @@ struct VPSDisplayFrame {
     let capturedAt: String
     let data: Data?
     init(_ value: JSONValue) throws {
-        guard value["kind"].string == "browser", ["live", "working", "idle", "owner_login", "private", "unavailable"].contains(value["state"].string) else {
+        guard value["kind"].string == "desktop", ["live", "working", "idle", "owner_login", "private", "unavailable"].contains(value["state"].string) else {
             throw ServiceError(message: "The VPS returned an invalid display status.")
         }
         state = value["state"].string; title = value["title"].string; url = value["url"].string
@@ -257,24 +257,24 @@ struct VPSDisplayFrame {
         else {
             guard value["mimeType"].string == "image/jpeg", encoded.utf8.count <= 700_000,
                   let bytes = Data(base64Encoded: encoded), bytes.count <= 512 * 1024, UIImage(data: bytes) != nil,
-                  !capturedAt.isEmpty else { throw ServiceError(message: "The VPS returned an invalid browser frame.") }
+                  !capturedAt.isEmpty else { throw ServiceError(message: "The VPS returned an invalid desktop frame.") }
             data = bytes
         }
-        if state == "live", data == nil { throw ServiceError(message: "The VPS did not return the live browser frame.") }
+        if state == "live", data == nil { throw ServiceError(message: "The VPS did not return the live desktop frame.") }
     }
     var label: String {
         switch state {
-        case "live": return busy ? "浏览器正在操作" : "实时浏览器画面"
-        case "working": return "浏览器正在更新"
-        case "idle": return "当前没有打开的网页"
-        case "owner_login": return "浏览器正在由你维护登录"
-        case "private": return "当前网页含敏感会话信息"
+        case "live": return "实时 VPS 桌面"
+        case "working": return "桌面画面正在更新"
+        case "idle": return "桌面暂未启动"
+        case "owner_login": return "登录维护中，画面暂时隐藏"
+        case "private": return "当前画面含敏感会话信息"
         default: return "暂时无法取得画面"
         }
     }
 }
 
-struct VPSBrowserDisplay: View {
+struct VPSDesktopDisplay: View {
     let api: APIClient
     @Environment(\.scenePhase) private var scenePhase
     @State private var frame: VPSDisplayFrame?
@@ -299,13 +299,13 @@ struct VPSBrowserDisplay: View {
                 }
             }
             if let data = frame?.data, let image = UIImage(data: data) {
-                VPSFrameViewport(image: image).accessibilityLabel("VPS 当前网页画面，可双指缩放")
+                VPSFrameViewport(image: image).accessibilityLabel("VPS 完整桌面画面，可双指缩放")
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "display").font(.system(size: 36)).foregroundStyle(.white.opacity(0.45))
                     Text(frame?.label ?? "正在连接 VPS…").font(.subheadline)
-                    if frame?.state == "idle" { Text("Rowan 打开网页时，画面会自动出现在这里。").font(.caption).foregroundStyle(.white.opacity(0.65)) }
+                    if frame?.state == "idle" { Text("桌面服务启动后，画面会自动出现在这里。").font(.caption).foregroundStyle(.white.opacity(0.65)) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if let captured = frame?.capturedAt, !captured.isEmpty {
@@ -313,7 +313,7 @@ struct VPSBrowserDisplay: View {
                     .font(.caption2).foregroundStyle(.white.opacity(0.65))
             }
             if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-            Text("VPS 浏览器 · 双指缩放 · 仅查看").font(.caption2).foregroundStyle(.white.opacity(0.65))
+            Text("VPS 桌面 · 双指缩放 · 仅查看").font(.caption2).foregroundStyle(.white.opacity(0.65))
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .task(id: taskID) { await follow() }
     }
@@ -330,7 +330,7 @@ struct VPSBrowserDisplay: View {
             defer { client.requestSession.invalidateAndCancel() }
             while !Task.isCancelled {
                 do {
-                    let value = try await client.request("/browser/display", history: true)
+                    let value = try await client.request("/desktop/display", history: true)
                     try Task.checkCancellation()
                     frame = try VPSDisplayFrame(value); connected = true; error = ""
                 } catch is CancellationError { return }

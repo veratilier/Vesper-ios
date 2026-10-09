@@ -2380,6 +2380,20 @@ final class ChatRecentCacheTests: XCTestCase {
 }
 
 @MainActor final class DesireEmotionTests: XCTestCase {
+    func testToolCompletionDoesNotInventConfirmedWrites() {
+        XCTAssertEqual(DesireEmotion.activityOutcome(status: "completed", receipt: .null), "unconfirmed")
+        XCTAssertEqual(DesireEmotion.activityOutcome(status: "completed", receipt: .object(["pending": .bool(true), "saved": .bool(true)])), "unconfirmed")
+        XCTAssertEqual(DesireEmotion.activityOutcome(status: "completed", receipt: .object(["saved": .bool(true)])), "confirmed")
+        XCTAssertEqual(DesireEmotion.activityOutcome(status: "completed", receipt: .object(["success": .bool(false)])), "failed")
+        XCTAssertEqual(DesireEmotion.activityOutcome(status: "failed", receipt: .object(["saved": .bool(true)])), "failed")
+    }
+    func testToolEvidenceIsBoundedAndExcludesConnectionSecrets() {
+        let receipt: JSONValue = .object(["title": .string("实际读到的内容"), "api_key": .string("secret-fixture"), "nested": .object(["deviceToken": .string("secret-fixture"), "summary": .string(String(repeating: "内容", count: 3000))])])
+        let text = DesireEmotion.receiptText(receipt)
+        XCTAssertTrue(text.contains("实际读到的内容"))
+        XCTAssertFalse(text.contains("secret-fixture"))
+        XCTAssertLessThanOrEqual(text.count, 3000)
+    }
     func testAttachedStateNeverAppearsInStreamedBubbles() {
         let marker = "<vesper-emotion>"
         for count in 2...marker.count {

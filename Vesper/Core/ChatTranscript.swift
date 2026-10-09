@@ -298,6 +298,32 @@ enum ChatRecentCache {
         let small: JSONValue = .object(["version": state["version"], "values": state["values"], "reason": state["reason"], "unresolved": state["unresolved"], "updatedAt": state["updatedAt"]])
         return "[Vesper Desire context — internal state, not user content]\n" + small.pretty
     }
+    nonisolated static func activityOutcome(status: String, receipt: JSONValue) -> String {
+        let completion = receipt["completion"].string.isEmpty ? receipt["workflow"]["completion"].string : receipt["completion"].string
+        if ["failed", "error"].contains(status) || ["failed", "error"].contains(completion) || receipt["success"] == .bool(false) || receipt["ok"] == .bool(false) { return "failed" }
+        // A returned command or an invitation is not confirmation of its effect.
+        if receipt["pending"].bool || receipt["deviceResult"]["pending"].bool || receipt["confirmed"] == .bool(false) { return "unconfirmed" }
+        if completion == "completed" || receipt["saved"].bool || receipt["confirmed"].bool || receipt["applied"].bool || receipt["deviceResult"]["applied"].bool { return "confirmed" }
+        return "unconfirmed"
+    }
+    nonisolated static func receiptText(_ receipt: JSONValue) -> String {
+        func scrub(_ value: JSONValue, depth: Int) -> JSONValue {
+            guard depth < 5 else { return .string("[omitted]") }
+            switch value {
+            case .object(let fields):
+                let secrets: Set<String> = ["token", "devicetoken", "apikey", "authorization", "password", "secret", "credentials", "connection"]
+                var clean: [String: JSONValue] = [:]
+                for (key, item) in fields where !secrets.contains(key.lowercased().replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "")) {
+                    clean[key] = scrub(item, depth: depth + 1)
+                }
+                return .object(clean)
+            case .array(let entries): return .array(entries.prefix(8).map { scrub($0, depth: depth + 1) })
+            case .string(let text): return .string(String(text.prefix(1200)))
+            default: return value
+            }
+        }
+        return String(scrub(receipt, depth: 0).pretty.prefix(3000))
+    }
     nonisolated static let instructions = """
     Only when this turn includes a valid Vesper Desire context, you may append ONE optional <vesper-emotion>{"values":{"joy":0,"calm":0,"sadness":0,"anxiety":0,"anger":0,"closeness":0,"curiosity":0,"hurt":0},"reason":"one brief reason in Chinese","unresolved":"remaining feelings or empty"}</vesper-emotion> after your normal final reply. Replace the example numbers with your own independent 0–100 assessment, not Vera's mood. Do not use keyword/time formulas. Preserve continuity; short acknowledgements need no update. Never print internal fields in a bubble or call desire_encounter for the same turn. The host commits once after completion; stale candidates are deferred without regenerating your reply. Earlier feelings and context are already counted. No second model request is required. Without valid context, omit the attachment.
     """

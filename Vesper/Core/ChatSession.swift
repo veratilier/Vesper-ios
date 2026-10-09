@@ -855,7 +855,7 @@ enum ChatUserInput {
             }
         }
     }
-    private func persistEmotions(turn: String) {
+    private func persistEmotions(turn: String, completed: Bool) {
         guard voiceCallContext == nil, appStore?.activeBackend == .vps, let api, !turn.isEmpty else { return }
         let turnMessages = messages.filter { $0["metadata"]["turnId"].string == turn && !ChatPresentation.isActivity($0) && ["user", "agent"].contains($0["role"].string) }
         var evidence: [JSONValue] = turnMessages.map { message in
@@ -863,12 +863,14 @@ enum ChatUserInput {
         }
         for record in ToolActivityRecords.cards(events) {
             let status = record["status"].string
-            let outcome = ["failed", "error"].contains(status) ? "failed" : ["completed", "done", "success"].contains(status) ? "confirmed" : "unconfirmed"
-            evidence.append(.object(["id": .string("vps:tool:" + conversationID + ":" + turn + ":" + String(record.id.suffix(60))), "stream": .string("vps:" + conversationID), "at": .string(isoNow()), "kind": .string("activity"), "text": .string(String((record["title"].string + " · " + status + "\n" + record["output"].string).prefix(4000))), "outcome": .string(outcome)]))
+            let receipt = record["emotionReceipt"]
+            let outcome = record["emotionOutcome"].string.isEmpty ? DesireEmotion.activityOutcome(status: status, receipt: receipt) : record["emotionOutcome"].string
+            let detail = receipt == .null ? record["output"].string : receipt.string
+            evidence.append(.object(["id": .string("vps:tool:" + conversationID + ":" + turn + ":" + String(record.id.suffix(60))), "stream": .string("vps:" + conversationID), "at": .string(isoNow()), "kind": .string("activity"), "text": .string(String((record["title"].string + " · " + status + "\n" + detail).prefix(4000))), "outcome": .string(outcome)]))
         }
         evidence = Array(evidence.prefix(100))
         var candidate: JSONValue?
-        if let user = turnMessages.first(where: { $0["role"].string == "user" && $0["metadata"]["emotionBaseVersion"] != .null }),
+        if completed, let user = turnMessages.first(where: { $0["role"].string == "user" && $0["metadata"]["emotionBaseVersion"] != .null }),
            let attached = turnMessages.last(where: { $0["metadata"]["emotionCandidate"] != .null })?["metadata"]["emotionCandidate"] {
             var value = attached
             value["updateId"] = .string("chat:vps:" + turn); value["baseVersion"] = user["metadata"]["emotionBaseVersion"]
@@ -1827,7 +1829,9 @@ enum ChatUserInput {
                 do { try queueReceivedHistory(messages[index]); try checkCallback(); thinkingSummary = "" } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but the thinking summary could not be saved." }
             }
             guard (try? checkCallback()) != nil else { return }
-            if p["turn"]["status"].string == "completed" { persistEmotions(turn: completed) }
+            // Interrupted turns still leave their real messages and tool receipts
+            // pending. Only a successfully completed turn may commit a candidate.
+            persistEmotions(turn: completed, completed: p["turn"]["status"].string == "completed")
             busy = false; status = ""; turnID = nil
             if p["turn"]["error"] != .null { error = p["turn"]["error"]["message"].string }
         } else if method == "turn/started" {
@@ -1894,10 +1898,11 @@ enum ChatUserInput {
         let callID = p["callId"].string.isEmpty ? (p["itemId"].string.isEmpty ? packet["id"].pretty : p["itemId"].string) : p["callId"].string
         let toolStarted = Date()
         var toolError: String?
+        var emotionReceipt: JSONValue = .null
         recordTool(callID, name: name, status: "running", duration: nil, output: "")
         defer {
             if conversationID == targetConversation, (try? checkCallback()) != nil {
-                recordTool(callID, name: name, status: toolError == nil ? "completed" : "failed", duration: Date().timeIntervalSince(toolStarted) * 1000, output: toolError ?? "")
+                recordTool(callID, name: name, status: toolError == nil ? "completed" : "failed", duration: Date().timeIntervalSince(toolStarted) * 1000, output: toolError ?? "", emotionReceipt: emotionReceipt)
             }
         }
         var args = p["arguments"]
@@ -1990,6 +1995,7 @@ enum ChatUserInput {
                     JSONValue.object(["id": item["id"], "conversationId": item["conversationId"], "role": item["role"], "content": item["content"], "createdAt": item["createdAt"], "attachments": item["metadata"]["attachments"]])
                 }
                 let result: JSONValue = .object(["messages": .array(originals), "hasMore": response["hasMore"], "before": response["before"], "nextOffset": .number(args["offset"].number + Double(originals.count))])
+                emotionReceipt = result
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 return
@@ -2005,6 +2011,7 @@ enum ChatUserInput {
                                           "role": item["role"], "preview": .string(String(item["content"].string.prefix(300))), "createdAt": item["createdAt"]])
                     }
                     let result = JSONValue.object(["favorites": .array(saved), "total": .number(Double(all.count))])
+                    emotionReceipt = result
                     try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                     try checkCallback()
                     return
@@ -2036,6 +2043,7 @@ enum ChatUserInput {
                 }
                 try checkCallback()
                 let result = JSONValue.object(["saved": .bool(true), "messageId": .string(messageID), "conversationId": .string(id)])
+                emotionReceipt = result
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 return
@@ -2063,6 +2071,7 @@ enum ChatUserInput {
                     result = try SystemPlanner.shared.calendarSnapshot()
                 }
                 try checkCallback()
+                emotionReceipt = result
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 events.append("\(deviceTool) · completed")
@@ -2094,6 +2103,7 @@ enum ChatUserInput {
                 try checkCallback()
                 var result = alarms.snapshot
                 if !changed.isEmpty { result["result"] = .string(changed) }
+                emotionReceipt = result
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(alarms.error == nil), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 events.append("manage_native_alarm · " + action)
@@ -2142,6 +2152,7 @@ enum ChatUserInput {
                 try checkCallback()
                 if !outcome["pending"].bool && !outcome["applied"].bool { throw ServiceError(message: outcome["error"].string) }
                 let result: JSONValue = .object(["action": .string("seek_requested"), "deviceResult": outcome])
+                emotionReceipt = result
                 try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(result.pretty)])])])]))
                 try checkCallback()
                 return
@@ -2207,6 +2218,7 @@ enum ChatUserInput {
                     else { messages.append(fileMessage) }
                 }
             }
+            emotionReceipt = r["result"]
             try await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(true), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(r["result"].pretty)])])])]))
                 try checkCallback()
             events.append("\(name) · completed")
@@ -2219,8 +2231,9 @@ enum ChatUserInput {
             try? await sendPacket(.object(["id": packet["id"], "result": .object(["success": .bool(false), "contentItems": .array([.object(["type": .string("inputText"), "text": .string(error.localizedDescription)])])])]))
         }
     }
-    private func recordTool(_ id: String, name: String, status: String, duration: Double?, output: String) {
+    private func recordTool(_ id: String, name: String, status: String, duration: Double?, output: String, emotionReceipt: JSONValue = .null) {
         var record: JSONValue = .object(["id": .string(id), "title": .string(name), "status": .string(status), "output": .string(output)])
+        if emotionReceipt != .null { record["emotionReceipt"] = .string(DesireEmotion.receiptText(emotionReceipt)); record["emotionOutcome"] = .string(DesireEmotion.activityOutcome(status: status, receipt: emotionReceipt)) }
         if let duration { record["durationMs"] = .number(duration) }
         let encoded = "vesper-tool:" + record.pretty
         if let index = events.firstIndex(where: { ToolActivityRecords.decode($0)?.id == id }) { events[index] = encoded }

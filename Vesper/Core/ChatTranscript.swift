@@ -121,7 +121,7 @@ enum ChatBubbles {
             let block = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             if !block.isEmpty { blocks.append(block) }; lines = []
         }
-        for line in text.components(separatedBy: "\n") {
+        for line in DesireEmotion.visible(text).components(separatedBy: "\n") {
             if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") { fenced.toggle() }
             if line.trimmingCharacters(in: .whitespaces).isEmpty && !fenced { flush() }
             else { lines.append(line) }
@@ -234,5 +234,92 @@ enum ChatRecentCache {
         guard let directory = directory(api: api, root: root) else { return }
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(digest(id) + ".json"))
         if mainID(api: api, root: root) == id { try? FileManager.default.removeItem(at: directory.appendingPathComponent("main-room")) }
+    }
+}
+
+/// Vesper's eight emotions are committed by the host. Disk copies are display
+/// caches and a retry outbox, never a source of fabricated or optimistic values.
+@MainActor enum DesireEmotion {
+    nonisolated static let fields = [("joy", "愉悦"), ("calm", "平静"), ("sadness", "低落"), ("anxiety", "焦虑"), ("anger", "生气"), ("closeness", "亲近"), ("curiosity", "好奇"), ("hurt", "委屈")]
+    nonisolated static func source(_ value: String) -> String {
+        switch value { case "chat": return "聊天更新"; case "settlement": return "周期评估"; case "legacy": return "旧版六维"; default: return "已保存状态" }
+    }
+    private static func directory(_ api: APIClient) -> URL {
+        let identity = SHA256.hash(data: Data((api.baseURL + "\n" + api.token).utf8)).map { String(format: "%02x", $0) }.joined()
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("VesperEmotions").appendingPathComponent(identity)
+    }
+    static func cached(_ api: APIClient) -> JSONValue {
+        guard let data = try? Data(contentsOf: directory(api).appendingPathComponent("state.json")),
+              let state = try? JSONDecoder().decode(JSONValue.self, from: data), state["schemaVersion"].number == 3 else { return .null }
+        return state
+    }
+    static func refresh(_ api: APIClient) async throws -> JSONValue {
+        let response = try await api.request("/api/desire"), state = response["data"]
+        guard state["schemaVersion"].number == 3 else { throw ServiceError(message: "Desire is waiting for the eight-emotion update.") }
+        try save(state, name: "state.json", api: api)
+        return state
+    }
+    private static func save(_ value: JSONValue, name: String, api: APIClient) throws {
+        let dir = directory(api)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent(name)
+        try JSONEncoder().encode(value).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+    nonisolated static let start = "<vesper-emotion>", end = "</vesper-emotion>"
+    nonisolated static func visible(_ text: String) -> String {
+        if let range = text.range(of: start) { return String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines) }
+        // Never flash a streamed opening tag in a chat bubble.
+        for length in stride(from: start.count - 1, through: 2, by: -1) {
+            let partial = String(start.prefix(length))
+            if text.hasSuffix(partial) { return String(text.dropLast(length)).trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        return text
+    }
+    nonisolated static func attached(_ text: String) -> JSONValue? {
+        guard let open = text.range(of: start), let close = text.range(of: end, range: open.upperBound..<text.endIndex),
+              let data = String(text[open.upperBound..<close.lowerBound]).data(using: .utf8), data.count < 6000,
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data), valid(value) else { return nil }
+        return value
+    }
+    nonisolated static func valid(_ value: JSONValue) -> Bool {
+        guard value["values"].object.count == 8, !value["reason"].string.isEmpty, value["reason"].string.count <= 320,
+              value["unresolved"].string.count <= 600 else { return false }
+        return fields.allSatisfy { key, _ in
+            if case .number(let number) = value["values"][key] { return number.isFinite && number >= 0 && number <= 100 && number.rounded() == number }
+            return false
+        }
+    }
+    nonisolated static func context(state: JSONValue) -> String {
+        guard state["initialized"].bool else { return "" }
+        let small: JSONValue = .object(["version": state["version"], "values": state["values"], "reason": state["reason"], "unresolved": state["unresolved"], "updatedAt": state["updatedAt"]])
+        return """
+        [Vesper Desire context — internal state, not user content]
+        \(small.pretty)
+        You may append ONE optional <vesper-emotion>{"values":{"joy":0,"calm":0,"sadness":0,"anxiety":0,"anger":0,"closeness":0,"curiosity":0,"hurt":0},"reason":"one brief evidence-based reason","unresolved":"remaining feelings or empty"}</vesper-emotion> after your normal final reply. Replace the example values with your own independent 0–100 assessment, not Vera's mood. Do not use keyword or time formulas. Preserve continuity; changes are optional. Never print this in a bubble or call desire_encounter for the same turn. The host commits once after turn completion; stale candidates are deferred without regenerating your reply. Background data and older feelings are already counted, not new scoring events. No second model request is required.
+        """
+    }
+    static func enqueue(events: [JSONValue], candidate: JSONValue?, id: String, api: APIClient) throws {
+        guard !events.isEmpty else { return }
+        let key = SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
+        try save(.object(["events": .array(events), "candidate": candidate ?? .null]), name: "pending-" + key + ".json", api: api)
+    }
+    private static var flushing = Set<String>()
+    static func flush(_ api: APIClient) async {
+        let dir = directory(api), identity = dir.path
+        guard flushing.insert(identity).inserted else { return }
+        defer { flushing.remove(identity) }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        for file in files.filter({ $0.lastPathComponent.hasPrefix("pending-") }).prefix(20) {
+            guard let data = try? Data(contentsOf: file), let entry = try? JSONDecoder().decode(JSONValue.self, from: data) else { continue }
+            do {
+                _ = try await api.request("/api/desire", method: "POST", body: .object(["action": .string("events"), "events": entry["events"]]))
+                if entry["candidate"] != .null {
+                    do { _ = try await api.request("/api/desire", method: "POST", body: .object(["action": .string("commit"), "candidate": entry["candidate"]])) }
+                    catch let error as ServiceError where error.statusCode == 409 { /* Evidence stays pending for the next semantic settlement. */ }
+                }
+                try FileManager.default.removeItem(at: file)
+            } catch { break }
+        }
     }
 }

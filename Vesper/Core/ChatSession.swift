@@ -647,6 +647,10 @@ enum ChatUserInput {
             conversationID = nextID
         }
         appStore = store; api = store.api; endpoint = store.socketURL
+        if store.activeBackend == .vps {
+            let emotionAPI = store.api
+            Task { await DesireEmotion.flush(emotionAPI); _ = try? await DesireEmotion.refresh(emotionAPI) }
+        }
         toolCatalog.prefetch(store.api)
         activateSendSync(store.api)
         let historyAPI = store.api
@@ -850,6 +854,30 @@ enum ChatUserInput {
                 }
             }
         }
+    }
+    private func persistEmotions(turn: String) {
+        guard voiceCallContext == nil, appStore?.activeBackend == .vps, let api, !turn.isEmpty else { return }
+        let turnMessages = messages.filter { $0["metadata"]["turnId"].string == turn && !ChatPresentation.isActivity($0) && ["user", "agent"].contains($0["role"].string) }
+        var evidence: [JSONValue] = turnMessages.map { message in
+            .object(["id": .string("vps:" + conversationID + ":" + message.id), "stream": .string("vps:" + conversationID), "at": message["createdAt"], "kind": message["role"], "text": .string(String(DesireEmotion.visible(message["content"].string).prefix(4000))), "outcome": .string("observed")])
+        }
+        for record in ToolActivityRecords.cards(events) {
+            let status = record["status"].string
+            let outcome = ["failed", "error"].contains(status) ? "failed" : ["completed", "done", "success"].contains(status) ? "confirmed" : "unconfirmed"
+            evidence.append(.object(["id": .string("vps:tool:" + conversationID + ":" + turn + ":" + String(record.id.suffix(60))), "stream": .string("vps:" + conversationID), "at": .string(isoNow()), "kind": .string("activity"), "text": .string(String((record["title"].string + " · " + status + "\n" + record["output"].string).prefix(4000))), "outcome": .string(outcome)]))
+        }
+        evidence = Array(evidence.prefix(100))
+        var candidate: JSONValue?
+        if let user = turnMessages.first(where: { $0["role"].string == "user" && $0["metadata"]["emotionBaseVersion"] != .null }),
+           let attached = turnMessages.last(where: { $0["metadata"]["emotionCandidate"] != .null })?["metadata"]["emotionCandidate"] {
+            var value = attached
+            value["updateId"] = .string("chat:vps:" + turn); value["baseVersion"] = user["metadata"]["emotionBaseVersion"]
+            value["source"] = .string("chat"); value["eventIds"] = .array(evidence.map { $0["id"] }); value["cadence"] = .null
+            candidate = value
+        }
+        do { try DesireEmotion.enqueue(events: evidence, candidate: candidate, id: turn, api: api) }
+        catch { return } // Chat delivery stays independent from emotion persistence.
+        Task { await DesireEmotion.flush(api); _ = try? await DesireEmotion.refresh(api) }
     }
     @Published private(set) var openingMainRoom = false
     @discardableResult
@@ -1459,6 +1487,11 @@ enum ChatUserInput {
             user["metadata"]["threadId"] = .string(threadID)
             if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index] = user }
             else { messages.append(user) }
+            let emotionState = DesireEmotion.cached(api)
+            if appStore?.activeBackend == .vps, emotionState["initialized"].bool {
+                user["metadata"]["emotionBaseVersion"] = emotionState["version"]
+                if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index] = user }
+            }
             try queueUserMessage(user, api: api)
             var params: JSONValue = .object(["threadId": .string(threadID), "clientUserMessageId": .string(messageID), "input": .array([.object(["type": .string("text"), "text": .string(text)])]), "summary": .string("concise")])
             var input: [JSONValue] = [.object(["type": .string("text"), "text": .string(modelInputText)])]
@@ -1469,6 +1502,9 @@ enum ChatUserInput {
             }
             for image in images { input.append(.object(["type": .string("image"), "url": .string("data:image/jpeg;base64," + image.base64EncodedString())])) }
             if let stickerInput { input.append(.object(["type": .string("image"), "url": .string(stickerInput)])) }
+            if user["metadata"]["emotionBaseVersion"] != .null {
+                input.insert(.object(["type": .string("text"), "text": .string(DesireEmotion.context(state: emotionState))]), at: 0)
+            }
             params["input"] = .array(input)
             if case .object = recallContext { params["additionalContext"] = recallContext }
             if !model.isEmpty { params["model"] = .string(model) }
@@ -1759,7 +1795,10 @@ enum ChatUserInput {
         else if method == "item/completed", p["item"]["type"].string == "agentMessage" {
             let item = p["item"]; let itemID = item["id"].string
             if let index = messages.firstIndex(where: { $0.id == itemID }) {
-                if !item["text"].string.isEmpty { messages[index]["content"] = item["text"] }
+                if !item["text"].string.isEmpty {
+                    messages[index]["content"] = .string(DesireEmotion.visible(item["text"].string))
+                    if let candidate = DesireEmotion.attached(item["text"].string) { messages[index]["metadata"]["emotionCandidate"] = candidate }
+                }
                 if item["phase"] != .null { messages[index]["metadata"]["phase"] = item["phase"] }
                 messages[index]["status"] = .string("delivered")
                 messages[index]["metadata"]["threadId"] = .string(threadID ?? "")
@@ -1770,6 +1809,8 @@ enum ChatUserInput {
             } else if !item["text"].string.isEmpty {
                 let message: JSONValue = .object(["id": .string(itemID), "conversationId": .string(conversationID), "role": .string("agent"), "content": item["text"], "createdAt": .string(isoNow()), "source": .string("codex"), "status": .string("delivered")])
                 var savedMessage = message
+                savedMessage["content"] = .string(DesireEmotion.visible(item["text"].string))
+                if let candidate = DesireEmotion.attached(item["text"].string) { savedMessage["metadata"]["emotionCandidate"] = candidate }
                 savedMessage["metadata"] = .object(["threadId": .string(threadID ?? ""), "turnId": .string(turnID ?? ""), "thoughtSummary": .string(thinkingSummary), "toolEvents": .array(events.map { .string($0) })])
                 savedMessage["metadata"]["phase"] = item["phase"]
                 messages.append(savedMessage); do { try queueReceivedHistory(savedMessage) } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but history could not be saved." }
@@ -1786,6 +1827,7 @@ enum ChatUserInput {
                 do { try queueReceivedHistory(messages[index]); try checkCallback(); thinkingSummary = "" } catch { guard (try? checkCallback()) != nil else { return }; self.error = "Reply received, but the thinking summary could not be saved." }
             }
             guard (try? checkCallback()) != nil else { return }
+            if p["turn"]["status"].string == "completed" { persistEmotions(turn: completed) }
             busy = false; status = ""; turnID = nil
             if p["turn"]["error"] != .null { error = p["turn"]["error"]["message"].string }
         } else if method == "turn/started" {

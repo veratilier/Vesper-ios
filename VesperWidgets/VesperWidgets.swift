@@ -169,11 +169,14 @@ struct StatusWidgetView: View {
                     Text("remaining").font(.caption)
                     ProgressView(value: remaining, total: 100)
                 } else if key == "desire" {
-                    ForEach(["longing", "tenderness", "playfulness", "intensity", "attachment", "possessiveness"], id: \.self) { field in
-                        if let value = snapshot.values[field] {
-                            HStack { Text(field.capitalized); Spacer(); Text(value.formatted(.number.precision(.fractionLength(0...1)))).monospacedDigit() }.font(.system(size: 10))
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                        ForEach([("joy", "愉悦"), ("calm", "平静"), ("sadness", "低落"), ("anxiety", "焦虑"), ("anger", "生气"), ("closeness", "亲近"), ("curiosity", "好奇"), ("hurt", "委屈")], id: \.0) { field, label in
+                            if let value = snapshot.values[field] {
+                                HStack { Text(label); Spacer(minLength: 2); Text(value.formatted(.number.precision(.fractionLength(0)))).monospacedDigit() }.font(.system(size: 11))
+                            }
                         }
                     }
+                    if snapshot.values.isEmpty { Text("等待情绪评估").font(.caption) }
                 } else { Text(snapshot.text).font(.system(size: 15, design: .serif)).lineLimit(5) }
                 Spacer(minLength: 0)
                 Text("Synced \(snapshot.updatedAt.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 9)).foregroundStyle(.secondary)

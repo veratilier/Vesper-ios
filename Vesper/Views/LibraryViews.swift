@@ -6,62 +6,104 @@ import UniformTypeIdentifiers
 
 struct DesireView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var phase
     @State private var state: JSONValue = .null
     @State private var history: [JSONValue] = []
+    @State private var legacy: [JSONValue] = []
     @State private var status = ""
-    private let fields = [("longing", "想念"), ("tenderness", "温柔"), ("playfulness", "玩心"), ("intensity", "浓度"), ("attachment", "依恋"), ("possessiveness", "占有欲")]
     @State private var showHistory = false
-    @Environment(\.scenePhase) private var phase
+    @State private var legacySelected = false
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack {
-                    Text("此刻的潮汐").font(.system(size: 24, design: .serif))
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("INNER WEATHER").font(.system(size: 10)).tracking(3).foregroundStyle(VesperTheme.muted)
+                        Text("此刻的潮汐").font(.system(size: 28, design: .serif))
+                    }
                     Spacer()
                     Button { showHistory = true } label: {
-                        Image(systemName: "clock.arrow.circlepath").font(.system(size: 21)).frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("Desire history")
+                        Image(systemName: "clock.arrow.circlepath").frame(width: 44, height: 44)
+                    }.vesperGlass(in: Circle(), interactive: true).accessibilityLabel("Desire history")
                 }
-                Rectangle().fill(VesperTheme.muted.opacity(0.4)).frame(width: 28, height: 1)
-                DesireTide(values: fields.map { key, _ in
-                    if case .number(let value) = state[key] { return value }; return nil
-                }).frame(height: 390).clipShape(RoundedRectangle(cornerRadius: 3))
+                DesireTide(values: DesireEmotion.fields.map { key, _ in
+                    if case .number(let value) = state["values"][key] { return value }; return nil
+                }).frame(height: 340).clipShape(RoundedRectangle(cornerRadius: 24))
                 GlassCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("此刻").font(.system(size: 25, design: .serif))
-                        Rectangle().fill(VesperTheme.muted.opacity(0.4)).frame(width: 24, height: 1)
-                        Text(history.first(where: { !$0["note"].string.isEmpty })?["note"].string ?? "有些心绪先抵达岸边，\n有些还在慢慢靠近。")
-                            .font(.system(size: 16, design: .serif)).lineSpacing(6).textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text(state["initialized"].bool ? "岸边的心绪" : "等待第一次评估").font(.system(size: 21, design: .serif))
+                            Spacer()
+                            if state["initialized"].bool { Text("v\(Int(state["version"].number))").font(.caption).foregroundStyle(VesperTheme.muted) }
+                        }
+                        Text(state["reason"].string.isEmpty ? "八种情绪会依据真实聊天和活动更新，旧版数值不会直接迁入。" : state["reason"].string)
+                            .font(.system(size: 16, design: .serif)).lineSpacing(5).textSelection(.enabled)
+                        if let date = AlbumPresentation.date(state["updatedAt"].string) {
+                            Label { Text(date.formatted(date: .abbreviated, time: .shortened) + " · " + DesireEmotion.source(state["source"].string)) } icon: { Image(systemName: "water.waves") }
+                                .font(.caption).foregroundStyle(VesperTheme.muted)
+                        }
+                        if state["cadence"] != .null {
+                            Text("下次活动建议 · \(Int(state["cadence"]["minutes"].number)) 分钟").font(.caption).foregroundStyle(VesperTheme.muted)
+                        }
                     }
                 }
-                Text("潮水轻轻起伏，数值决定抵岸的距离").font(.system(size: 11, design: .serif)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity)
+                Text("八种情绪独立共存 · 每十五分钟轻量评估\n活动仍遵循你的间隔、睡眠与权限设置")
+                    .font(.system(size: 11)).lineSpacing(4).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).multilineTextAlignment(.center)
+                if !state["runtime"]["error"].string.isEmpty {
+                    Label("最近评估暂缓，保留上一份状态", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(VesperTheme.muted)
+                }
                 if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
             }.padding(20).frame(maxWidth: 700).frame(maxWidth: .infinity)
-        }.background(.white.opacity(0.28))
-        .task { await load() }.refreshable { await load() }
+        }
+        .task {
+            state = DesireEmotion.cached(store.api)
+            await load()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                if phase == .active { await load() }
+            }
+        }.refreshable { await load() }
         .onChange(of: phase) { _, value in if value == .active { Task { await load() } } }
         .sheet(isPresented: $showHistory) {
             NavigationStack {
                 ScrollView { VStack(spacing: 16) {
-                    if history.isEmpty { Text("No history yet.").foregroundStyle(VesperTheme.muted) }
-                    ForEach(history) { entry in GlassCard { VStack(alignment: .leading, spacing: 8) {
+                    Picker("History version", selection: $legacySelected) {
+                        Text("八种情绪").tag(false); Text("旧版六维").tag(true)
+                    }.pickerStyle(.segmented)
+                    let records = legacySelected ? legacy : history
+                    if records.isEmpty { Text("暂无记录").foregroundStyle(VesperTheme.muted) }
+                    ForEach(records) { entry in GlassCard { VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(legacySelected ? "旧版六维" : DesireEmotion.source(entry["source"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
+                            Spacer()
+                            if let date = AlbumPresentation.date(entry["createdAt"].string) { Text(date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(VesperTheme.muted) }
+                        }
                         Text(entry["note"].string).textSelection(.enabled)
-                        Text(entry["createdAt"].string).font(.caption).foregroundStyle(VesperTheme.muted)
+                        if !legacySelected {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 70))], alignment: .leading, spacing: 10) {
+                                ForEach(DesireEmotion.fields, id: \.0) { key, label in
+                                    Text(label + " " + (entry["values"][key] == .null ? "—" : String(Int(entry["values"][key].number))))
+                                        .font(.caption).monospacedDigit().foregroundStyle(VesperTheme.muted)
+                                }
+                            }
+                        }
                     } } }
-                }.padding() }.navigationTitle("History")
+                }.padding() }.navigationTitle("Desire · History")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showHistory = false } } }
+            }.task {
+                if let result = try? await store.api.request("/api/desire?view=history&limit=30") { history = result["data"]["records"].array }
+                if let result = try? await store.api.request("/api/desire?view=history&legacy=true&limit=30") { legacy = result["data"]["records"].array }
             }
         }
     }
     private func load() async {
         do {
-            let response = try await store.api.request("/api/desire"); state = response["data"]; WidgetSync.desire(state)
-            let h = try await store.api.request("/api/desire?view=history&limit=20"); history = h["data"]["records"].array
-            if history.isEmpty { history = h["data"]["history"].array }
-            status = ""
-        } catch { status = error.localizedDescription }
+            state = try await DesireEmotion.refresh(store.api)
+            WidgetSync.desire(state); status = ""
+        } catch { status = state["initialized"].bool ? "连接暂不可用，显示上次保存的状态。" : error.localizedDescription }
     }
 }
+
 enum AlbumPresentation {
     static func date(_ value: String) -> Date? {
         let parser = ISO8601DateFormatter()

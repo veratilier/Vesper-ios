@@ -348,99 +348,76 @@ private struct PaperEdge: Shape {
 struct DesireTide: View {
     let values: [Double?]
     var compact = false
+    @AppStorage("vesperPalette") private var paletteName = "blue"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
     @State private var previous: [Double] = []
     @State private var target: [Double] = []
     @State private var changedAt = Date.timeIntervalSinceReferenceDate
-    private let labels = ["想念", "温柔", "玩心", "浓度", "依恋", "占有"]
+    private var dark: Bool { paletteName == "black" }
+    private var labels: [String] { DesireEmotion.fields.map(\.1) }
+    private var ink: Color { dark ? Color(red: 0.89, green: 0.94, blue: 0.96) : Color(red: 0.16, green: 0.29, blue: 0.34) }
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            Canvas { context, size in
-                draw(context: context, size: size, time: time)
-            }
+            Canvas { context, size in draw(context: context, size: size, time: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate) }
         }
         .onAppear { previous = normalized; target = normalized }
         .onChange(of: values) { _, _ in
             let now = Date.timeIntervalSinceReferenceDate
-            previous = (0..<6).map { value($0, time: now) }; target = normalized; changedAt = now
+            previous = (0..<8).map { value($0, time: now) }; target = normalized; changedAt = now
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("此刻的潮汐")
-        .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "未加载" : "未加载") }.joined(separator: "，"))
+        .accessibilityElement(children: .ignore).accessibilityLabel("八种情绪的潮汐")
+        .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "待评估" : "待评估") }.joined(separator: "，"))
     }
-    private var normalized: [Double] { (0..<6).map { values.indices.contains($0) ? min(100, max(0, values[$0] ?? 0)) : 0 } }
+    private var normalized: [Double] { (0..<8).map { values.indices.contains($0) ? min(100, max(0, values[$0] ?? 0)) : 0 } }
     private func value(_ i: Int, time: Double) -> Double {
-        guard previous.count == 6, target.count == 6 else { return normalized[i] }
-        let t = reduceMotion ? 1 : min(1, max(0, (time - changedAt) / 1.2))
-        let eased = t * t * (3 - 2 * t)
-        return previous[i] + (target[i] - previous[i]) * eased
+        guard previous.count == 8, target.count == 8 else { return normalized[i] }
+        let t = reduceMotion ? 1 : min(1, max(0, (time - changedAt) / 1.5))
+        return previous[i] + (target[i] - previous[i]) * t * t * (3 - 2 * t)
     }
     private func shore(_ x: CGFloat, size: CGSize, time: Double) -> CGFloat {
-        let u = min(5, max(0, Double(x / max(1, size.width)) * 6 - 0.5))
-        let index = min(4, Int(u)), t = u - Double(index)
-        let p0 = value(max(0, index - 1), time: time), p1 = value(index, time: time)
-        let p2 = value(index + 1, time: time), p3 = value(min(5, index + 2), time: time)
-        let v = min(100, max(0, 0.5 * ((2 * p1) + (-p0 + p2) * t + (2*p0 - 5*p1 + 4*p2 - p3)*t*t + (-p0 + 3*p1 - 3*p2 + p3)*t*t*t)))
-        let base = size.height * (0.65 - v * 0.0043)
-        let time = reduceMotion ? 0 : time
-        let wave = sin(Double(x) * 0.018 + time * 0.48) * 4.5
-        let ripple = sin(Double(x) * 0.037 - time * 0.65) * 2 + sin(Double(x) * 0.079 + time * 0.43) * 0.8
-        return base + CGFloat(wave + ripple)
+        let u = min(7, max(0, Double(x / max(1, size.width)) * 8 - 0.5))
+        let index = min(6, Int(u)), t = u - Double(index)
+        let smooth = t * t * (3 - 2 * t)
+        let v = value(index, time: time) * (1 - smooth) + value(index + 1, time: time) * smooth
+        let cycle = time.truncatingRemainder(dividingBy: 9) / 9
+        // Incoming water advances slowly, then drains naturally down the beach.
+        let runup = reduceMotion ? 0 : sin(.pi * (cycle < 0.65 ? cycle / 0.65 * 0.5 : 0.5 + (cycle - 0.65) / 0.35 * 0.5)) * 13
+        return size.height * (0.62 - v * 0.0038) - runup + CGFloat(sin(Double(x) * 0.027) * 2.8)
     }
     private func line(size: CGSize, time: Double, offset: CGFloat = 0) -> Path {
-        var path = Path()
-        for x in stride(from: CGFloat(0), through: size.width, by: 2) {
-            let point = CGPoint(x: x, y: shore(x, size: size, time: time) + offset)
-            if x == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        var p = Path()
+        for x in stride(from: CGFloat(0), through: size.width + 2, by: 2) {
+            let point = CGPoint(x: min(x, size.width), y: shore(min(x, size.width), size: size, time: time) + offset)
+            if x == 0 { p.move(to: point) } else { p.addLine(to: point) }
         }
-        path.addLine(to: CGPoint(x: size.width, y: shore(size.width, size: size, time: time) + offset))
-        return path
+        return p
     }
     private func draw(context: GraphicsContext, size: CGSize, time: Double) {
-        let bottom = size.height - (compact ? 0 : 40)
-        let rect = CGRect(origin: .zero, size: size)
-        context.fill(Path(rect), with: .linearGradient(Gradient(colors: [Color(red: 0.96, green: 0.96, blue: 0.94), Color(red: 0.88, green: 0.92, blue: 0.94)]), startPoint: .zero, endPoint: CGPoint(x: size.width, y: size.height)))
-        // Deterministic mineral grains, not per-frame random noise.
-        for i in 0..<550 {
-            let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width
-            let y = CGFloat((i * 211 + 43) % 991) / 991 * size.height
-            context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(0.45)))
+        let rect = CGRect(origin: .zero, size: size), bottom = size.height
+        let sand = dark ? [Color(red: 0.10, green: 0.17, blue: 0.23), Color(red: 0.15, green: 0.22, blue: 0.27)] : [Color(red: 0.95, green: 0.95, blue: 0.91), Color(red: 0.83, green: 0.88, blue: 0.86)]
+        context.fill(Path(rect), with: .linearGradient(Gradient(colors: sand), startPoint: .zero, endPoint: CGPoint(x: size.width, y: bottom)))
+        for i in 0..<300 {
+            let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width, y = CGFloat((i * 211 + 43) % 991) / 991 * bottom
+            context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(dark ? 0.08 : 0.3)))
         }
         var water = line(size: size, time: time)
         water.addLine(to: CGPoint(x: size.width, y: bottom)); water.addLine(to: CGPoint(x: 0, y: bottom)); water.closeSubpath()
-        context.fill(water, with: .linearGradient(Gradient(colors: [Color(red: 0.72, green: 0.85, blue: 0.88), Color(red: 0.42, green: 0.66, blue: 0.77), Color(red: 0.24, green: 0.45, blue: 0.61)]), startPoint: CGPoint(x: 0, y: size.height * 0.22), endPoint: CGPoint(x: 0, y: bottom)))
+        let colors = dark ? [Color(red: 0.21, green: 0.40, blue: 0.46), Color(red: 0.08, green: 0.22, blue: 0.33), Color(red: 0.04, green: 0.10, blue: 0.19)] : [Color(red: 0.66, green: 0.82, blue: 0.81), Color(red: 0.35, green: 0.62, blue: 0.68), Color(red: 0.15, green: 0.37, blue: 0.49)]
+        context.fill(water, with: .linearGradient(Gradient(colors: colors), startPoint: CGPoint(x: 0, y: bottom * 0.25), endPoint: CGPoint(x: 0, y: bottom)))
         var sea = context; sea.clip(to: water)
-        // Fine crossing caustics give the water depth without an opaque image.
-        for row in 0..<36 {
-            var caustic = Path()
-            for column in 0...60 {
-                let x = CGFloat(column) / 60 * size.width
-                let y = CGFloat(row) / 36 * bottom + CGFloat(sin(Double(column) * 0.42 + Double(row) * 1.7 + time * 0.12) * 4 + cos(Double(column) * 0.19 - Double(row)) * 3)
-                if column == 0 { caustic.move(to: CGPoint(x: x, y: y)) } else { caustic.addLine(to: CGPoint(x: x, y: y)) }
-            }
-            sea.stroke(caustic, with: .color(.white.opacity(0.12)), lineWidth: 0.7)
+        for i in 0..<4 {
+            let progress = (time / 9 + Double(i) / 4).truncatingRemainder(dividingBy: 1)
+            let offset = CGFloat(1 - progress) * bottom * 0.85
+            sea.stroke(line(size: size, time: time, offset: offset), with: .color(.white.opacity(0.05 + progress * 0.14)), lineWidth: 1 + progress)
         }
-        for offset in [CGFloat(0), 8, 18] {
-            context.stroke(line(size: size, time: time, offset: offset), with: .color(.white.opacity(offset == 0 ? 0.75 : 0.4)), lineWidth: offset == 0 ? 3 : 0.8)
-        }
-        for i in 0..<360 {
-            let x = CGFloat(i) / 359 * size.width
-            let d = CGFloat(sin(Double(i) * 4.7) * 3)
-            let y = shore(x, size: size, time: time) + d
-            sea.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.8, height: 1.2)), with: .color(.white.opacity(0.6)))
-        }
+        context.stroke(line(size: size, time: time), with: .color(.white.opacity(dark ? 0.6 : 0.85)), lineWidth: 2)
         if !compact {
-            for i in 0..<6 {
-                let x = size.width * (CGFloat(i) + 0.5) / 6
-                let y = shore(x, size: size, time: time) - 22
-                var guide = Path(); guide.move(to: CGPoint(x: x, y: y)); guide.addLine(to: CGPoint(x: x, y: y + 19))
-                context.stroke(guide, with: .color(Color(red: 0.33, green: 0.43, blue: 0.5).opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
-                context.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)), with: .color(Color(red: 0.33, green: 0.43, blue: 0.5)))
+            for i in 0..<8 {
+                let x = size.width * (CGFloat(i) + 0.5) / 8, y = shore(x, size: size, time: time) - 22
                 let number = values.indices.contains(i) ? values[i].map { String(Int(min(100, max(0, $0)))) } ?? "—" : "—"
-                context.draw(Text(number).font(.system(size: 19, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: y - 17))
-                context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: size.height - 14))
+                context.draw(Text(number).font(.system(size: 17, design: .serif)).foregroundColor(ink), at: CGPoint(x: x, y: y))
+                context.draw(Text(labels[i]).font(.system(size: 12, design: .serif)).foregroundColor(.white.opacity(0.9)), at: CGPoint(x: x, y: bottom - 22))
             }
         }
     }

@@ -2378,3 +2378,34 @@ final class ChatRecentCacheTests: XCTestCase {
         chat.disconnect()
     }
 }
+
+@MainActor final class DesireEmotionTests: XCTestCase {
+    func testAttachedStateNeverAppearsInStreamedBubbles() {
+        let marker = "<vesper-emotion>"
+        for count in 2...marker.count {
+            XCTAssertEqual(ChatBubbles.texts("我在这里。\n\n" + String(marker.prefix(count))), ["我在这里。"])
+        }
+        XCTAssertEqual(ChatBubbles.texts("我在这里。<vesper-emotion>{broken json"), ["我在这里。"])
+        XCTAssertEqual(ChatBubbles.texts("<vesper-emotion>{internal}"), [])
+    }
+    func testEightIndependentValuesAreValidatedAndNotRenamedLegacyFields() {
+        var values: [String: JSONValue] = [:]
+        for (key, _) in DesireEmotion.fields { values[key] = .number(70) }
+        var candidate: JSONValue = .object(["values": .object(values), "reason": .string("真实近期对话。"), "unresolved": .string("")])
+        XCTAssertTrue(DesireEmotion.valid(candidate))
+        candidate["values"]["joy"] = .number(101)
+        XCTAssertFalse(DesireEmotion.valid(candidate))
+        candidate["values"] = .object(["longing": .number(70)])
+        XCTAssertFalse(DesireEmotion.valid(candidate))
+    }
+    func testCompletedCandidateIsSeparateFromOrdinaryReply() {
+        let values = Dictionary(uniqueKeysWithValues: DesireEmotion.fields.map { ($0.0, JSONValue.number(30)) })
+        let value: JSONValue = .object(["values": .object(values), "reason": .string("聊天后的状态。"), "unresolved": .string("")])
+        let text = "晚点见。\n\n<vesper-emotion>" + value.pretty + "</vesper-emotion>"
+        XCTAssertEqual(DesireEmotion.attached(text), value)
+        XCTAssertEqual(ChatBubbles.texts(text), ["晚点见。"])
+        XCTAssertNil(DesireEmotion.attached("<vesper-emotion>{incomplete"))
+        let user: JSONValue = .object(["id": .string("user"), "role": .string("user"), "content": .string("请解释 <vesper-emotion>")])
+        XCTAssertEqual(ChatBubbles.textParts(user).first?["content"].string, "请解释 <vesper-emotion>")
+    }
+}

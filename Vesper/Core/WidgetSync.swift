@@ -9,11 +9,10 @@ import Foundation
     }
     static func desire(_ data: JSONValue) {
         var values: [String: Double] = [:]
-        for key in ["longing", "tenderness", "playfulness", "intensity", "attachment", "possessiveness"] {
-            if case .number(let value) = data[key] { values[key] = value }
+        for (key, _) in DesireEmotion.fields {
+            if case .number(let value) = data["values"][key] { values[key] = value }
         }
-        guard !values.isEmpty else { return }
-        WidgetSnapshot(updatedAt: Date(), text: "此刻的潮汐", values: values).save("desire")
+        WidgetSnapshot(updatedAt: AlbumPresentation.date(data["updatedAt"].string) ?? Date(), text: data["reason"].string.isEmpty ? "等待情绪评估" : data["reason"].string, values: values).save("desire")
         WidgetCenter.shared.reloadTimelines(ofKind: "VesperDesireWidget")
     }
     static func usage(_ remaining: Int?) {

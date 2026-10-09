@@ -256,6 +256,8 @@ enum ChatRecentCache {
     static func refresh(_ api: APIClient) async throws -> JSONValue {
         let response = try await api.request("/api/desire"), state = response["data"]
         guard state["schemaVersion"].number == 3 else { throw ServiceError(message: "Desire is waiting for the eight-emotion update.") }
+        let prior = cached(api)
+        if prior["version"].number > state["version"].number { return prior }
         try save(state, name: "state.json", api: api)
         return state
     }

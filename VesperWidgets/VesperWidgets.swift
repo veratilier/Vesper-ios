@@ -176,7 +176,7 @@ struct StatusWidgetView: View {
                             }
                         }
                     }
-                    if snapshot.values.isEmpty { Text("等待情绪评估").font(.caption) }
+                    if snapshot.values["joy"] == nil { Text("等待情绪评估").font(.caption) }
                 } else { Text(snapshot.text).font(.system(size: 15, design: .serif)).lineLimit(5) }
                 Spacer(minLength: 0)
                 Text("Synced \(snapshot.updatedAt.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 9)).foregroundStyle(.secondary)

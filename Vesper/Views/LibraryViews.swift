@@ -99,7 +99,7 @@ struct DesireView: View {
     private func load() async {
         do {
             state = try await DesireEmotion.refresh(store.api)
-            WidgetSync.desire(state); status = ""
+            status = ""
         } catch { status = state["initialized"].bool ? "连接暂不可用，显示上次保存的状态。" : error.localizedDescription }
     }
 }

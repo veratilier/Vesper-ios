@@ -58,6 +58,8 @@ private struct NativeChatBackendHome: View {
     @State private var contactName = ""
     @State private var savingContactName = false
     @State private var activityRefreshID = 0
+    @AppStorage("chat-contact.vps.window") private var vpsWindowID = ""
+    @AppStorage("chat-contact.mac.window") private var macWindowID = ""
     private var selectedBackend: VesperBackend { store.activeBackend }
     private var backendSelection: Binding<VesperBackend> {
         Binding(get: { selectedBackend }, set: { backend in
@@ -66,13 +68,17 @@ private struct NativeChatBackendHome: View {
     }
     @StateObject private var backendContacts = ChatBackendContacts()
     private var selectedContacts: ChatBackendContactSnapshot { backendContacts.snapshot(selectedBackend) }
+    private var windowSelection: Binding<String> {
+        Binding(get: { selectedBackend == .vps ? vpsWindowID : macWindowID }, set: { id in
+            if selectedBackend == .vps { vpsWindowID = id } else { macWindowID = id }
+        })
+    }
     private var selectedClient: APIClient {
         backendContacts.client(selectedBackend) ?? APIClient(baseURL: selectedContacts.baseURL, historyURL: BackendConnection.load(selectedBackend).historyURL, token: "")
     }
     private var mainConversationID: String {
         selectedContacts.mainID
     }
-    private var otherConversations: [JSONValue] { selectedContacts.conversations.filter { $0.id != mainConversationID } }
     private var rowDisabled: Bool { store.loading || loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
         if sideBySide {
@@ -113,39 +119,27 @@ private struct NativeChatBackendHome: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                ChatBackendContactDeck(selected: backendSelection) { backend in
-                    let contacts = backendContacts.snapshot(backend)
-                    Button { enterChat() } label: {
-                        conversationRowContent(contacts.mainConversation, title: contacts.agentName,
-                                               emptyPreview: contacts.configured ? "Start chatting" : "Not configured", contacts: contacts, showBackend: true)
+                ChatConversationDeck(windows: selectedContacts.windows, selected: windowSelection) { window in
+                    Button { enterChat(window.isMain ? nil : window.conversation) } label: {
+                        conversationRowContent(window.conversation, title: window.title,
+                                               emptyPreview: selectedContacts.configured ? "Start chatting" : "Not configured", contacts: selectedContacts, showBackend: true)
                     }.buttonStyle(.plain)
                         .contactGlassSurface()
-                        .accessibilityLabel("\(contacts.agentName), \(backend == .vps ? "VPS" : "MAC"), \(preview(contacts.mainConversation, empty: "Start chatting"))")
+                        .accessibilityLabel("\(window.title), \(selectedBackend.title), \(preview(window.conversation, empty: "Start chatting"))")
                         .contextMenu {
-                            Button { performForSelectedBackend { beginEditingContactName() } } label: { Label("Edit name", systemImage: "pencil") }
+                            if window.isMain {
+                                Button { performForSelectedBackend { beginEditingContactName() } } label: { Label("Edit contact name", systemImage: "person.crop.circle") }
+                            }
+                            if let item = window.conversation {
+                                Button { performForSelectedBackend { conversationTitle = item["title"].string; renamingConversation = item } } label: { Label("Rename conversation", systemImage: "pencil") }
+                                Button(role: .destructive) { performForSelectedBackend { deletingConversation = item } } label: { Label("Delete conversation", systemImage: "trash") }
+                            }
                         }
                 }
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
-                ForEach(otherConversations) { item in
-                    Button { enterChat(item) } label: {
-                        conversationRow(item, title: item["title"].string.isEmpty ? agentName : item["title"].string, emptyPreview: "No messages yet")
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button { performForSelectedBackend { conversationTitle = item["title"].string; renamingConversation = item } } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
-                        Button(role: .destructive) { performForSelectedBackend { deletingConversation = item } } label: { Label("Delete", systemImage: "trash") }
-                    }
-                    .contextMenu {
-                        Button { performForSelectedBackend { conversationTitle = item["title"].string; renamingConversation = item } } label: { Label("Rename conversation", systemImage: "pencil") }
-                        Button(role: .destructive) { performForSelectedBackend { deletingConversation = item } } label: { Label("Delete conversation", systemImage: "trash") }
-                    }
-                    .buttonStyle(.plain)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                }
                 Text(welcomeLine)
                     .font(.system(.title3, design: .serif)).italic()
                     .foregroundStyle(VesperTheme.muted)
@@ -177,6 +171,23 @@ private struct NativeChatBackendHome: View {
                 if !NativeMusicAccessory.isSupported, let onOpenMusic { MiniMusicPlayer(openMusic: onOpenMusic) }
             }
             .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
+                ToolbarItem(placement: .principal) {
+                    Menu {
+                        ForEach(VesperBackend.allCases) { backend in
+                            let contact = backendContacts.snapshot(backend)
+                            Button { backendSelection.wrappedValue = backend } label: {
+                                Label(contact.agentName + " · " + backend.title,
+                                      systemImage: backend == selectedBackend ? "checkmark" : backend == .vps ? "server.rack" : "laptopcomputer")
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text("Chat").font(.headline)
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                        }.foregroundStyle(VesperTheme.ink).frame(minHeight: 44)
+                    }.accessibilityLabel("Switch contact").accessibilityValue(agentName + " · " + selectedBackend.title)
+                        .accessibilityIdentifier("chat-contact-picker")
+                }
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { performForSelectedBackend { showingFavorites = true } } label: { Image(systemName: "bookmark") }
@@ -219,6 +230,9 @@ private struct NativeChatBackendHome: View {
                 }
             }
             .onChange(of: chat.conversations) { _, _ in captureActiveContacts() }
+            .onChange(of: chat.conversationID) { _, id in
+                if !id.isEmpty { windowSelection.wrappedValue = id }
+            }
             .onChange(of: store.documents["profile"]) { _, _ in captureActiveContacts() }
             .onChange(of: store.token) { _, _ in
                 chat.configure(store); captureActiveContacts(); prepareOtherContacts()
@@ -346,14 +360,6 @@ private struct NativeChatBackendHome: View {
         let text = item["preview"].string.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? empty : text
     }
-    private func conversationRow(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
-        conversationRowContent(item, title: title, emptyPreview: emptyPreview)
-            .contactGlassSurface()
-            .contentShape(Rectangle())
-    }
-    private func conversationRowContent(_ item: JSONValue?, title: String, emptyPreview: String) -> some View {
-        conversationRowContent(item, title: title, emptyPreview: emptyPreview, contacts: selectedContacts)
-    }
     private func conversationRowContent(_ item: JSONValue?, title: String, emptyPreview: String, contacts: ChatBackendContactSnapshot, showBackend: Bool = false) -> some View {
         HStack(spacing: 13) {
             ChatListAvatar(source: contacts.profile["agentAvatar"].string, baseURL: contacts.baseURL)
@@ -377,6 +383,13 @@ private struct NativeChatBackendHome: View {
     }
 }
 
+struct ChatConversationWindow: Identifiable {
+    let id: String
+    let conversation: JSONValue?
+    let title: String
+    let isMain: Bool
+}
+
 struct ChatBackendContactSnapshot {
     let backend: VesperBackend
     let scope: String
@@ -393,6 +406,16 @@ struct ChatBackendContactSnapshot {
     var agentName: String {
         let name = profile["agentName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "Rowan" : name
+    }
+    var windows: [ChatConversationWindow] {
+        var seen: Set<String> = [mainID]
+        return [ChatConversationWindow(id: mainID.isEmpty ? "unconfigured-main" : mainID,
+                                       conversation: mainConversation, title: agentName, isMain: true)]
+            + conversations.compactMap { room in
+                guard !room.id.isEmpty, seen.insert(room.id).inserted else { return nil }
+                let title = room["title"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+                return ChatConversationWindow(id: room.id, conversation: room, title: title.isEmpty ? agentName : title, isMain: false)
+            }
     }
 }
 
@@ -465,22 +488,30 @@ struct ChatBackendContactSnapshot {
     }
 }
 
-private struct ChatBackendContactDeck<Content: View>: View {
-    @Binding var selected: VesperBackend
-    @ViewBuilder var card: (VesperBackend) -> Content
+struct ChatConversationDeck<Content: View>: View {
+    let windows: [ChatConversationWindow]
+    @Binding var selected: String
+    @ViewBuilder var card: (ChatConversationWindow) -> Content
     @GestureState private var drag: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var other: VesperBackend { selected == .vps ? .mac : .vps }
-    private func flip() {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) { selected = other }
+    private var index: Int { windows.firstIndex { $0.id == selected } ?? 0 }
+    private func flip(_ direction: Int) {
+        guard windows.count > 1 else { return }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.85)) {
+            selected = windows[(index + direction + windows.count) % windows.count].id
+        }
     }
     var body: some View {
+        if !windows.isEmpty {
+        VStack(spacing: 5) {
         ZStack {
-            card(other).mask(alignment: .top) { Rectangle().frame(height: 14) }
-                .scaleEffect(x: 0.95, y: 0.95, anchor: .top).offset(y: -14)
-                .allowsHitTesting(false).accessibilityHidden(true)
-            card(selected).offset(y: drag)
-        }.padding(.top, 18).contentShape(Rectangle())
+            ForEach(Array(1..<min(windows.count, 3)).reversed(), id: \.self) { depth in
+                card(windows[(index + depth) % windows.count]).mask(alignment: .top) { Rectangle().frame(height: 14) }
+                    .scaleEffect(x: 1 - CGFloat(depth) * 0.05, y: 0.95, anchor: .top).offset(y: -CGFloat(depth) * 12)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+            card(windows[index]).offset(y: drag)
+        }.padding(.top, windows.count > 2 ? 28 : windows.count > 1 ? 18 : 0).contentShape(Rectangle())
             .highPriorityGesture(DragGesture(minimumDistance: 14)
                 .updating($drag) { value, state, _ in
                     if abs(value.translation.height) > abs(value.translation.width) * 1.25 {
@@ -488,14 +519,22 @@ private struct ChatBackendContactDeck<Content: View>: View {
                     }
                 }
                 .onEnded { value in
-                    if abs(value.translation.height) >= 28, abs(value.translation.height) > abs(value.translation.width) * 1.25 { flip() }
-                })
+                    if abs(value.translation.height) >= 28, abs(value.translation.height) > abs(value.translation.width) * 1.25 {
+                        flip(value.translation.height < 0 ? 1 : -1)
+                    }
+                }, including: windows.count > 1 ? .all : .none)
+            if windows.count > 1 {
+                Text("\(index + 1) / \(windows.count)").font(.caption2).monospacedDigit().foregroundStyle(VesperTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 10).accessibilityHidden(true)
+            }
+        }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Chat backend cards")
-            .accessibilityValue(selected == .vps ? "VPS, 1 of 2" : "MAC, 2 of 2")
-            .accessibilityAction(named: Text("Next backend")) { flip() }
-            .accessibilityAction(named: Text("Previous backend")) { flip() }
-            .accessibilityIdentifier("chat-backend-contact-deck")
+            .accessibilityLabel("Conversation windows")
+            .accessibilityValue("\(index + 1) of \(windows.count)")
+            .accessibilityAction(named: Text("Next conversation")) { flip(1) }
+            .accessibilityAction(named: Text("Previous conversation")) { flip(-1) }
+            .accessibilityIdentifier("chat-conversation-deck")
+        }
     }
 }
 

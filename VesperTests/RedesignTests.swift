@@ -862,6 +862,7 @@ private struct GlassOpacityFixture: View {
         defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
         let store = AppStore()
         store.token = "synthetic-preview-token"
+        store.baseURL = "https://desktop-preview.example"
         store.historyURL = "https://desktop-preview.example/history"
         let chat = ChatSession()
         let host = UIHostingController(rootView: NativeChatHome().environmentObject(store).environmentObject(chat))
@@ -871,7 +872,11 @@ private struct GlassOpacityFixture: View {
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; chat.disconnect() }
         host.view.frame = window.bounds
-        try await Task.sleep(for: .milliseconds(650))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while chat.conversations.count < 2 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try await Task.sleep(for: .milliseconds(300))
         host.view.layoutIfNeeded()
         XCTAssertEqual(chat.conversations.count, 2)
         XCTAssertNil(chat.error)

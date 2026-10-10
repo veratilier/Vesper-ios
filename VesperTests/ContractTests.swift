@@ -240,7 +240,10 @@ final class BackendConnectionTests: XCTestCase {
         let contacts = ChatBackendContacts(cacheRoot: directory, disk: disk, request: { api, path, _ in
             let label = api.baseURL.contains("vps") ? "VPS" : "MAC"
             if path.contains("profile") { return .object(["value": .object(["agentName": .string(label), "agentAvatar": .string(label + "-avatar"), "mainConversationId": .string("same-room")])]) }
-            return .object(["conversations": .array([.object(["id": .string("same-room"), "preview": .string(label + " message")])])])
+            return .object(["conversations": .array([
+                .object(["id": .string("same-room"), "preview": .string(label + " message")]),
+                .object(["id": .string("another-room"), "title": .string(label + " project"), "preview": .string(label + " second window")])
+            ])])
         })
         let vps = APIClient(baseURL: "https://vps.fixture", historyURL: "https://vps.fixture/history", token: "same-synthetic-token")
         let mac = APIClient(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", token: "same-synthetic-token")
@@ -252,6 +255,10 @@ final class BackendConnectionTests: XCTestCase {
         XCTAssertEqual(reopened.snapshot(.vps).profile["agentAvatar"].string, "VPS-avatar")
         XCTAssertEqual(reopened.snapshot(.mac).profile["agentAvatar"].string, "MAC-avatar")
         XCTAssertNotEqual(reopened.snapshot(.vps).scope, reopened.snapshot(.mac).scope)
+        XCTAssertEqual(reopened.snapshot(.vps).windows.map(\.title), ["VPS", "VPS project"])
+        XCTAssertEqual(reopened.snapshot(.mac).windows.map(\.title), ["MAC", "MAC project"])
+        XCTAssertEqual(reopened.snapshot(.vps).windows.last?.conversation?["preview"].string, "VPS second window")
+        XCTAssertEqual(reopened.snapshot(.mac).windows.last?.conversation?["preview"].string, "MAC second window")
     }
     func testLateInactiveReadCannotReplaceFreshActiveContacts() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

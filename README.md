@@ -19,6 +19,14 @@ still uses an opaque, theme-matched surface. Photographs, paper content and data
 colors retain their own appearance. Effects stay local to each surface so nested
 cards and controls preserve their foreground content and layering.
 
+## Chat contacts and windows
+
+The triangle beside Chat opens the VPS/MAC contact picker. Each contact has its
+own conversation card stack: swipe up for the next window, down for the previous,
+then tap the front card to open it. Window selection stays separate per backend;
+switching contacts preserves both live sessions and never opens Connection settings.
+Touch and hold a card (right-click on Mac) to rename or delete a conversation.
+
 ## Build the iPhone app on your Mac
 
 1. Clone this repository and open **Vesper.xcodeproj** in Xcode 16 or later.

@@ -168,6 +168,14 @@ the new entry. General Memory creation no longer offers a dream category.
 
 ## Native chat sending and synchronization
 
+Daily replies request brief spoken Chinese, usually one utterance or idea per
+bubble, separated by blank lines. Detailed explanations and documents remain
+available when requested. Native plain-text replies also display complete
+sentences as separate bubbles; quotation contents, Markdown structures, user
+messages and explicit tool-delivered bubbles remain intact. This changes
+presentation only: original saved text stays unchanged, and older quotation
+links resolve their excerpt against the current layout.
+
 ### Cinema chat continuity
 
 Cinema's local video scene sharing and in-app screen sharing use the selected

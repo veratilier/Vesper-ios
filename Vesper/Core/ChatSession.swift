@@ -1582,7 +1582,7 @@ enum ChatUserInput {
     ])
     static let bubblesTool: JSONValue = .object([
         "name": .string("send_native_bubbles"),
-        "description": .string("Deliver a group of short text bubbles to the current Vesper chat, optionally quoting an exact earlier sentence. Use saved message IDs and exact quote text. Success means delivered: do not repeat these bubbles in final prose. Each item is one bubble, keeping related sentences together."),
+        "description": .string("Deliver short conversational text bubbles to the current Vesper chat, optionally quoting an exact earlier sentence. Usually one utterance or idea per bubble. Use saved message IDs and exact quote text. Success means delivered: do not repeat these bubbles in final prose. Keep quotations and requested structured content intact."),
         "inputSchema": .object(["type": .string("object"), "properties": .object([
             "bubbles": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(20), "items": .object([
                 "type": .string("object"), "properties": .object([

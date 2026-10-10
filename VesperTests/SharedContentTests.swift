@@ -310,6 +310,37 @@ extension SharedContentTests {
         .object(["id": .string("original"), "conversationId": .string("room"), "role": .string(role), "content": .string(text),
                  "createdAt": .string("2026-10-07T10:35:00Z"), "status": .string("delivered")])
     }
+    func testConversationalSentencesKeepQuotedWordsAndOriginalRecord() throws {
+        let sentences = ["这张照片我看到了。", "你说的“等一下！我找找。”我也记着。", "不着急！！", "我等你。"]
+        let text = sentences.joined(), original = message(text)
+        let parts = ChatBubbles.textParts(original)
+        XCTAssertEqual(parts.map { $0["content"].string }, sentences)
+        XCTAssertEqual(parts.map { $0["content"].string }.joined(), text)
+        XCTAssertEqual(original["content"].string, text)
+        XCTAssertTrue(parts.allSatisfy { $0["metadata"]["sourceMessageId"].string == original.id })
+        XCTAssertEqual(ChatBubbles.textParts(message(text, role: "user")).count, 1)
+        let saved = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(ChatBubbles.textParts(saved), parts)
+    }
+    func testCompletedBubblesStayStableWhileStreamingAndStructuresStayIntact() {
+        let text = "我看到了。你说“这次可以了吗？”，我就去看了一眼。可以了！！我在这儿。"
+        var previous: [String] = []
+        for length in 1...text.count {
+            let next = ChatBubbles.texts(String(text.prefix(length)))
+            XCTAssertEqual(Array(next.prefix(max(0, previous.count - 1))), Array(previous.dropLast()))
+            previous = next
+        }
+        for block in ["- 第一项。第二项。", "1. 第一项。第二项。", "# 第一段。第二段。", "> 引用一句。再一句。", "*动作一句。动作两句。*", "看看[说明](https://example.com)。再试一下。", "https://example.com/download?file=note。文件在这里。", "运行 `print(1)`。然后保存。"] {
+            XCTAssertEqual(ChatBubbles.texts(block), [block])
+        }
+    }
+    func testOldQuoteFindsItsTextAfterSentenceLayoutChanges() {
+        let original = message("第一句。第二句。第三句。\n\n最后一句。")
+        let quote: JSONValue = .object(["messageId": .string(original.id), "partId": .string("original#text-1"), "text": .string("最后一句。")])
+        XCTAssertEqual(ChatBubbles.quoteTarget(quote, original: original), "original#text-3")
+        var spanning = quote; spanning["text"] = .string("第一句。第二句。")
+        XCTAssertEqual(ChatBubbles.quoteTarget(spanning, original: original), original.id)
+    }
     func testParagraphsKeepMarkdownAndOriginalHistoryIntact() {
         let prose = "第一句。\n\n第二段，放在一起。\n还有一句。\n\n```swift\nlet a = 1\n\nprint(a)\n```"
         let original = message(prose)

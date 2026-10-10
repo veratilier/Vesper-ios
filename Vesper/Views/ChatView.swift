@@ -621,11 +621,13 @@ struct ChatView: View {
                            followsLatest = false
                            quoteJumpRevision += 1
                            chat.jumpMessageID = nil
-                           quoteJumpPart = quote["partId"].string
+                           quoteJumpPart = nil
                            Task {
                                let id = quote["messageId"].string
                                await chat.reveal(id)
-                               if !chat.messages.contains(where: { $0.id == id }) { chat.error = "原消息已删除或暂时无法加载。" }
+                               if let original = chat.messages.first(where: { $0.id == id }) {
+                                   quoteJumpPart = ChatBubbles.quoteTarget(quote, original: original)
+                               } else { chat.error = "原消息已删除或暂时无法加载。" }
                            }
                        })
             .equatable()

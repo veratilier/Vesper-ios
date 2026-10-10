@@ -255,7 +255,7 @@ private struct NativeChatBackendHome: View {
                 }
                 Button("Cancel", role: .cancel) { deletingConversation = nil }
             } message: {
-                Text("This deletes the conversation from Vesper history and cannot be undone. Copies stored separately by Codex are not deleted.")
+                Text((deletingConversation?["title"].string ?? "") + "\n" + String((deletingConversation?["preview"].string ?? "").prefix(100)) + "\n\nThis deletes this conversation. Please check the preview before confirming.")
             }
             .alert("Rename conversation", isPresented: Binding(get: { renamingConversation != nil }, set: { if !$0 { renamingConversation = nil } })) {
                 TextField("Name", text: $conversationTitle)
@@ -510,7 +510,7 @@ struct ChatConversationDeck<Content: View>: View {
                     .scaleEffect(x: 1 - CGFloat(depth) * 0.05, y: 0.95, anchor: .top).offset(y: -CGFloat(depth) * 12)
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
-            card(windows[index]).offset(y: drag)
+            card(windows[index]).id(windows[index].id).offset(y: drag)
         }.padding(.top, windows.count > 2 ? 28 : windows.count > 1 ? 18 : 0).contentShape(Rectangle())
             .highPriorityGesture(DragGesture(minimumDistance: 14)
                 .updating($drag) { value, state, _ in

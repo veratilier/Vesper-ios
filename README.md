@@ -159,6 +159,17 @@ Memory uses the existing Vesper device connection via `/api/shared-memory`; no s
 
 ## Native chat sending and synchronization
 
+### Cinema chat continuity
+
+Cinema's local video scene sharing and in-app screen sharing use the selected
+VPS or Mac contact's existing `ChatSession`, conversation and composer. Opening
+Cinema keeps the current chat and any reply in progress. After a fresh launch,
+it restores that backend's selected conversation (or main room) before sharing;
+a failed restore never sends a frame into a new movie conversation. The Cinema
+Chat sheet and regular Chat show the same messages. Existing movie conversations
+remain in history; the legacy `native-movie-conversation` pointer is no longer used.
+The separate ReplayKit broadcast extension retains its existing observation session.
+
 ### VPS monitor
 
 In a VPS chat, open the top-right menu and tap the display icon. **桌面** shows

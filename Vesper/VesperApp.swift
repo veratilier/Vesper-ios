@@ -534,7 +534,9 @@ struct RootView: View {
         case .memory: MemoryView()
         case .readingRoom: ReadingRoomView()
         case .bookmarks: BookmarksView()
-        case .movieRoom: MovieRoomView()
+        case .movieRoom:
+            let runtime = chatWorkspace.runtime(chatWorkspace.selectedBackend)
+            MovieRoomView().environmentObject(runtime.store).environmentObject(runtime.chat).environmentObject(runtime.chat.composer)
         case .weather: WeatherView()
         case .settings: SettingsView()
         }

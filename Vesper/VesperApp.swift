@@ -17,7 +17,6 @@ import UserNotifications
     var body: some Scene {
         WindowGroup {
             RootView()
-                .vesperGlassContainer()
                 #if targetEnvironment(macCatalyst)
                 .frame(minWidth: 980, minHeight: 650)
                 #endif

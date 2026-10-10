@@ -69,17 +69,6 @@ private struct VesperGlassModifier<S: Shape>: ViewModifier {
             .overlay(shape.stroke(.white.opacity(palette == "black" ? 0.22 : 0.45), lineWidth: 0.7))
     }
 }
-private struct VesperGlassContainerModifier: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 0) { content }
-        } else { content }
-        #else
-        content
-        #endif
-    }
-}
 extension View {
     func vesperGlass<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
         modifier(VesperGlassModifier(shape: shape, interactive: interactive))
@@ -90,9 +79,6 @@ extension View {
     }
     func vesperMaterial(_ material: Material) -> some View {
         vesperMaterial(material, in: Rectangle())
-    }
-    func vesperGlassContainer() -> some View {
-        modifier(VesperGlassContainerModifier())
     }
 }
 struct NavigationStyleToggle: View {

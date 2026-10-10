@@ -16,8 +16,8 @@ composer, voice bars, custom controls and sidebar surfaces use Apple's
 system Material fallback. The glass transparency preference adjusts the tint;
 it never fades the whole optical effect or foreground text. Reduce Transparency
 still uses an opaque, theme-matched surface. Photographs, paper content and data
-colors retain their own appearance. A zero-spacing `GlassEffectContainer` groups
-the main interface's effects without joining separate cards.
+colors retain their own appearance. Effects stay local to each surface so nested
+cards and controls preserve their foreground content and layering.
 
 ## Build the iPhone app on your Mac
 

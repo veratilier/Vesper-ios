@@ -31,7 +31,7 @@ import UserNotifications
 }
 enum Destination: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters", notes = "Notes"
-    case workflow = "Workflow", jottings = "Sketch", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
+    case workflow = "Workflow", jottings = "Sketch", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", dreams = "Dreams", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
     var id: String { rawValue }
     var title: String { self == .journal ? "Diary" : rawValue }
     var icon: String {
@@ -50,6 +50,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .music: return "music.note"
         case .album: return "photo.on.rectangle"
         case .memory: return "brain.head.profile"
+        case .dreams: return "moon.stars"
         case .readingRoom: return "book.pages"
         case .bookmarks: return "bookmark"
         case .movieRoom: return "film"
@@ -60,7 +61,7 @@ enum Destination: String, CaseIterable, Identifiable {
 }
 /// Discard obsolete/duplicate destinations and append newly added features.
 enum VesperGridOrder {
-    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom, .alarms, .jottings, .weather]
+    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .dreams, .readingRoom, .bookmarks, .movieRoom, .alarms, .jottings, .weather]
     static func restore(_ saved: String) -> [Destination] {
         let names = (try? JSONDecoder().decode([String].self, from: Data(saved.utf8))) ?? []
         var seen = Set<String>()
@@ -532,6 +533,7 @@ struct RootView: View {
         case .music: MusicView()
         case .album: AlbumView()
         case .memory: MemoryView()
+        case .dreams: DreamsView()
         case .readingRoom: ReadingRoomView()
         case .bookmarks: BookmarksView()
         case .movieRoom:

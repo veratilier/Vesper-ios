@@ -466,7 +466,7 @@ struct WakeSleepView: View {
                 DatePicker("Until", selection: $end, displayedComponents: .hourAndMinute)
                 Toggle("Save a dream after sleep", isOn: $dreamEnabled)
             } footer: {
-                Text("Beijing time. Automatic activity and notifications stay silent during sleep. After sleep, one dream is saved to Memory → 梦. Dreams are imagination, not factual memories.")
+                Text("Beijing time. Automatic activity and notifications stay silent during sleep. After sleep, one dream is saved to Collection → Dreams. Dreams are imagination, not factual memories.")
             }.disabled(!supported || busy)
             if !status.isEmpty { Section { Text(status).font(.caption).textSelection(.enabled) } }
         }.environment(\.timeZone, Self.zone)

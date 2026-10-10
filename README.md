@@ -56,6 +56,7 @@ app installed until the native version has passed your device checks.
 | Desire | Independent Vesper state, six-value flower, history |
 | Album | Existing photos, category filter, full-size viewer and sharing |
 | Memory | Native shared Memory library: existing-device authentication, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
+| Dreams | Separate glass archive in Collection and the desktop/iPad sidebar; original dream records, Beijing dates, search and full text, without copying or deleting their stored contents |
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
 | Settings | Device pairing, local agent instructions, existing MCP connection list, document export; Appearance keeps glass style independent of the White/Black/Blue palette and offers Liquid Glass or classic frosted glass |
 | Usage & balances | GPT weekly used/remaining/reset time, ElevenLabs subscription usage and overage, MiniMax official billing links |
@@ -156,6 +157,14 @@ dismissal, expired credentials, connection interruption, and wake config version
 ## Shared Memory library
 
 Memory uses the existing Vesper device connection via `/api/shared-memory`; no separate Memory login or password is required. Deploy the Vesper-web shared-memory endpoint and its SHARED_MEMORY_DB binding first (see that repository's docs/shared-memory.md). The backend accesses the same memory-db used by the independent Memory page/MCP. Nothing is packaged as a stale data snapshot. Existing Vesper records remain under the legacy entry, with no automatic import or deletion. Chat-side automatic memory retrieval is unchanged. Real-account and physical-device verification is separate from CI.
+
+Dreams now appear in **Collection → Dreams**, separate from Memory's categories,
+search results and recent-memory previews. They read the existing `kind=dream`
+records through that same authenticated service. IDs, original text, versions,
+sleep-generated dream writes and the database remain intact; no data migration,
+withdrawal or duplicate copy is performed. Dream searches explicitly include
+non-factual records and remain limited to dreams. The Sleep time help points to
+the new entry. General Memory creation no longer offers a dream category.
 
 ## Native chat sending and synchronization
 

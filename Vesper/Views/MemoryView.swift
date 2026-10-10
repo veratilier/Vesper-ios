@@ -17,8 +17,8 @@ final class SharedMemoryLibrary: ObservableObject {
     }
 }
 
-private let libraryKinds = ["episode", "preference", "agreement", "reflection", "dream"]
-private let memoryCategories = ["episode", "preference_agreement", "reflection", "dream"]
+private let libraryKinds = ["episode", "preference", "agreement", "reflection"]
+private let memoryCategories = ["episode", "preference_agreement", "reflection"]
 private func libraryKind(_ value: String) -> String {
     ["episode": "我们的经历", "preference": "偏好", "agreement": "约定", "preference_agreement": "偏好与约定", "reflection": "感受", "dream": "梦与想象"][value] ?? value
 }
@@ -42,6 +42,197 @@ private struct MemorySurface: ViewModifier {
     func body(content: Content) -> some View {
         content.padding(13).frame(maxWidth: .infinity, alignment: .leading)
             .vesperGlass(in: RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+/// Dreams retain their original records; only their presentation is separated.
+enum DreamDisplay {
+    struct Month: Identifiable {
+        let id: String
+        let title: String
+        var records: [JSONValue]
+    }
+    static func date(_ row: JSONValue) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for key in ["occurred_at", "recorded_at"] {
+            let value = row[key].string
+            if let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value) { return date }
+        }
+        return nil
+    }
+    static func format(_ date: Date, pattern: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
+    static func text(_ row: JSONValue) -> String {
+        cleanText(row["body"].string)
+    }
+    static func cleanText(_ value: String) -> String {
+        var original = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["【梦】", "【模拟梦境】"] where original.hasPrefix(prefix) {
+            original = String(original.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let newline = original.firstIndex(where: \.isNewline),
+           ["梦", "梦与想象", "模拟梦境"].contains(String(original[..<newline]).trimmingCharacters(in: .whitespaces)) {
+            return String(original[newline...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return original
+    }
+    static func title(_ row: JSONValue) -> String {
+        let title = row["details"]["title"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty && !["梦", "梦与想象", "模拟梦境"].contains(title) { return title }
+        let first = text(row).split(whereSeparator: { $0.isNewline || $0 == "。" || $0 == "！" || $0 == "？" }).first.map(String.init) ?? "一场梦"
+        return String(first.prefix(24)) + (first.count > 24 ? "…" : "")
+    }
+    static func months(_ rows: [JSONValue]) -> [Month] {
+        let dreams = rows.filter { $0["kind"].string == "dream" }.sorted {
+            (date($0) ?? .distantPast) > (date($1) ?? .distantPast)
+        }
+        var result: [Month] = []
+        for row in dreams {
+            let date = date(row)
+            let key = date.map { format($0, pattern: "yyyy-MM") } ?? "undated"
+            if result.last?.id == key { result[result.count - 1].records.append(row) }
+            else { result.append(Month(id: key, title: date.map { format($0, pattern: "yyyy年M月") } ?? "日期未记录", records: [row])) }
+        }
+        return result
+    }
+}
+
+struct DreamsView: View {
+    @EnvironmentObject private var store: AppStore
+    @StateObject private var library = SharedMemoryLibrary()
+    @State private var rows: [JSONValue] = []
+    @State private var query = ""
+    @State private var offset = 0
+    @State private var total = 0
+    @State private var busy = false
+    @State private var status = ""
+    @State private var generation = 0
+    @State private var selected: JSONValue?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .center, spacing: 16) {
+                    Image(systemName: "moon.stars").font(.system(size: 25, weight: .light))
+                        .frame(width: 58, height: 58).vesperGlass(in: Circle())
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Dreams").font(VesperTheme.title(34))
+                        Text("夜里留下的片段。").font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
+                }.padding(.top, 4)
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(VesperTheme.muted)
+                    TextField("找一个梦里的片段…", text: $query).submitLabel(.search)
+                        .onSubmit { Task { await load(reset: true) } }
+                    if !query.isEmpty {
+                        Button { query = ""; Task { await load(reset: true) } } label: { Image(systemName: "xmark.circle.fill") }
+                            .accessibilityLabel("清空梦的搜索")
+                    }
+                    Button { Task { await load(reset: true) } } label: { Image(systemName: "arrow.right").frame(width: 32, height: 32) }
+                        .accessibilityLabel("搜索梦")
+                }.font(.subheadline).padding(.horizontal, 14).padding(.vertical, 7)
+                    .vesperGlass(in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("dream-search")
+                if !status.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(status).font(.caption).textSelection(.enabled)
+                        Button("重新加载") { Task { await load(reset: true) } }.font(.caption)
+                    }.foregroundStyle(VesperTheme.muted)
+                }
+                if rows.isEmpty && !busy && status.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "moon").font(.system(size: 32, weight: .ultraLight))
+                        Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "等下一场梦，慢慢落在这里。" : "没有找到这个片段。")
+                            .font(.subheadline)
+                    }.foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.vertical, 60)
+                }
+                ForEach(DreamDisplay.months(rows)) { month in
+                    Text(month.title).font(.system(.subheadline, design: .serif)).foregroundStyle(VesperTheme.muted)
+                        .padding(.top, 8)
+                    ForEach(month.records) { row in
+                        Button { selected = row } label: { DreamPreview(row: row) }.buttonStyle(.plain)
+                    }
+                }
+                if busy { ProgressView().frame(maxWidth: .infinity).padding() }
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && offset < total {
+                    Button { Task { await load(reset: false) } } label: {
+                        Label("更早的梦", systemImage: "chevron.down").font(.subheadline)
+                            .frame(maxWidth: .infinity).padding(.vertical, 14).vesperGlass(in: Capsule(), interactive: true)
+                    }.buttonStyle(.plain).disabled(busy)
+                }
+                Text("梦境与想象，非真实经历。").font(.caption2).foregroundStyle(VesperTheme.muted)
+                    .frame(maxWidth: .infinity).padding(.top, 8)
+            }.padding(20).padding(.bottom, 80)
+        }.scrollDismissesKeyboard(.interactively).foregroundStyle(VesperTheme.ink)
+            .accessibilityIdentifier("dream-archive")
+            .task(id: store.baseURL + "\n" + store.token) {
+                library.api = store.api; rows = []; offset = 0; total = 0
+                await load(reset: true)
+            }
+            .refreshable { await load(reset: true) }
+            .sheet(item: $selected, onDismiss: { Task { await load(reset: true) } }) { row in
+                NavigationStack {
+                    LibraryRecordView(library: library, id: row.id, dream: true)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { selected = nil } } }
+                }.presentationDragIndicator(.visible)
+            }
+    }
+    private func load(reset: Bool) async {
+        if !reset && busy { return }
+        generation += 1; let ticket = generation
+        let start = reset ? 0 : offset
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        busy = true; status = ""
+        defer { if ticket == generation { busy = false } }
+        do {
+            let response: JSONValue
+            if text.isEmpty {
+                var params = URLComponents()
+                params.queryItems = [URLQueryItem(name: "kind", value: "dream"), URLQueryItem(name: "offset", value: String(start)),
+                                     URLQueryItem(name: "limit", value: "40"), URLQueryItem(name: "include_superseded", value: "false")]
+                response = try await library.request("/api/memories?" + (params.percentEncodedQuery ?? ""))
+            } else {
+                response = try await library.request("/api/search", body: .object(["query": .string(text), "kind": .string("dream"),
+                    "limit": .number(20), "include_nonfacts": .bool(true), "include_superseded": .bool(false)]))
+            }
+            try Task.checkCancellation()
+            guard ticket == generation else { return }
+            let page = response[text.isEmpty ? "items" : "hits"].array
+            let dreams = page.filter { $0["kind"].string == "dream" }
+            var seen = Set<String>()
+            rows = ((reset ? [] : rows) + dreams).filter { seen.insert($0.id).inserted }
+            offset = start + page.count
+            total = text.isEmpty ? Int(response["total"].number) : rows.count
+            status = response["warnings"].array.map(\.string).joined(separator: " · ")
+        } catch {
+            if ticket == generation && !Task.isCancelled {
+                if reset { rows = []; offset = 0; total = 0 }
+                status = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct DreamPreview: View {
+    let row: JSONValue
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(spacing: 7) {
+                Image(systemName: "moon").font(.caption2)
+                Text(DreamDisplay.date(row).map { DreamDisplay.format($0, pattern: "M月d日") } ?? "日期未记录")
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption2)
+            }.font(.caption).foregroundStyle(VesperTheme.muted)
+            Text(DreamDisplay.title(row)).font(.system(.title3, design: .serif)).lineLimit(2).foregroundStyle(VesperTheme.ink)
+            Text(row["details"]["summary"].string.isEmpty ? DreamDisplay.text(row) : DreamDisplay.cleanText(row["details"]["summary"].string))
+                .font(.subheadline).lineSpacing(5).lineLimit(4).foregroundStyle(VesperTheme.muted)
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 24)).accessibilityIdentifier("dream-" + row.id)
     }
 }
 
@@ -92,7 +283,7 @@ struct MemoryView: View {
         .task { library.api = store.api; await load() }
         .onChange(of: kind) { _, _ in refresh() }
         .onChange(of: recentExpanded) { _, expanded in if expanded { Task { await loadRecent() } } }
-        .sheet(isPresented: $reviewing) { MemoryRecallView(conversationID: nil) }
+        .sheet(isPresented: $reviewing) { MemoryRecallView(conversationID: nil, includeDreams: false) }
         .sheet(isPresented: $adding) { LibraryEditor(library: library, record: nil) { refresh() } }
         .sheet(isPresented: $filtering) { filters }
         .sheet(item: $selected, onDismiss: { refresh() }) { row in
@@ -175,7 +366,11 @@ struct MemoryView: View {
     private func loadRecent() async {
         do {
             let result = try await store.api.request("/api/memory/context")
-            deliveries = result["items"].array.filter { $0["status"].string == "delivered" && !$0["memories"].array.isEmpty }
+            deliveries = result["items"].array.compactMap { item in
+                var delivery = item
+                delivery["memories"] = .array(item["memories"].array.filter { $0["kind"].string != "dream" })
+                return delivery["status"].string == "delivered" && !delivery["memories"].array.isEmpty ? delivery : nil
+            }
             recallStatus = result["unavailable"].bool ? "最近浮现暂时不可用。" : deliveries.isEmpty ? "还没有已提供给模型的记忆记录。" : ""
         } catch { recallStatus = "最近浮现暂时不可用：" + error.localizedDescription }
     }
@@ -194,7 +389,7 @@ struct MemoryView: View {
                 response = try await library.request("/api/search", body: .object(["query": .string(text), "limit": .number(20), "include_superseded": .bool(oldVersions), "include_nonfacts": .bool(kind == "reflection" || kind == "dream"), "kind": .string(kind)]))
             }
             guard ticket == generation else { return }
-            rows = response[text.isEmpty ? "items" : "hits"].array
+            rows = response[text.isEmpty ? "items" : "hits"].array.filter { $0["kind"].string != "dream" }
             total = text.isEmpty ? Int(response["total"].number) : rows.count
             status = response["warnings"].array.map(\.string).joined(separator: " · ")
         } catch { if ticket == generation { rows = []; status = error.localizedDescription } }
@@ -222,6 +417,7 @@ private struct LibraryPreviewCard: View {
 private struct LibraryRecordView: View {
     @ObservedObject var library: SharedMemoryLibrary
     let id: String
+    var dream = false
     @State private var record: JSONValue = .null
     @State private var status = ""
     @State private var editing = false
@@ -235,12 +431,12 @@ private struct LibraryRecordView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     if record != .null {
                         Text(libraryKind(record["kind"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
-                        Text(memoryTitle(record)).font(.title3.weight(.medium))
-                        Text(memoryDate(record["occurred_at"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
+                        Text(dream ? DreamDisplay.title(record) : memoryTitle(record)).font(.system(.title3, design: dream ? .serif : .default).weight(.medium))
+                        Text(dream ? (DreamDisplay.date(record).map { DreamDisplay.format($0, pattern: "yyyy年M月d日") } ?? "日期未记录") : memoryDate(record["occurred_at"].string)).font(.caption).foregroundStyle(VesperTheme.muted)
                         if ["dream", "reflection"].contains(record["kind"].string) {
                             Text(record["kind"].string == "dream" ? "梦与想象 · 虚构，非真实经历" : "主观感受 · 不等同于事实").font(.caption).foregroundStyle(VesperTheme.muted)
                         }
-                        Text(record["body"].string).font(.subheadline).fontWeight(.regular).lineSpacing(4).textSelection(.enabled).modifier(MemorySurface())
+                        Text(dream ? DreamDisplay.text(record) : record["body"].string).font(.subheadline).fontWeight(.regular).lineSpacing(dream ? 7 : 4).textSelection(.enabled).modifier(MemorySurface())
                         if record["withdrawal"] != .null { Text("已撤回：" + record["withdrawal"]["reason"].string).font(.caption) }
                         if record["review"] != .null { Text("待核对：" + record["review"]["reason"].string).font(.caption) }
                         sources
@@ -255,7 +451,7 @@ private struct LibraryRecordView: View {
                     if !status.isEmpty { Text(status).font(.caption).foregroundStyle(VesperTheme.muted) }
                 }.padding(20).padding(.bottom, 80)
             }
-        }.foregroundStyle(VesperTheme.ink).navigationTitle("记忆详情").navigationBarTitleDisplayMode(.inline).task { await load() }
+        }.foregroundStyle(VesperTheme.ink).navigationTitle(dream ? "梦" : "记忆详情").navigationBarTitleDisplayMode(.inline).task { await load() }
         .sheet(isPresented: $editing) { LibraryEditor(library: library, record: record) { Task { await load() } } }
         .alert("撤回这条记忆？", isPresented: $withdrawing) {
             TextField("撤回原因", text: $reason)
@@ -286,7 +482,7 @@ private struct LibraryRecordView: View {
         DisclosureGroup("版本与修订") {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(record["versions"].array) { version in
-                    NavigationLink { LibraryRecordView(library: library, id: version.id) } label: {
+                    NavigationLink { LibraryRecordView(library: library, id: version.id, dream: dream) } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("v\(Int(version["version"].number)) · " + (version["active"].number == 1 ? "当前版本" : "历史版本"))
                             Text(version["correction_reason"].string).font(.caption)
@@ -297,7 +493,11 @@ private struct LibraryRecordView: View {
         }.font(.subheadline).tint(VesperTheme.muted)
     }
     private func load() async {
-        do { record = try await library.request("/api/memories/" + id); status = "" }
+        do {
+            let value = try await library.request("/api/memories/" + id)
+            if dream && value["kind"].string != "dream" { throw SharedMemoryLibrary.LibraryError("这条记录不是梦，请返回重新选择。") }
+            record = value; status = ""
+        }
         catch { status = error.localizedDescription }
     }
     private func withdraw() async {
@@ -326,12 +526,13 @@ private struct LibraryEditor: View {
     @State private var busy = false
     @State private var error = ""
     var body: some View {
-        EditorSheet(title: candidateID != nil ? "修改候选" : record == nil ? "新增记忆" : "纠正记忆", busy: busy, save: { Task { await save() } }) {
+        EditorSheet(title: candidateID != nil ? "修改候选" : record == nil ? "新增记忆" : record?["kind"].string == "dream" ? "修订梦" : "纠正记忆", busy: busy, save: { Task { await save() } }) {
             FormField(label: "短标题（可选）", text: $title)
             FormField(label: "摘要（可选）", text: $summary)
             FormField(label: "原文", text: $bodyText, multiline: true)
             FormField(label: "来源说明", text: $source)
-            Picker("类型", selection: $kind) { ForEach(libraryKinds, id: \.self) { Text(libraryKind($0)).tag($0) } }
+            if record?["kind"].string == "dream" { Text("梦与想象").font(.caption).foregroundStyle(VesperTheme.muted) }
+            else { Picker("类型", selection: $kind) { ForEach(libraryKinds, id: \.self) { Text(libraryKind($0)).tag($0) } } }
             FormField(label: "来源链接（可留空）", text: $sourceURL)
             Toggle("已知发生时间", isOn: $hasDate)
             if hasDate { DatePicker("发生时间", selection: $occurredDate) }
@@ -595,6 +796,7 @@ private struct MemoryRelationGraph: View {
 /// Actual acknowledged context and source-checked proposals, never claims of model use.
 struct MemoryRecallView: View {
     let conversationID: String?
+    var includeDreams = true
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var library = SharedMemoryLibrary()
@@ -665,8 +867,14 @@ struct MemoryRecallView: View {
             var query = URLComponents(); query.queryItems = [URLQueryItem(name: "debug", value: debug ? "1" : "0")]
             if let conversationID { query.queryItems?.append(URLQueryItem(name: "conversationId", value: conversationID)) }
             let result = try await store.api.request("/api/memory/context?" + (query.percentEncodedQuery ?? ""))
-            deliveries = result["items"].array
-            let pending = try await store.api.request("/api/memory/candidates"); candidates = pending["items"].array
+            deliveries = result["items"].array.compactMap { item in
+                if includeDreams { return item }
+                var delivery = item
+                delivery["memories"] = .array(item["memories"].array.filter { $0["kind"].string != "dream" })
+                return !delivery["memories"].array.isEmpty ? delivery : nil
+            }
+            let pending = try await store.api.request("/api/memory/candidates")
+            candidates = pending["items"].array.filter { includeDreams || $0["kind"].string != "dream" }
             error = result["unavailable"].bool ? "召回记录暂时不可用。" : ""
         } catch { self.error = error.localizedDescription }
     }

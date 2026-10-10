@@ -5,6 +5,8 @@ import UIKit
 struct ServiceError: LocalizedError {
     let message: String
     var statusCode: Int? = nil
+    var code: String? = nil
+    var conversationDeleted: Bool { statusCode == 410 && code == "conversation_deleted" }
     var errorDescription: String? { message }
 }
 
@@ -160,7 +162,7 @@ struct APIClient {
         guard let response = response as? HTTPURLResponse else { throw ServiceError(message: "No HTTP response from the server.") }
         guard (200..<300).contains(response.statusCode) else {
             let detail = value["error"].string.isEmpty ? "The server could not complete this request." : value["error"].string
-            throw ServiceError(message: "HTTP \(response.statusCode): " + detail, statusCode: response.statusCode)
+            throw ServiceError(message: "HTTP \(response.statusCode): " + detail, statusCode: response.statusCode, code: value["code"].string)
         }
         if method == "DELETE", value == .null { return .object([:]) }
         guard value != .null else { throw ServiceError(message: "The server returned an unreadable response.") }

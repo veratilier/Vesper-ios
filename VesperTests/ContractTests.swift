@@ -1267,6 +1267,7 @@ private final class SendPreparationProtocol: URLProtocol {
     private static var held: [SendPreparationProtocol] = []
     private static var holdHistory = false
     private static var failHistory = false
+    static var deletedRoom = false
     static func history(hold: Bool = false, fail: Bool = false) {
         lock.lock(); holdHistory = hold; failHistory = fail; lock.unlock()
     }
@@ -1275,7 +1276,7 @@ private final class SendPreparationProtocol: URLProtocol {
         for request in pending { request.finish(status: 200) }
     }
     static var captured: [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
-    static func reset() { lock.lock(); requests = []; holdHistory = false; failHistory = false; lock.unlock() }
+    static func reset() { lock.lock(); requests = []; holdHistory = false; failHistory = false; deletedRoom = false; lock.unlock() }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "send-preparation.example" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -1285,10 +1286,10 @@ private final class SendPreparationProtocol: URLProtocol {
         if held { Self.held.append(self) }
         Self.lock.unlock()
         if held { return }
-        finish(status: failed ? 503 : 200)
+        finish(status: Self.deletedRoom && request.url!.path.hasPrefix("/conversations/deleted") ? 410 : failed ? 503 : 200)
     }
     private func finish(status: Int) {
-        let body = request.url!.path == "/api/codex/tools" ? #"{"tools":[]}"# : #"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#
+        let body = status == 410 ? #"{"error":"Conversation was deleted","code":"conversation_deleted"}"# : request.url!.path == "/api/codex/tools" ? #"{"tools":[]}"# : #"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type":"application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
@@ -1403,6 +1404,24 @@ private final class SendPreparationProtocol: URLProtocol {
         try await outbox.flush(api)
         XCTAssertTrue(try outbox.pending(api, conversationID: chat.conversationID).isEmpty)
         XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 1)
+    }
+    func testDeletedRoomDoesNotBlockOtherHistoryUploads() async throws {
+        SendPreparationProtocol.reset(); SendPreparationProtocol.deletedRoom = true
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel(); SendPreparationProtocol.reset() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "deleted-room-test", requestSession: http)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let outbox = ChatSendOutbox(directory: root); defer { outbox.stop() }
+        for room in ["deleted", "live"] {
+            try outbox.enqueue(.object(["id": .string(room), "conversationId": .string(room), "role": .string("user"), "content": .string("saved"), "status": .string("delivered")]), conversation: .object([:]), api: api)
+        }
+        try await outbox.flush(api)
+        XCTAssertTrue(try outbox.pending(api, conversationID: "deleted").isEmpty)
+        XCTAssertTrue(try outbox.pending(api, conversationID: "live").isEmpty)
+        XCTAssertFalse(SendPreparationProtocol.captured.contains { $0.url?.path == "/conversations/deleted/messages" })
+        XCTAssertTrue(SendPreparationProtocol.captured.contains { $0.url?.path == "/conversations/live/messages" })
+        XCTAssertFalse(ServiceError(message: "missing", statusCode: 404).conversationDeleted)
+        XCTAssertFalse(ServiceError(message: "gone", statusCode: 410).conversationDeleted)
     }
     func testOutboxSurvivesRelaunchAndKeepsAccountsSeparate() async throws {
         SendPreparationProtocol.reset(); SendPreparationProtocol.history(fail: true)

@@ -819,6 +819,16 @@ enum ChatUserInput {
         parameters.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: String(Self.initialHistoryLimit))]
         do {
             r = try await api.request("/conversations/\(id)?" + (parameters.percentEncodedQuery ?? ""), history: true)
+        } catch let failure as ServiceError where failure.conversationDeleted {
+            guard self.api?.token == api.token, self.api?.historyURL == api.historyURL,
+                  self.api?.baseURL == api.baseURL, intent == requestedIntent else { throw CancellationError() }
+            try sendOutbox.discard(api, conversationID: id)
+            ChatRecentCache.remove(api: api, id: id)
+            conversations.removeAll { $0.id == id }
+            if conversationID == id {
+                disconnect(); showingCachedHistory = false; messages = []; threadID = nil
+            }
+            throw failure
         } catch let failure as ServiceError where failure.statusCode == 404 {
             // Older history routers may match the raw URL, including the query.
             // Retry only this read without pagination; never recreate or remove a room.
@@ -905,6 +915,9 @@ enum ChatUserInput {
             }
             if !id.isEmpty {
                 do { try await loadConversation(id); return true }
+                catch let failure as ServiceError where failure.conversationDeleted {
+                    // Continue to a surviving room only after an explicit tombstone.
+                }
                 catch {
                     // A route-level 404 or connection failure does not prove the room was deleted.
                     throw error

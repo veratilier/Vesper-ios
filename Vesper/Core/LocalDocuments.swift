@@ -190,6 +190,7 @@ enum DocumentMerge {
                 while let entry = lane.entries.first(where: { $0.message["status"].string != "pending" }) {
                     try Task.checkCancellation()
                     let id = entry.message["conversationId"].string
+                    do {
                     // Existing server endpoints upsert by conversation/message ID.
                     _ = try await api.request("/conversations/\(id)", method: "POST", body: entry.conversation, history: true)
                     try Task.checkCancellation()
@@ -210,6 +211,12 @@ enum DocumentMerge {
                     guard lane.entries.contains(where: { $0.revision == entry.revision }) else { continue }
                     let remaining = lane.entries.filter { $0.revision != entry.revision }
                     try save(remaining, api: api); lane.entries = remaining
+                    } catch let failure as ServiceError where failure.conversationDeleted {
+                        // A confirmed tombstone is terminal, not a network retry. Never
+                        // let an obsolete room block uploads for the remaining rooms.
+                        try discard(api, conversationID: id)
+                        ChatRecentCache.remove(api: api, id: id)
+                    }
                 }
                 lane.error = nil; lane.failures = 0; lane.notice?("")
             } catch {

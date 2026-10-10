@@ -16,6 +16,11 @@ enum VesperPalette: String, CaseIterable, Identifiable {
     var surface: Color { self == .black ? Color(white: 0.12).opacity(0.85) : .white.opacity(0.72) }
 }
 enum NavigationStyle: String, CaseIterable { case native, vesper }
+enum VesperGlassStyle: String, CaseIterable, Identifiable {
+    case liquid, classic
+    var id: String { rawValue }
+    var name: String { self == .liquid ? "Liquid Glass" : "经典毛玻璃" }
+}
 enum VesperTheme {
     static var palette: VesperPalette { VesperPalette(rawValue: UserDefaults.standard.string(forKey: "vesperPalette") ?? "blue") ?? .blue }
     static var ink: Color { palette.ink }
@@ -25,6 +30,12 @@ enum VesperTheme {
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
 enum GlassAppearance {
+    static var supportsLiquidGlass: Bool {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) { return true }
+        #endif
+        return false
+    }
     static func transparency(_ value: Double) -> Double {
         value.isFinite ? min(1, max(0, value)) : 0
     }
@@ -38,25 +49,25 @@ private struct VesperGlassModifier<S: Shape>: ViewModifier {
     let interactive: Bool
     var fallbackMaterial: Material = .ultraThinMaterial
     @AppStorage("glassTransparency") private var transparency = 0.0
+    @AppStorage("glassStyle") private var style = VesperGlassStyle.liquid.rawValue
     @AppStorage("vesperPalette") private var palette = "blue"
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
-        // Keep the optical effect intact; the preference adjusts only its tint.
         content.contentShape(shape).background {
             if reduceTransparency {
                 shape.fill(palette == "black" ? Color(white: 0.12) : .white)
             } else {
+                // Keep one optical style and neutral tint; let the system preserve contrast.
                 surface
             }
         }
     }
     private var tint: Color {
-        (palette == "black" ? Color(white: 0.10) : .white)
-            .opacity(GlassAppearance.tintOpacity(transparency: transparency))
+        Color(white: 0.5).opacity(GlassAppearance.tintOpacity(transparency: transparency))
     }
     @ViewBuilder private var surface: some View {
         #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), style != VesperGlassStyle.classic.rawValue {
             shape.fill(.clear)
                 .glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: shape)
         } else { fallback }
@@ -65,8 +76,9 @@ private struct VesperGlassModifier<S: Shape>: ViewModifier {
         #endif
     }
     private var fallback: some View {
-        shape.fill(fallbackMaterial).overlay(shape.fill(tint))
-            .overlay(shape.stroke(.white.opacity(palette == "black" ? 0.22 : 0.45), lineWidth: 0.7))
+        shape.fill(fallbackMaterial)
+            .overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+            .opacity(1 - GlassAppearance.transparency(transparency))
     }
 }
 extension View {
@@ -74,7 +86,7 @@ extension View {
         modifier(VesperGlassModifier(shape: shape, interactive: interactive))
     }
     func vesperMaterial<S: Shape>(_ material: Material, in shape: S) -> some View {
-        // Existing surfaces share Liquid Glass; this material is only the older-OS fallback.
+        // Every shared surface follows the same persisted glass style.
         modifier(VesperGlassModifier(shape: shape, interactive: false, fallbackMaterial: material))
     }
     func vesperMaterial(_ material: Material) -> some View {
@@ -214,6 +226,7 @@ struct AppearanceSettingsView: View {
     @AppStorage("vesperPalette") private var palette = "blue"
     @AppStorage("wallpaperShade") private var shade = 0.16
     @AppStorage("glassTransparency") private var glassTransparency = 0.0
+    @AppStorage("glassStyle") private var glassStyle = VesperGlassStyle.liquid.rawValue
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @ObservedObject private var wallpaper = WallpaperStore.shared
     @State private var photo: PhotosPickerItem?
@@ -285,6 +298,17 @@ struct AppearanceSettingsView: View {
                     Slider(value: $shade, in: 0...0.7).accessibilityLabel("Background readability")
                 }
                 section("Glass") {
+                    if GlassAppearance.supportsLiquidGlass {
+                        Picker("Glass style", selection: $glassStyle) {
+                            ForEach(VesperGlassStyle.allCases) { style in
+                                Text(style.name).tag(style.rawValue)
+                            }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("glass-style")
+                    } else {
+                        Text("经典毛玻璃").font(.subheadline)
+                        Text("Liquid Glass 需要 iOS / iPadOS 26 或更新版本。")
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
                     HStack(spacing: 12) {
                         Image(systemName: "sparkles").font(.title2)
                         VStack(alignment: .leading, spacing: 4) {
@@ -306,7 +330,10 @@ struct AppearanceSettingsView: View {
                         Spacer()
                         Text("More transparent")
                     }.font(.caption).foregroundStyle(VesperTheme.muted)
-                    Text(reduceTransparency ? "Reduce Transparency is enabled in system settings." : "Adjusts the glass tint while preserving its soft background and highlights.")
+                    Text(reduceTransparency ? "Reduce Transparency is enabled in system settings."
+                         : glassStyle == VesperGlassStyle.classic.rawValue || !GlassAppearance.supportsLiquidGlass
+                         ? "Adjusts the frosted background. Text and icons stay clear."
+                         : "Adjusts the glass tint while preserving its soft background and highlights.")
                         .font(.caption).foregroundStyle(VesperTheme.muted)
                     Button("Reset glass transparency") { glassTransparency = 0 }
                         .font(.subheadline).frame(minHeight: 44)
@@ -368,6 +395,9 @@ struct AppearanceSettingsView: View {
             }.padding(20).frame(maxWidth: 580).frame(maxWidth: .infinity)
         }.background { Background() }.navigationTitle("Appearance").navigationBarTitleDisplayMode(.inline)
             .transparentNavigationTop().buttonStyle(.plain)
+            .preferredColorScheme(palette == "black" ? .dark : .light)
+            .foregroundStyle((VesperPalette(rawValue: palette) ?? .blue).ink)
+            .tint((VesperPalette(rawValue: palette) ?? .blue).ink)
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 if issue != nil { Button { showingIssue = true } label: { Image(systemName: "exclamationmark.circle") }.accessibilityLabel("Appearance error details") }
             } }

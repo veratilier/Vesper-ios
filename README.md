@@ -57,7 +57,7 @@ app installed until the native version has passed your device checks.
 | Album | Existing photos, category filter, full-size viewer and sharing |
 | Memory | Native shared Memory library: existing-device authentication, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
-| Settings | Device pairing, local agent instructions, existing MCP connection list, document export |
+| Settings | Device pairing, local agent instructions, existing MCP connection list, document export; Appearance keeps glass style independent of the White/Black/Blue palette and offers Liquid Glass or classic frosted glass |
 | Usage & balances | GPT weekly used/remaining/reset time, ElevenLabs subscription usage and overage, MiniMax official billing links |
 | Autonomous Wake | Existing VPS switch, interval and activity history; Wake prompt separates editable owner preferences from Rowan's saved self prompt with full text and last update time, gated by server config version |
 

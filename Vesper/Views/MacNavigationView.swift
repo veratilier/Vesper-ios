@@ -124,6 +124,7 @@ private struct MacWindowConfiguration: UIViewRepresentable {
 
 struct MacAppearanceButton: View {
     @State private var showing = false
+    @AppStorage("vesperPalette") private var palette = "blue"
     var body: some View {
         Button { showing = true } label: { Image(systemName: "paintpalette") }
             .accessibilityLabel("Appearance")
@@ -133,6 +134,9 @@ struct MacAppearanceButton: View {
                         ToolbarItem(placement: .confirmationAction) { Button("Done") { showing = false } }
                     }
                 }.frame(minWidth: 480, minHeight: 600)
+                    .preferredColorScheme(palette == "black" ? .dark : .light)
+                    .foregroundStyle((VesperPalette(rawValue: palette) ?? .blue).ink)
+                    .tint((VesperPalette(rawValue: palette) ?? .blue).ink)
             }
     }
 }

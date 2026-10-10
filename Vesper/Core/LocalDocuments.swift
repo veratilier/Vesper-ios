@@ -176,6 +176,10 @@ enum DocumentMerge {
             $0.message["conversationId"].string != conversationID || (messageID != nil && $0.message.id != messageID)
         }
         try save(remaining, api: api); lane.entries = remaining
+        if remaining.isEmpty {
+            lane.retry?.cancel(); lane.retry = nil
+            lane.error = nil; lane.failures = 0; lane.notice?("")
+        }
     }
     func stop() {
         for lane in lanes.values { lane.worker?.cancel(); lane.retry?.cancel(); lane.retry = nil }

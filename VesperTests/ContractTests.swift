@@ -1405,6 +1405,22 @@ private final class SendPreparationProtocol: URLProtocol {
         XCTAssertTrue(try outbox.pending(api, conversationID: chat.conversationID).isEmpty)
         XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 1)
     }
+    func testDiscardingLastFailedUploadClearsStaleSyncWarning() async throws {
+        SendPreparationProtocol.reset(); SendPreparationProtocol.history(fail: true)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config); defer { http.invalidateAndCancel(); SendPreparationProtocol.reset() }
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: "discard-warning", requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { outbox.stop() }
+        var notice = ""
+        outbox.activate(api) { notice = $0 }
+        try outbox.enqueue(.object(["id": .string("m"), "conversationId": .string("deleted"), "role": .string("user"), "content": .string("saved"), "status": .string("delivered")]), conversation: .object([:]), api: api)
+        do { try await outbox.flush(api); XCTFail("Expected upload failure") } catch {}
+        XCTAssertFalse(notice.isEmpty)
+        try outbox.discard(api, conversationID: "deleted")
+        XCTAssertEqual(notice, "")
+        try await outbox.flush(api)
+    }
     func testDeletedRoomDoesNotBlockOtherHistoryUploads() async throws {
         SendPreparationProtocol.reset(); SendPreparationProtocol.deletedRoom = true
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SendPreparationProtocol.self]

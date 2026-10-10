@@ -176,7 +176,6 @@ struct ChatActionOverlay: View {
                 .foregroundStyle(VesperTheme.ink)
                 .frame(width: width)
                 .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.65)))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .position(x: x, y: y)
                 .accessibilityIdentifier("chat-message-actions")
@@ -212,7 +211,6 @@ struct ChatBubbleSurface: ViewModifier {
                                            bottomTrailingRadius: user ? 5 : 20, topTrailingRadius: 20)
         content.padding(.horizontal, 14).padding(.vertical, 11)
             .background(user ? VesperTheme.accent.opacity(0.10) : Color.clear, in: shape)
-            .vesperMaterial(.thinMaterial, in: shape)
-            .overlay(shape.stroke(.white.opacity(0.45), lineWidth: 0.7))
+            .vesperGlass(in: shape)
     }
 }

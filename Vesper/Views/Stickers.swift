@@ -112,7 +112,7 @@ struct StickerLibraryView: View {
                         Button { if compact { managing = true } else { editing = true } } label: {
                             Image(systemName: "square.and.pencil").font(.system(size: 27, weight: .light))
                                 .frame(maxWidth: .infinity).frame(height: 76)
-                                .background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                                .vesperGlass(in: RoundedRectangle(cornerRadius: 12), interactive: true)
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(VesperTheme.muted.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5])))
                         }.buttonStyle(.plain).accessibilityLabel("Edit stickers").disabled(busy)
                     }

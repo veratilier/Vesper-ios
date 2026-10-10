@@ -25,51 +25,59 @@ enum VesperTheme {
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
 enum GlassAppearance {
-    static func opacity(transparency: Double) -> Double {
-        1 - (transparency.isFinite ? min(1, max(0, transparency)) : 0)
+    static func transparency(_ value: Double) -> Double {
+        value.isFinite ? min(1, max(0, value)) : 0
+    }
+    static func tintOpacity(transparency: Double) -> Double {
+        0.18 * (1 - self.transparency(transparency))
     }
 }
 
 private struct VesperGlassModifier<S: Shape>: ViewModifier {
     let shape: S
     let interactive: Bool
+    var fallbackMaterial: Material = .ultraThinMaterial
     @AppStorage("glassTransparency") private var transparency = 0.0
     @AppStorage("vesperPalette") private var palette = "blue"
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
-        // Fade only the surface. Text, icons, and the control's hit area stay intact.
+        // Keep the optical effect intact; the preference adjusts only its tint.
         content.contentShape(shape).background {
             if reduceTransparency {
                 shape.fill(palette == "black" ? Color(white: 0.12) : .white)
             } else {
-                surface.opacity(GlassAppearance.opacity(transparency: transparency))
+                surface
             }
         }
+    }
+    private var tint: Color {
+        (palette == "black" ? Color(white: 0.10) : .white)
+            .opacity(GlassAppearance.tintOpacity(transparency: transparency))
     }
     @ViewBuilder private var surface: some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            shape.fill(.clear).glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+            shape.fill(.clear)
+                .glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: shape)
         } else { fallback }
         #else
         fallback
         #endif
     }
     private var fallback: some View {
-        shape.fill(.ultraThinMaterial).overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+        shape.fill(fallbackMaterial).overlay(shape.fill(tint))
+            .overlay(shape.stroke(.white.opacity(palette == "black" ? 0.22 : 0.45), lineWidth: 0.7))
     }
 }
-private struct VesperMaterialModifier<S: Shape>: ViewModifier {
-    let material: Material
-    let shape: S
-    @AppStorage("glassTransparency") private var transparency = 0.0
-    @AppStorage("vesperPalette") private var palette = "blue"
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    func body(content: Content) -> some View {
-        content.contentShape(shape).background {
-            if reduceTransparency { shape.fill(palette == "black" ? Color(white: 0.12) : .white) }
-            else { shape.fill(material).opacity(GlassAppearance.opacity(transparency: transparency)) }
-        }
+private struct VesperGlassContainerModifier: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) { content }
+        } else { content }
+        #else
+        content
+        #endif
     }
 }
 extension View {
@@ -77,10 +85,14 @@ extension View {
         modifier(VesperGlassModifier(shape: shape, interactive: interactive))
     }
     func vesperMaterial<S: Shape>(_ material: Material, in shape: S) -> some View {
-        modifier(VesperMaterialModifier(material: material, shape: shape))
+        // Existing surfaces share Liquid Glass; this material is only the older-OS fallback.
+        modifier(VesperGlassModifier(shape: shape, interactive: false, fallbackMaterial: material))
     }
     func vesperMaterial(_ material: Material) -> some View {
         vesperMaterial(material, in: Rectangle())
+    }
+    func vesperGlassContainer() -> some View {
+        modifier(VesperGlassContainerModifier())
     }
 }
 struct NavigationStyleToggle: View {
@@ -298,7 +310,7 @@ struct AppearanceSettingsView: View {
                     HStack {
                         Text("Glass transparency")
                         Spacer()
-                        Text("\(Int(((1 - GlassAppearance.opacity(transparency: glassTransparency)) * 100).rounded()))%")
+                        Text("\(Int((GlassAppearance.transparency(glassTransparency) * 100).rounded()))%")
                             .monospacedDigit()
                     }.font(.subheadline)
                     Slider(value: $glassTransparency, in: 0...1, step: 0.01)
@@ -308,7 +320,7 @@ struct AppearanceSettingsView: View {
                         Spacer()
                         Text("More transparent")
                     }.font(.caption).foregroundStyle(VesperTheme.muted)
-                    Text(reduceTransparency ? "Reduce Transparency is enabled in system settings." : "Adjusts Vesper’s glass surfaces. System bars keep their system appearance.")
+                    Text(reduceTransparency ? "Reduce Transparency is enabled in system settings." : "Adjusts the glass tint while preserving its soft background and highlights.")
                         .font(.caption).foregroundStyle(VesperTheme.muted)
                     Button("Reset glass transparency") { glassTransparency = 0 }
                         .font(.subheadline).frame(minHeight: 44)
@@ -421,8 +433,7 @@ struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-            .vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 25))
-            .overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8), lineWidth: 1.5))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
     }
 }
 struct Page<Content: View>: View {
@@ -463,7 +474,7 @@ struct FormField: View {
             if multiline {
                 TextEditor(text: $text).frame(minHeight: 160).scrollContentBackground(.hidden)
             } else { TextField(label, text: $text) }
-        }.padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
     }
 }
 struct EditorSheet<Content: View>: View {

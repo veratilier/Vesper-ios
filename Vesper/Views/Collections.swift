@@ -422,7 +422,7 @@ private struct DatesBoard: View {
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             Text(DateCounter.count(item).map(String.init) ?? "—").font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).frame(width: 78).frame(maxHeight: .infinity).background(DateCounter.color(item))
             Text("天").font(.subheadline).frame(width: 34).frame(maxHeight: .infinity).background(DateCounter.color(item).opacity(0.85))
-        }.foregroundStyle(VesperTheme.ink).frame(height: 60).background(VesperTheme.surface)
+        }.foregroundStyle(VesperTheme.ink).frame(height: 60).vesperGlass(in: RoundedRectangle(cornerRadius: 8))
             .clipShape(RoundedRectangle(cornerRadius: 8)).shadow(color: .black.opacity(0.05), radius: 2, y: 2)
     }
 }

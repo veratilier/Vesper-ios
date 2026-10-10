@@ -8,6 +8,17 @@ Capacitor, React runtime or bundled website. Minimum iOS 17; iPhone and iPad.
 Use the **VesperMac** scheme for the desktop app. See [MAC.md](MAC.md) for installation,
 first connection, desktop controls and platform support.
 
+## Shared glass appearance
+
+On iOS/iPadOS 26 and Mac Catalyst 26 or later, native cards, chat bubbles,
+composer, voice bars, custom controls and sidebar surfaces use Apple's
+`glassEffect(.regular)` through one shared modifier. Older systems retain their
+system Material fallback. The glass transparency preference adjusts the tint;
+it never fades the whole optical effect or foreground text. Reduce Transparency
+still uses an opaque, theme-matched surface. Photographs, paper content and data
+colors retain their own appearance. A zero-spacing `GlassEffectContainer` groups
+the main interface's effects without joining separate cards.
+
 ## Build the iPhone app on your Mac
 
 1. Clone this repository and open **Vesper.xcodeproj** in Xcode 16 or later.

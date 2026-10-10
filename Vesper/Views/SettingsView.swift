@@ -6,7 +6,7 @@ import Security
 import EventKit
 import HealthKit
 
-// Opt in only on the requested settings surfaces; other pages keep their existing material.
+// Settings use the same glass surface as the rest of the app.
 private struct SettingsGlassCard<Content: View>: View {
     var padding: CGFloat = 18
     var interactive = false
@@ -181,7 +181,7 @@ struct ConnectionView: View {
                 FormField(label: "History address", text: $draft.historyURL)
                 FormField(label: "Chat address", text: $draft.socketURL)
                 Text("Device token").font(.caption).foregroundStyle(VesperTheme.muted)
-                SecureField(selected == .mac ? "Mac device token" : "VPS device token", text: $credential).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                SecureField(selected == .mac ? "Mac device token" : "VPS device token", text: $credential).foregroundStyle(VesperTheme.ink).textContentType(.password).padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                 if selected == .mac {
                     Button { Task { await replica.copyToMac(connection: draft, token: credential) } } label: {
                         HStack(spacing: 8) {
@@ -790,7 +790,7 @@ struct VoiceSettingsView: View {
                 Picker("Provider", selection: Binding(get: { provider }, set: { value in provider = value; baseURL = value == "ElevenLabs" ? "https://api.elevenlabs.io" : "https://api.minimax.chat"; model = value == "ElevenLabs" ? "eleven_multilingual_v2" : "speech-2.6-hd"; voiceID = ""; apiKey = ""; groupID = "" })) { Text("ElevenLabs").tag("ElevenLabs"); Text("MiniMax").tag("MiniMax") }
                 FormField(label: "API address", text: $baseURL)
                 Text("API key").font(.caption)
-                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                SecureField("API key", text: $apiKey).foregroundStyle(VesperTheme.ink).padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                 FormField(label: "Voice ID", text: $voiceID)
                 FormField(label: "Model", text: $model)
                 if provider == "MiniMax" { FormField(label: "Group ID (optional)", text: $groupID) }

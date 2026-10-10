@@ -683,7 +683,6 @@ struct ChatView: View {
                     .popover(isPresented: $modelPicker, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
                         ChatModelPopover().environmentObject(store).environmentObject(chat)
                             .presentationCompactAdaptation(.popover)
-                            .presentationBackground(.regularMaterial)
                             .task { chat.configure(store); if chat.models.isEmpty { await chat.loadModels() } }
                     }
                 Spacer()
@@ -699,7 +698,7 @@ struct ChatView: View {
                         #endif
                 }
             }
-        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 25)).overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8))).padding(.horizontal, 12).padding(.vertical, 8)
+        }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).vesperGlass(in: RoundedRectangle(cornerRadius: 25)).padding(.horizontal, 12).padding(.vertical, 8)
     }
     private var attachmentDrawer: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 20) {
@@ -713,7 +712,7 @@ struct ChatView: View {
         }.padding(20).vesperMaterial(.regularMaterial)
     }
     private func drawerItem(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 16)); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
+        Button { drawer = false; action() } label: { VStack(spacing: 8) { Image(systemName: icon).font(.system(size: 26)).frame(width: 58, height: 58).vesperGlass(in: RoundedRectangle(cornerRadius: 16), interactive: true); Text(title).font(.system(size: 12)) }.frame(maxWidth: .infinity) }.buttonStyle(.plain).disabled(chat.busy || loadingPhotos || ((title == "Album" || title == "Camera") && images.count >= 5))
     }
     private var locationSheet: some View {
         ChatLocationShareSheet { location in

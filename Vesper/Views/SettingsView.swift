@@ -235,6 +235,7 @@ struct ConnectionView: View {
 struct WakeView: View {
     @EnvironmentObject private var store: AppStore
     @State private var runtime: JSONValue = .null
+    @State private var selfPromptExpanded = false
     @State private var enabled = false
     @State private var intervalMinutes = 0
     @State private var allowedTools: Set<String> = []
@@ -290,6 +291,7 @@ struct WakeView: View {
                 NavigationLink("Permissions") { permissionsPage }.disabled(!supported)
                 NavigationLink("Workflow") { WakeWorkflowView() }
             }
+            if runtime != .null { selfPromptSection }
             if !supported {
                 Section { Text("Refresh the service to check permission support. If unavailable, update the VPS wake service.").font(.caption) }
             }
@@ -310,6 +312,39 @@ struct WakeView: View {
                     if let value = try? await store.api.request("/wake", history: true), !busy { runtime = value }
                 }
             }.refreshable { await load() }
+    }
+    private var selfPromptSection: some View {
+        Section {
+            if runtime["selfPrompt"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Rowan 自写提示").font(.headline)
+                    Text(runtime["planningVersion"].number >= 1 ? "他还没有保存自写提示。" : "当前服务尚未提供自写提示。")
+                        .font(.subheadline).foregroundStyle(VesperTheme.muted)
+                }
+            } else {
+                DisclosureGroup(isExpanded: $selfPromptExpanded) {
+                    Text(runtime["selfPrompt"].string)
+                        .font(.subheadline).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                        .accessibilityIdentifier("wake-self-prompt-text")
+                } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Rowan 自写提示").font(.headline)
+                        if !selfPromptExpanded {
+                            Text(runtime["selfPrompt"].string).font(.subheadline)
+                                .foregroundStyle(VesperTheme.muted).lineLimit(2)
+                        }
+                    }
+                }.accessibilityIdentifier("wake-self-prompt")
+                if case .number(let timestamp) = runtime["selfPromptUpdatedAt"], timestamp.isFinite, timestamp > 0 {
+                    Text("更新于 " + Date(timeIntervalSince1970: timestamp).formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption).foregroundStyle(VesperTheme.muted)
+                }
+            }
+        } footer: {
+            Text("由 Rowan 自己保存，每轮醒来时作为参考。")
+        }
     }
     private var saveBar: some View {
         WakeSaveButton(title: busy ? "Saving…" : "Save changes", disabled: !supported || busy) {

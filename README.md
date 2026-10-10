@@ -59,7 +59,7 @@ app installed until the native version has passed your device checks.
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
 | Settings | Device pairing, local agent instructions, existing MCP connection list, document export |
 | Usage & balances | GPT weekly used/remaining/reset time, ElevenLabs subscription usage and overage, MiniMax official billing links |
-| Autonomous Wake | Existing VPS switch, interval, prompt editor and activity history, gated by server config version |
+| Autonomous Wake | Existing VPS switch, interval, prompt editor and activity history, plus a read-only preview of Rowan's saved self prompt with expandable full text and last update time; gated by server config version |
 
 ## Current boundaries
 

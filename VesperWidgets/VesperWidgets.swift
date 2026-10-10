@@ -162,7 +162,7 @@ struct StatusWidgetView: View {
     let key: String
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(key == "desire" ? "Desire · 此刻" : key == "usage" ? "Weekly Usage" : "Notes").font(.headline)
+            Text(key == "desire" ? "Desire · 此刻" : "Weekly Usage").font(.headline)
             if let snapshot = entry.snapshot {
                 if key == "usage", let remaining = snapshot.values["remaining"] {
                     Text("\(Int(remaining))%").font(.system(size: 38, weight: .light, design: .rounded))
@@ -177,7 +177,7 @@ struct StatusWidgetView: View {
                         }
                     }
                     if snapshot.values["joy"] == nil { Text("等待情绪评估").font(.caption) }
-                } else { Text(snapshot.text).font(.system(size: 15, design: .serif)).lineLimit(5) }
+                }
                 Spacer(minLength: 0)
                 Text("Synced \(snapshot.updatedAt.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 9)).foregroundStyle(.secondary)
             } else { Spacer(); Text("Open Vesper to sync.").font(.caption); Spacer() }
@@ -199,13 +199,6 @@ struct VesperUsageWidget: Widget {
             .configurationDisplayName("Vesper · Weekly Usage").description("Your latest synced weekly allowance.").supportedFamilies([.systemSmall, .systemMedium])
     }
 }
-struct VesperNotesWidget: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "VesperNotesWidget", provider: StatusProvider(key: "notes")) { StatusWidgetView(entry: $0, key: "notes") }
-            .configurationDisplayName("Vesper · Notes").description("Keep your latest note close.").supportedFamilies([.systemSmall, .systemMedium])
-    }
-}
-
 struct VesperCallWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: VesperCallAttributes.self) { context in
@@ -279,5 +272,5 @@ struct VesperCallWidget: Widget {
     }
 }
 @main struct VesperWidgetBundle: WidgetBundle {
-    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperNotesWidget(); VesperCallWidget() }
+    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperCallWidget() }
 }

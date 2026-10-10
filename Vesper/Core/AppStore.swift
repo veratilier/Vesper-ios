@@ -268,7 +268,6 @@ extension EnvironmentValues {
                 documentRevision += 1
                 documents = values; pendingDocuments = pending; lastSyncedAt = now; hasLocalData = true
                 conflictingDocuments.remove(key)
-                if key == "notes", activeBackend == .vps { WidgetSync.notes(document(key)) }
             } catch {
                 guard generation == identityGeneration, !Task.isCancelled else { return }
                 if error is DocumentMerge.Conflict { conflictingDocuments.insert(key) }
@@ -350,7 +349,6 @@ extension EnvironmentValues {
         do { try persist(values, pending: pendingDocuments, syncedAt: now); hasLocalData = true; lastSyncedAt = now }
         catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
         rememberProfile(documents["profile"] ?? .null)
-        if activeBackend == .vps { WidgetSync.notes(document("notes")) }
         scheduleSync()
     }
     private var documentRevision = 0
@@ -490,7 +488,6 @@ extension EnvironmentValues {
                 values[key] = value
                 try persist(values, pending: pending, syncedAt: lastSyncedAt)
                 documentRevision += 1; documents = values; pendingDocuments = pending
-                if key == "notes", activeBackend == .vps { WidgetSync.notes(value) }
                 scheduleSync()
                 return true
             } catch { if reportErrors { self.error = error.localizedDescription }; return false }
@@ -514,7 +511,7 @@ extension EnvironmentValues {
             documents[key] = pendingDocuments[key]?.value ?? value
             do { try persist(documents, pending: pendingDocuments, syncedAt: lastSyncedAt); hasLocalData = true }
             catch { syncError = "Saved in the cloud, but the local copy could not be saved." }
-            if key == "profile" { rememberProfile(value) }; if key == "notes", activeBackend == .vps { WidgetSync.notes(value) }; return true
+            if key == "profile" { rememberProfile(value) }; return true
         } catch { if reportErrors, generation == identityGeneration { self.error = error.localizedDescription }; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {

@@ -30,7 +30,7 @@ import UserNotifications
     }
 }
 enum Destination: String, CaseIterable, Identifiable {
-    case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters", notes = "Notes"
+    case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters"
     case workflow = "Workflow", jottings = "Sketch", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", dreams = "Dreams", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
     var id: String { rawValue }
     var title: String { self == .journal ? "Diary" : rawValue }
@@ -41,7 +41,6 @@ enum Destination: String, CaseIterable, Identifiable {
         case .desire: return "heart"
         case .journal: return "book.closed"
         case .letters: return "envelope"
-        case .notes: return "note.text"
         case .workflow: return "point.3.connected.trianglepath.dotted"
         case .jottings: return "pencil.line"
         case .alarms: return "alarm"
@@ -61,7 +60,7 @@ enum Destination: String, CaseIterable, Identifiable {
 }
 /// Discard obsolete/duplicate destinations and append newly added features.
 enum VesperGridOrder {
-    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .dreams, .readingRoom, .bookmarks, .movieRoom, .alarms, .jottings, .weather]
+    static let defaults: [Destination] = [.desire, .journal, .dates, .reminders, .music, .album, .memory, .dreams, .readingRoom, .bookmarks, .movieRoom, .alarms, .jottings, .weather]
     static func restore(_ saved: String) -> [Destination] {
         let names = (try? JSONDecoder().decode([String].self, from: Data(saved.utf8))) ?? []
         var seen = Set<String>()
@@ -411,7 +410,7 @@ struct RootView: View {
             guard url.scheme == "vesper" else { return }
             switch url.host {
             case "desire": navigate(.desire)
-            case "notes": navigate(.notes)
+            case "notes": navigate(.home)
             case "usage": sidebar = true; Task { await refreshUsage() }
             case "call": navigate(.chat); if callPresentation.presented { callPresentation.minimized = false }
             default: break
@@ -474,7 +473,7 @@ struct RootView: View {
     private func navigate(_ page: Destination) {
         destination = page
         if ![.home, .chat, .letters, .settings].contains(page) { libraryPath = [page] }
-        if [.desire, .journal, .notes, .dates, .music, .album].contains(page) { vesperPage = page }
+        if [.desire, .journal, .dates, .music, .album].contains(page) { vesperPage = page }
         switch page {
         case .home: nativeTab = 0
         case .chat: nativeTab = 1
@@ -524,7 +523,6 @@ struct RootView: View {
         case .desire: DesireView()
         case .journal: JournalView()
         case .letters: LettersView()
-        case .notes: NotesBoard()
         case .workflow: WakeWorkflowView()
         case .jottings: JottingsView()
         case .alarms: AlarmsView()

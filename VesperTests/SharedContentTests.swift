@@ -257,7 +257,9 @@ extension SharedContentTests {
     func testAppGridMigratesMissingNewItemsAndRejectsDuplicateOrNonGridEntries() {
         let saved = "[\"Music\",\"Notes\",\"Music\",\"Unknown\",\"Chat\"]"
         let restored = VesperGridOrder.restore(saved)
-        XCTAssertEqual(Array(restored.prefix(2)), [.music, .notes])
+        XCTAssertEqual(Array(restored.prefix(2)), [.music, .desire])
+        XCTAssertFalse(restored.contains { $0.rawValue == "Notes" })
+        XCTAssertNil(Destination(rawValue: "Notes"))
         XCTAssertEqual(restored.count, VesperGridOrder.defaults.count)
         XCTAssertEqual(Set(restored), Set(VesperGridOrder.defaults))
         XCTAssertEqual(VesperGridOrder.restore("broken"), VesperGridOrder.defaults)
@@ -268,9 +270,9 @@ extension SharedContentTests {
     }
     func testAppGridInvalidOrSameDestinationDoesNotChangeOrder() {
         let pages = VesperGridOrder.defaults
-        XCTAssertEqual(VesperGridOrder.move(.notes, to: .notes, in: pages), pages)
-        XCTAssertEqual(VesperGridOrder.move(.home, to: .notes, in: pages), pages)
-        XCTAssertEqual(VesperGridOrder.move(.notes, to: .home, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.dates, to: .dates, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.home, to: .dates, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.dates, to: .home, in: pages), pages)
     }
 }
 

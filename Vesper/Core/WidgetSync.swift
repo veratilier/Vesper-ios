@@ -2,11 +2,6 @@ import WidgetKit
 import Foundation
 
 @MainActor enum WidgetSync {
-    static func notes(_ notes: JSONValue) {
-        let text = notes.array.first?["text"].string ?? "No notes yet."
-        WidgetSnapshot(updatedAt: Date(), text: String(text.prefix(1000)), values: [:]).save("notes")
-        WidgetCenter.shared.reloadTimelines(ofKind: "VesperNotesWidget")
-    }
     static func desire(_ data: JSONValue) {
         var values: [String: Double] = [:]
         for (key, _) in DesireEmotion.fields {

@@ -65,7 +65,6 @@ private struct SurfacePalettePreview: View {
                 Background()
                 if page == "MyMusic" { MusicLibraryView(catalog: catalog, preview: true) }
                 else if page == "Contacts" { NativeChatHome() }
-                else if page == "Notes" { CollectionView(kind: .notes) }
                 else if page == "Alarms" { AlarmsView() }
                 else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
             } }
@@ -502,7 +501,7 @@ private struct GlassOpacityFixture: View {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         for palette in ["white", "blue", "black"] {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
-            for page in ["MyMusic", "Contacts", "Notes", "Panels", "Alarms", "Connection", "Voice", "Tools", "Data", "Settings"] {
+            for page in ["MyMusic", "Contacts", "Panels", "Alarms", "Connection", "Voice", "Tools", "Data", "Settings"] {
                 store.token = ["Contacts", "Tools"].contains(page) ? "preview-contact-token" : ""
                 store.error = nil; chat.error = nil
                 if page == "Contacts" { chat.configure(store) }
@@ -772,21 +771,6 @@ private struct GlassOpacityFixture: View {
         }
     }
 
-    func testDesktopLetterUsesLatestNonemptyRowanNote() {
-        func note(_ id: String, _ kind: String, _ date: String, _ text: String = "A letter") -> JSONValue {
-            .object(["id": .string(id), "kind": .string(kind), "createdAt": .string(date), "text": .string(text)])
-        }
-        let notes = [note("old", "agent", "2026-10-01T10:00:00Z"),
-                     note("vera", "user", "2026-10-05T10:00:00Z"),
-                     note("new", "agent", "2026-10-04T10:00:00.500Z"),
-                     note("empty", "agent", "2026-10-05T11:00:00Z", "  ")]
-        XCTAssertEqual(HomeDesktopContent.latestRowanNote(notes)?.id, "new")
-        XCTAssertNil(HomeDesktopContent.latestRowanNote([notes[1], notes[3]]))
-        var fallback = note("updated", "agent", "invalid")
-        fallback["updatedAt"] = .string("2026-10-04T12:00:00Z")
-        XCTAssertEqual(HomeDesktopContent.latestRowanNote(notes + [fallback])?.id, "updated")
-    }
-
     func testDesktopDatePicksNextOccurrenceAndSkipsInvalidDates() throws {
         let now = try XCTUnwrap(DateCounter.baseDate(.object(["date": .string("2026-10-05")])))
         func item(_ id: String, _ date: String, _ repeating: Bool = false) -> JSONValue {
@@ -809,7 +793,7 @@ private struct GlassOpacityFixture: View {
         }
     }
 
-    func testDesktopPhoneLayoutsWithLetterAndAccessibilityText() async throws {
+    func testDesktopPhoneLayoutsAndAccessibilityText() async throws {
         let store = AppStore()
         store.token = ""
         store.connected = true
@@ -849,7 +833,6 @@ private struct GlassOpacityFixture: View {
             try await Task.sleep(for: .milliseconds(450))
             host.view.layoutIfNeeded()
             XCTAssertEqual(host.view.bounds.width, width)
-            XCTAssertNotNil(UIImage(named: "LetterPaper"))
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
             let attachment = XCTAttachment(image: image)
             attachment.name = "Home-desktop-" + label; attachment.lifetime = .keepAlways; add(attachment)
@@ -1300,14 +1283,5 @@ private struct GlassOpacityFixture: View {
             composer.images = [Data([1, 2, 3])]
             XCTAssertEqual(timelineInvalidations, 1, "Attachments should still refresh the composer.")
         }
-    }
-    func testNoteLayoutRoundTripDoesNotNeedOrChangeBody() {
-        let note: JSONValue = .object(["id": .string("one"), "text": .string("original body"), "kind": .string("agent")])
-        var placement = NotePlacement(note, index: 4)
-        XCTAssertEqual(placement.cardStyle, "letter")
-        placement.x = 460; placement.rotation = -7; placement.cardStyle = "grid"
-        var changed = note; changed["layout"] = placement.json
-        XCTAssertEqual(NotePlacement(changed, index: 0), placement)
-        XCTAssertEqual(changed["text"], note["text"])
     }
 }

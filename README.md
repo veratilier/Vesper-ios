@@ -42,13 +42,14 @@ The new app does not automatically inherit Safari/Capacitor local storage. Cloud
 records are reused; local-only settings must be entered again. Keep the existing
 app installed until the native version has passed your device checks.
 
+The standalone Notes feature has been retired. Its UI and note-writing tools are removed; existing stored records are preserved. Sketch, journals and book annotations remain available.
+
 ## Implemented screens
 
 | Screen | Native implementation |
 | --- | --- |
-| Home | Ice-blue image background, glass cards, scrollable note preview, reminder completion, compact player, sidebar and floating navigation |
+| Home | Ice-blue image background, glass cards, reminder completion, compact player, sidebar and floating navigation |
 | Chat | Native multiline input, WebSocket JSON-RPC, streaming text, history list, model selection, stop, dynamic tool dispatch, explicit command/file approval |
-| Notes | Read, add, edit, delete with confirmation |
 | Reminders | Read, add, edit, complete, delete with confirmation |
 | Dates | Add/edit dates, yearly repeat, countdown |
 | Journal | Textured paper, Beijing date strip and date picker, Vera/Rowan reading, user entry editing |
@@ -125,7 +126,7 @@ one of three bundled Vesper scenes and edit a short caption the same way. Both
 work without a Vesper account or network connection; the picture choices are
 bundled artwork, not personal photos selected from your photo library.
 
-The existing Desire, Usage and Notes widgets still use the App Group snapshot
+The existing Desire and Usage widgets still use the App Group snapshot
 shared with the app. The Broadcast extension separately requires shared App
 Group and Keychain entitlements. CI builds for an iOS simulator with signing
 disabled; this does not prove that your Apple team can sign all three targets

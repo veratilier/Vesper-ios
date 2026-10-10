@@ -3,22 +3,6 @@ import MusicKit
 
 /// Select genuine shared content for the desktop; placeholder copy never becomes saved data.
 enum HomeDesktopContent {
-    static func timestamp(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-    }
-    static func latestRowanNote(_ notes: [JSONValue]) -> JSONValue? {
-        notes.enumerated().filter {
-            $0.element["kind"].string == "agent" && !$0.element["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.max { left, right in
-            func date(_ note: JSONValue) -> Date {
-                timestamp(note["createdAt"].string) ?? timestamp(note["updatedAt"].string) ?? .distantPast
-            }
-            let lhs = date(left.element), rhs = date(right.element)
-            return lhs == rhs ? left.offset > right.offset : lhs < rhs
-        }?.element
-    }
     static func nextDate(_ items: [JSONValue], now: Date = .now) -> JSONValue? {
         let valid = items.compactMap { item -> (JSONValue, Int)? in
             guard let days = DateCounter.days(item, now: now) else { return nil }
@@ -55,7 +39,6 @@ struct HomeView: View {
                         header
                         usageLine
                     }
-                    rowanLetter
                     if typeSize.isAccessibilitySize || geometry.size.width < 350 {
                         desireCard(height: photoHeight)
                         dateLeaf
@@ -137,35 +120,6 @@ struct HomeView: View {
         .accessibilityLabel("Weekly usage")
         .accessibilityValue(remainingUsage.map { "\($0) percent remaining" } ?? "Unavailable")
         .accessibilityIdentifier("home-weekly-usage")
-    }
-    private var latestNote: JSONValue? { HomeDesktopContent.latestRowanNote(store.document("notes").array) }
-    private var rowanLetter: some View {
-        Button { navigate(.notes) } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("from Rowan").font(VesperTheme.title(21)).foregroundStyle(palette.muted)
-                    .frame(height: typeSize.isAccessibilitySize ? nil : 24, alignment: .leading)
-                Text("哥哥留下的")
-                    .font(.system(.subheadline, design: .default).weight(.light))
-                    .foregroundStyle(palette.ink.opacity(0.78))
-                Text(latestNote?["text"].string ?? "这里留给哥哥下一张小纸条。")
-                    .font(.system(.subheadline, design: .default).weight(.light)).lineSpacing(4)
-                    .foregroundStyle(palette.ink.opacity(0.78))
-                    .lineLimit(typeSize.isAccessibilitySize ? 8 : 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let note = latestNote,
-                   let date = HomeDesktopContent.timestamp(note["createdAt"].string)
-                    ?? HomeDesktopContent.timestamp(note["updatedAt"].string) {
-                    Text(date.formatted(.dateTime.month(.abbreviated).day()))
-                        .font(.system(.caption2, design: .serif)).italic()
-                        .foregroundStyle(palette.muted).frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            .padding(.horizontal, 20).padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .vesperGlass(in: PaperEdge(seed: 9))
-        }
-        .accessibilityHint("Open Notes to read the full letter")
-        .accessibilityIdentifier("home-rowan-letter")
     }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {

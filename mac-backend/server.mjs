@@ -10,7 +10,7 @@ import {Media,fileTool} from './media.mjs';
 import {migrateAttachmentTool} from './tool-migration.mjs';
 
 const tools=[fileTool,{name:'mac_backend_status',description:'Read the active Mac backup backend status and whether history/memory is local or synchronized.',inputSchema:{type:'object',properties:{},additionalProperties:false}},
- {name:'read_vesper_state',description:'Read one local Vesper section. section=journal reads diary, reminders reads todos, dates reads anniversaries. This does not read live VPS data.',inputSchema:{type:'object',properties:{section:{type:'string',enum:['today','notes','reminders','dates','journal','music','memory','settings']}},required:['section'],additionalProperties:false}}];
+ {name:'read_vesper_state',description:'Read one local Vesper section. section=journal reads diary, reminders reads todos, dates reads anniversaries. This does not read live VPS data.',inputSchema:{type:'object',properties:{section:{type:'string',enum:['today','reminders','dates','journal','music','memory','settings']}},required:['section'],additionalProperties:false}}];
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 const validID=id=>typeof id==='string'&&/^[a-zA-Z0-9_.:-]{1,180}$/.test(id);
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
@@ -91,7 +91,7 @@ export function createBackend({home,token,upstream='ws://127.0.0.1:47632',worksp
             return json(res,200,{ok:true,name:b.name,result});
           }
           if(b.name==='read_vesper_state'){
-            const section=b.arguments?.section||'notes',key={today:'todos',notes:'notes',reminders:'todos',dates:'anniversaries',journal:'diary',music:'music',settings:'settings'}[section];
+            const section=b.arguments?.section||'today',key={today:'todos',reminders:'todos',dates:'anniversaries',journal:'diary',music:'music',settings:'settings'}[section];
             if(section!=='memory'&&!key)throw fail('Unknown section');
             return json(res,200,{result:{section,value:section==='memory'?store.replicaRows('memory').slice(0,40):store.get('doc:'+key),storage:'mac-local'}});
           }

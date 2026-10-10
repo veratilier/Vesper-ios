@@ -21,8 +21,8 @@ private struct DatePhotoBackground: View {
 }
 
 struct CollectionView: View {
-    enum Kind: String { case notes = "Notes", reminders = "Reminders", dates = "Dates"
-        var key: String { self == .notes ? "notes" : self == .reminders ? "todos" : "anniversaries" }
+    enum Kind: String { case reminders = "Reminders", dates = "Dates"
+        var key: String { self == .reminders ? "todos" : "anniversaries" }
     }
     let kind: Kind
     @EnvironmentObject private var store: AppStore
@@ -32,20 +32,19 @@ struct CollectionView: View {
         Group {
         if kind == .dates { DatesBoard() } else {
         Page(title: kind.rawValue) {
-            Button { editing = .object(["id": .string(UUID().uuidString), "createdAt": .string(isoNow())]) } label: { Label("Add \(kind == .notes ? "note" : kind == .dates ? "date" : "reminder")", systemImage: "plus") }
+            Button { editing = .object(["id": .string(UUID().uuidString), "createdAt": .string(isoNow())]) } label: { Label("Add \(kind == .dates ? "date" : "reminder")", systemImage: "plus") }
             if store.document(kind.key).array.isEmpty { EmptyCard(title: "Your space", message: "Add something you want to keep here.") }
             ForEach(store.document(kind.key).array) { item in
-                CollectionCard(paper: kind == .notes) {
+                GlassCard {
                     HStack(alignment: .top, spacing: 12) {
                         if kind == .reminders {
                             Button { Task { var next = item; next["done"] = .bool(!item["done"].bool); _ = await store.upsert(kind.key, item: next) } } label: { Image(systemName: item["done"].bool ? "checkmark.circle.fill" : "circle") }.disabled(store.saving)
                         }
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(item[kind == .notes ? "text" : "title"].string).font(.subheadline).textSelection(.enabled)
+                            Text(item["title"].string).font(.subheadline).textSelection(.enabled)
                                 .strikethrough(kind == .reminders && item["done"].bool)
                             if kind == .dates { Text(dateCaption(item)).font(.title2); Text(item["date"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
                             if kind == .reminders && !item["due"].string.isEmpty { Text(item["due"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
-                            if kind == .notes { Text(item["kind"].string == "agent" ? "Rowan" : "Vera").font(.caption).foregroundStyle(VesperTheme.muted) }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         Menu { Button("Edit") { editing = item }; Button("Delete", role: .destructive) { pendingDelete = item } } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Item actions")
                     }
@@ -82,46 +81,22 @@ struct CollectionEditor: View {
     @State private var validation = ""
     var body: some View {
         EditorSheet(title: kind.rawValue, busy: store.saving, save: save) {
-            FormField(label: kind == .notes ? "Note" : "Title", text: $text, multiline: kind == .notes)
+            FormField(label: "Title", text: $text)
             if kind == .dates { DatePicker("Date", selection: $date, displayedComponents: .date); Toggle("Repeat every year", isOn: $repeats) }
             if kind == .reminders { FormField(label: "Due date or time (optional)", text: $due) }
             if !validation.isEmpty { Text(validation).foregroundStyle(.red) }
         }.onAppear {
-            text = item[kind == .notes ? "text" : "title"].string; due = item["due"].string; repeats = item["repeats"].bool
+            text = item["title"].string; due = item["due"].string; repeats = item["repeats"].bool
             let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; date = f.date(from: item["date"].string) ?? .now
         }
     }
     private func save() {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { validation = "Please enter some text."; return }
         var next = item
-        next[kind == .notes ? "text" : "title"] = .string(text)
-        if kind == .notes { if next["kind"] == .null { next["kind"] = .string("user") }; if next["tone"] == .null { next["tone"] = .string("blue") } }
+        next["title"] = .string(text)
         if kind == .reminders { next["due"] = .string(due); if next["done"] == .null { next["done"] = .bool(false) }; if next["tag"] == .null { next["tag"] = .string("") } }
         if kind == .dates { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; next["date"] = .string(f.string(from: date)); next["repeats"] = .bool(repeats) }
         Task { if await store.upsert(kind.key, item: next) { dismiss() } else { validation = store.error ?? "Save failed" } }
-    }
-}
-
-private struct CollectionCard<Content: View>: View {
-    var paper: Bool
-    @ViewBuilder var content: Content
-    var body: some View {
-        if paper {
-            content.padding(.horizontal, 20).padding(.top, 32).padding(.bottom, 24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    Rectangle().fill(LinearGradient(colors: [Color(red: 0.98, green: 0.97, blue: 0.91), Color(red: 0.94, green: 0.93, blue: 0.85)], startPoint: .top, endPoint: .bottom))
-                        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.30)).frame(height: 22) }
-                        .overlay { Canvas { context, size in
-                            for i in 0..<180 {
-                                let x = CGFloat((i * 53) % 997) / 997 * size.width
-                                let y = CGFloat((i * 97) % 991) / 991 * size.height
-                                context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.brown.opacity(0.07)))
-                            }
-                        }.allowsHitTesting(false) }
-                        .shadow(color: .black.opacity(0.12), radius: 4, x: 1, y: 5)
-                }
-        } else { GlassCard { content } }
     }
 }
 

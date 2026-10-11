@@ -169,7 +169,7 @@ the new entry. General Memory creation no longer offers a dream category.
 
 ## Native chat sending and synchronization
 
-Chat now uses an expanded conversation list under the selected VPS or Mac contact:
+Chat keeps conversation management in a sidebar under the selected VPS or Mac contact:
 **New chat**, **Pinned**, collapsible **Projects**, and ungrouped **Chats**.
 Each conversation's ellipsis/context menu offers rename, pin/unpin, move to a
 project, and the existing confirmed deletion flow. Project menus create a chat
@@ -177,7 +177,14 @@ inside the project or edit its name/instruction. Removing a project returns its
 chats to the ungrouped list and preserves their history and pins. Our days remains
 available in a disclosure at the bottom.
 
-The circular document button opens **Contact instruction**, initialized from
+On iPhone, the chat header menu or a rightward swipe from the left edge opens the
+sidebar. Selecting a conversation closes it; tapping the exposed chat pane, the
+close button, or swiping left also closes it. The chat view remains mounted while
+the drawer moves, preserving the draft and connection. Mac/iPad use a collapsible
+column beside the chat. Search, favorites, projects, pins, and **Instruction** all
+live inside the sidebar.
+
+The **Instruction** row opens **Contact instruction**, initialized from
 Vera's previously saved Chat prompt (or her supplied wording). Each backend/account
 can now save its own override, including an explicitly empty value. Project
 instructions add to that contact's instructions only for member conversations;

@@ -155,6 +155,8 @@ private struct NativeChatBackendHome: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.chatWorkspace) private var workspace
     @Environment(\.scenePhase) private var phase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drawerOpen = true
     @State private var welcomeLine = "A place for today, too."
     @State private var contactsVisible = false
     @State private var open = false
@@ -201,27 +203,90 @@ private struct NativeChatBackendHome: View {
     }
     private var rowDisabled: Bool { store.loading || loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
-        if sideBySide {
-            HStack(spacing: 0) {
-                NavigationStack { contactsWithDialogs }.frame(width: 300)
-                Divider()
-                NavigationStack {
-                    ZStack {
+        Group {
+            if sideBySide {
+                HStack(spacing: 0) {
+                    NavigationStack { contactsWithDialogs }.frame(width: 300)
+                        .frame(width: drawerOpen ? 300 : 0, alignment: .leading).clipped()
+                        .allowsHitTesting(drawerOpen).accessibilityHidden(!drawerOpen)
+                    if drawerOpen { Divider() }
+                    conversationPane.frame(maxWidth: .infinity)
+                }
+            } else {
+                GeometryReader { geometry in
+                    let width = min(340, geometry.size.width * 0.84)
+                    ZStack(alignment: .leading) {
                         Background()
-                        if loadingChat && !chat.showingCachedHistory {
-                            ProgressView("Opening chat…")
-                        } else if open {
-                            ChatView(onMenu: { open = false }, restoreLatest: false, inbox: workspace?.runtime(store.activeBackend).inbox)
-                                .frame(maxWidth: 920).toolbar(.hidden, for: .navigationBar)
-                        } else {
-                            ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
-                                                   description: Text("Choose Rowan or a conversation to continue."))
+                        NavigationStack { contactsWithDialogs }
+                            .frame(width: width)
+                            .offset(x: drawerOpen ? 0 : -width)
+                            .allowsHitTesting(drawerOpen)
+                            .accessibilityHidden(!drawerOpen)
+                            .accessibilityIdentifier("chat-sidebar")
+                        conversationPane
+                            .frame(width: geometry.size.width)
+                            .allowsHitTesting(!drawerOpen)
+                            .accessibilityHidden(drawerOpen)
+                            .overlay {
+                                if drawerOpen {
+                                    Color.black.opacity(0.08).contentShape(Rectangle())
+                                        .onTapGesture { setDrawer(false) }
+                                        .accessibilityLabel("Close chat sidebar")
+                                        .accessibilityAddTraits(.isButton)
+                                }
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: drawerOpen ? 28 : 0))
+                            .shadow(color: .black.opacity(drawerOpen ? 0.18 : 0), radius: 18, x: -8)
+                            .offset(x: drawerOpen ? width : 0)
+                        if !drawerOpen {
+                            Color.clear.frame(width: 20).contentShape(Rectangle())
+                                .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+                                    if value.translation.width > 45 && abs(value.translation.height) < abs(value.translation.width) { setDrawer(true) }
+                                })
+                                .accessibilityHidden(true)
                         }
-                    }
-                }.frame(maxWidth: .infinity)
+                    }.clipped()
+                        .simultaneousGesture(DragGesture(minimumDistance: 25).onEnded { value in
+                            if drawerOpen && value.translation.width < -60 && abs(value.translation.height) < abs(value.translation.width) { setDrawer(false) }
+                        })
+                }
             }
-        } else {
-            NavigationStack { contactsWithDialogs }
+        }
+        .onChange(of: drawerOpen) { _, value in
+            contactsVisible = value
+            onRootVisibilityChange(value)
+        }
+        .background { Background() }
+    }
+
+    private func setDrawer(_ visible: Bool) {
+        if visible { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.88)) { drawerOpen = visible }
+    }
+    private var conversationPane: some View {
+        NavigationStack {
+            ZStack {
+                Background()
+                if loadingChat && !chat.showingCachedHistory {
+                    VStack(spacing: 20) {
+                        ProgressView("Opening chat…")
+                        Button("Show chats") { setDrawer(true) }
+                    }
+                } else if open {
+                    ChatView(onMenu: { setDrawer(!drawerOpen) },
+                             restoreLatest: false, inbox: workspace?.runtime(store.activeBackend).inbox)
+                        .frame(maxWidth: 920).toolbar(.hidden, for: .navigationBar)
+                } else {
+                    VStack(spacing: 20) {
+                        ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
+                                               description: Text("Choose a conversation, or start a new one."))
+                        Button { setDrawer(true) } label: {
+                            Label("Show chats", systemImage: "sidebar.left")
+                                .padding(16).vesperGlass(in: Capsule(), interactive: true)
+                        }.buttonStyle(.plain).padding(.bottom, 32)
+                    }
+                }
+            }
         }
     }
 
@@ -254,6 +319,17 @@ private struct NativeChatBackendHome: View {
                 }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
                     .accessibilityIdentifier("chat-new-conversation")
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
+
+                HStack(spacing: 12) {
+                    Button { showingChatPrompt = true } label: {
+                        Label("Instruction", systemImage: "doc.text")
+                            .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }.accessibilityIdentifier("chat-prompt-button")
+                    Button { performForSelectedBackend { showingFavorites = true } } label: {
+                        Image(systemName: "bookmark").frame(width: 44, height: 44)
+                    }.accessibilityLabel("Favorite messages")
+                }.buttonStyle(.plain).foregroundStyle(VesperTheme.ink)
                     .listRowBackground(Color.clear).listRowSeparator(.hidden)
 
                 if !pinnedWindows.isEmpty {
@@ -295,7 +371,7 @@ private struct NativeChatBackendHome: View {
                     .listRowBackground(Color.clear).listRowSeparator(.hidden)
             }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
             .listStyle(.plain)
-            .onAppear { contactsVisible = true; onRootVisibilityChange(true); updateWelcomeLine() }
+            .onAppear { contactsVisible = drawerOpen; onRootVisibilityChange(drawerOpen); updateWelcomeLine() }
             .onDisappear { contactsVisible = false; onRootVisibilityChange(false) }
             .onChange(of: phase) { _, value in
                 if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
@@ -327,40 +403,25 @@ private struct NativeChatBackendHome: View {
                         .accessibilityIdentifier("chat-contact-picker")
                 }
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { performForSelectedBackend { showingFavorites = true } } label: { Image(systemName: "bookmark") }
-                        .buttonStyle(.plain).accessibilityLabel("Favorite messages")
-                    Button { createChat() } label: { Image(systemName: "square.and.pencil") }
-                        .buttonStyle(.plain).accessibilityLabel("New Chat")
-                        .disabled(rowDisabled || chat.loadingModels)
-                }
-                promptToolbar
-            }
-            .navigationDestination(isPresented: Binding(get: { open && !sideBySide }, set: { if !sideBySide { open = $0 } })) {
-                if loadingChat {
-                    ProgressView("Opening chat…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background { Background() }
-                        .navigationTitle("Chat")
-                } else {
-                    ChatView(restoreLatest: false, native: true, inbox: workspace?.runtime(store.activeBackend).inbox)
-                        .background { Background() }.toolbar(.hidden, for: .navigationBar)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { setDrawer(false) } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Close chat sidebar")
                 }
             }
-            .navigationDestination(isPresented: $searching) { ChatSearchView { open = true } }
-            .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true } }
+            .navigationDestination(isPresented: $searching) { ChatSearchView { open = true; searching = false; setDrawer(false) } }
+            .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true; showingFavorites = false; setDrawer(false) } }
             .task {
                 chat.configure(store)
                 captureActiveContacts(); prepareOtherContacts(); reloadOrganization()
                 if !openedOnce, workspace?.isOpen(store.activeBackend) == true {
                     open = true
-                    if chat.messages.isEmpty { enterChat() }
+                    if chat.messages.isEmpty { enterChat(dismissSidebar: false) }
                 }
-                if VesperLayout.usesSidebar && !store.token.isEmpty && !open { enterChat() }
+                if sideBySide && !store.token.isEmpty && !open { enterChat(dismissSidebar: false) }
                 if !store.token.isEmpty { await refreshContacts() }
                 if !openedOnce { openedOnce = true }
             }
-            .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(!detail) }
+            .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(sideBySide ? !detail : drawerOpen) }
             .onChange(of: open) { _, isOpen in
                 workspace?.setOpen(isOpen, backend: store.activeBackend)
                 if !isOpen {
@@ -378,30 +439,7 @@ private struct NativeChatBackendHome: View {
                 chat.configure(store); captureActiveContacts(); prepareOtherContacts()
                 Task { await refreshContacts() }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
-    }
-
-    private var promptButton: some View {
-        Button { showingChatPrompt = true } label: {
-            Image(systemName: "doc.text")
-                .font(.system(size: 21, weight: .medium))
-                .foregroundStyle(VesperTheme.ink)
-                .frame(width: 44, height: 44)
-                .vesperGlass(in: Circle(), interactive: true)
-        }.buttonStyle(.plain)
-            .accessibilityLabel("Chat prompt").accessibilityIdentifier("chat-prompt-button")
-    }
-    @ToolbarContentBuilder private var promptToolbar: some ToolbarContent {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            ToolbarItem(placement: .topBarTrailing) { promptButton }
-                .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItem(placement: .topBarTrailing) { promptButton }
-        }
-        #else
-        ToolbarItem(placement: .topBarTrailing) { promptButton }
-        #endif
+            .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true; setDrawer(false) }
     }
 
     private var contactsWithDialogs: some View {
@@ -491,7 +529,7 @@ private struct NativeChatBackendHome: View {
         performForSelectedBackend {
             if await chat.createConversation() {
                 if let project { editOrganization { $0.move(chat.conversationID, to: project.id) } }
-                captureActiveContacts(); open = true
+                captureActiveContacts(); open = true; setDrawer(false)
             }
         }
     }
@@ -581,7 +619,7 @@ private struct NativeChatBackendHome: View {
         welcomeLine = ChatWelcomeLines.next(after: welcomeLine)
     }
 
-    private func enterChat(_ item: JSONValue? = nil) {
+    private func enterChat(_ item: JSONValue? = nil, dismissSidebar: Bool = true) {
         guard !store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             chat.error = "\(store.activeBackend.title) connection is not configured."
             return
@@ -597,6 +635,7 @@ private struct NativeChatBackendHome: View {
         let previewVisible = chat.previewConversation(item?.id)
         loadingChat = !previewVisible
         open = true
+        if dismissSidebar { setDrawer(false) }
         openingTask = Task {
             let opened: Bool
             if let item { opened = await chat.open(item) }

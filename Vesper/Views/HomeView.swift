@@ -24,6 +24,7 @@ struct HomeView: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     @AppStorage("vesperPalette") private var paletteName = "blue"
     @State private var refreshingUsage = false
+    @State private var desireState: JSONValue = .null
     @ObservedObject private var weather = WeatherController.shared
     let navigate: (Destination) -> Void
     var showsInlineMusic = true
@@ -61,7 +62,7 @@ struct HomeView: View {
                 .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 24)
                 .frame(maxWidth: 600).frame(maxWidth: .infinity)
             }
-            .refreshable { await store.refresh(); await loadUsage(); weather.refresh(force: true) }
+            .refreshable { await store.refresh(); await loadUsage(); await loadDesire(); weather.refresh(force: true) }
         }
         .foregroundStyle(palette.ink)
         .buttonStyle(.plain)
@@ -75,6 +76,14 @@ struct HomeView: View {
             while !Task.isCancelled {
                 weather.refresh()
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
+            }
+        }
+        .task(id: [store.api.baseURL, store.token, String(describing: phase)]) {
+            desireState = DesireEmotion.cached(store.api)
+            guard phase == .active, !store.token.isEmpty else { return }
+            while !Task.isCancelled {
+                await loadDesire()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
         .onChange(of: store.document("music")) { _, tracks in player.updateLibrary(tracks.array) }
@@ -123,27 +132,30 @@ struct HomeView: View {
     }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {
-            GeometryReader { geometry in
-                Image(palette == .black ? "DesireDarkCoast" : "DesireCoast").resizable().scaledToFill()
-                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                    .saturation(0.65).contrast(0.85)
-                    .opacity(palette == .black ? 0.48 : 0.66)
-                    .overlay(alignment: .top) {
-                        LinearGradient(colors: [palette == .black ? .black.opacity(0.18) : .white.opacity(0.22), .clear], startPoint: .top, endPoint: .bottom)
-                            .frame(height: 88)
-                    }
-                    .overlay(alignment: .topLeading) {
-                        HStack {
-                            Text("Desire").font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1)
-                            Spacer(minLength: 1)
-                            Image(systemName: "chevron.right").font(.system(size: 10))
-                        }.foregroundStyle(palette.ink).padding(12)
-                    }
+            DesireTide(values: DesireEmotion.fields.map { key, _ in
+                if case .number(let value) = desireState["values"][key] { return value }
+                return nil
+            }, compact: true)
+            .overlay(alignment: .topLeading) {
+                HStack {
+                    Text("Desire").font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1)
+                    Spacer(minLength: 1)
+                    Image(systemName: "chevron.right").font(.system(size: 10))
+                }
+                .foregroundStyle(palette == .black ? Color.white : Color(red: 0.16, green: 0.29, blue: 0.34))
+                .padding(12)
             }
             .frame(height: height)
             .clipShape(RoundedRectangle(cornerRadius: 22))
             .vesperGlass(in: RoundedRectangle(cornerRadius: 22))
-        }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-print")
+        }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-tide")
+    }
+    private func loadDesire() async {
+        let api = store.api
+        guard !api.token.isEmpty else { return }
+        guard let state = try? await DesireEmotion.refresh(api), !Task.isCancelled,
+              api.baseURL == store.api.baseURL, api.token == store.token else { return }
+        desireState = state
     }
     private var upcomingDate: JSONValue? { HomeDesktopContent.nextDate(store.document("anniversaries").array) }
     private var dateLeaf: some View {

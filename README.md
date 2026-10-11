@@ -191,7 +191,15 @@ On iPhone, the chat header menu or a rightward swipe from the left edge opens th
 sidebar. Selecting a conversation closes it; tapping the exposed chat pane or
 swiping left also closes it. Mac/iPad use a collapsible column beside the content.
 The top search button opens message search; the bottom settings menu includes
-Instruction, favorite messages, and Our days.
+Instruction, favorite messages, and Our days. Sidebar and file-list typography use a
+shared compact font with Dynamic Type support; pinned chat and project titles use
+the same size and weight. Project detail uses an inline icon/name title, Chats and
+Sources tabs, and a bottom new-conversation composer. Chats show one preview line;
+Sources filters the attachment index to member conversations and exposes project
+Instruction. Sending from the project composer persists membership before the
+first turn; unaccepted input stays as a draft, while accepted sends use the existing
+outbox recovery. Project settings
+remain in the top ellipsis menu.
 
 **Instruction** opens **Contact instruction**, initialized from
 Vera's previously saved Chat prompt (or her supplied wording). Each backend/account

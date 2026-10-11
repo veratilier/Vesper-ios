@@ -840,6 +840,41 @@ private struct GlassOpacityFixture: View {
         }
     }
 
+    func testProjectDetailHasCompactTabsAndComposer() async throws {
+        let previous = UserDefaults.standard.object(forKey: "vesperPalette")
+        UserDefaults.standard.set("white", forKey: "vesperPalette")
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let project = ChatProject(name: "dd issue", icon: "pawprint")
+        let page = NavigationStack {
+            ChatProjectPage(project: project, tab: .constant("Chats"), draft: .constant(""), canSend: true, newChat: {}, send: {}) {
+                List {
+                    ForEach(["哥哥回应", "R", "一起读书"], id: \.self) { title in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(title).chatNavigationFont(15)
+                            Text("我们接着上次的话题聊。 ").chatNavigationFont(14, weight: .regular).foregroundStyle(VesperTheme.muted)
+                        }.padding(.vertical, 13).listRowSeparator(.hidden).listRowBackground(Color.clear)
+                    }
+                }.listStyle(.plain).scrollContentBackground(.hidden)
+            } sources: { Text("Project files") }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button {} label: { Image(systemName: "line.3.horizontal") } }
+                    ToolbarItem(placement: .topBarTrailing) { Button {} label: { Image(systemName: "ellipsis") } }
+                }
+        }.tint(VesperTheme.ink).preferredColorScheme(.light)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let host = UIHostingController(rootView: page)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(for: .milliseconds(500)); host.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: image); attachment.name = "Project-detail-compact"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
     func testChatProjectsRenderOnSmallPhoneAndInDarkMode() async throws {
         URLProtocol.registerClass(DesktopContactProtocol.self)
         defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }

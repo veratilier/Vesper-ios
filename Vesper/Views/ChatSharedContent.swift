@@ -280,7 +280,7 @@ struct ChatSpaceItem: Codable, Identifiable, Equatable {
             try JSONEncoder().encode(rooms).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch { self.error = "Files loaded, but the local index could not be saved." }
     }
-    func refresh(force: Bool = false) async {
+    func refresh(force: Bool = false, conversationIDs: Set<String>? = nil) async {
         guard !loading, !api.token.isEmpty else { return }
         loading = true; error = nil; progress = "Looking for shared files…"
         defer { loading = false; progress = ""; publish() }
@@ -292,11 +292,12 @@ struct ChatSpaceItem: Codable, Identifiable, Equatable {
             rooms = rooms.filter { ids.contains($0.key) }; publish(); persist()
             var failed = 0
             var firstFailure = ""
-            for (index, room) in conversations.enumerated() {
+            let targets = conversations.filter { conversationIDs?.contains($0.id) ?? true }
+            for (index, room) in targets.enumerated() {
                 try Task.checkCancellation()
                 let revision = room["updatedAt"].string
                 if !force, !revision.isEmpty, rooms[room.id]?.revision == revision { continue }
-                progress = "整理附件 · \(index + 1)/\(conversations.count) 个对话"
+                progress = "整理附件 · \(index + 1)/\(targets.count) 个对话"
                 do {
                     var cursor = "", seen: Set<String> = [], collected: [ChatSpaceItem] = []
                     while true {
@@ -337,12 +338,16 @@ struct ChatSpaceView: View {
     @State private var sender = "Everyone"
     @State private var query = ""
     @State private var preview: ChatSpaceItem?
+    let conversationIDs: Set<String>?
+    let embedded: Bool
     let showMessage: (ChatSpaceItem) -> Void
-    init(api: APIClient, showMessage: @escaping (ChatSpaceItem) -> Void) {
+    init(api: APIClient, conversationIDs: Set<String>? = nil, embedded: Bool = false, showMessage: @escaping (ChatSpaceItem) -> Void) {
         _index = StateObject(wrappedValue: ChatSpaceIndex(api: api)); self.showMessage = showMessage
+        self.conversationIDs = conversationIDs; self.embedded = embedded
     }
     private var visible: [ChatSpaceItem] {
         index.items.filter {
+            (conversationIDs?.contains($0.conversationID) ?? true) &&
             (filter == "All" || $0.kind == filter) &&
             (sender == "Everyone" || (sender == "Vera" ? $0.fromVera : !$0.fromVera)) &&
             (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.conversationTitle.localizedCaseInsensitiveContains(query))
@@ -354,7 +359,7 @@ struct ChatSpaceView: View {
                 HStack(spacing: 8) {
                     ForEach(["All", "Images", "Files", "Audio", "Videos"], id: \.self) { category in
                         Button { filter = category } label: {
-                            Text(category).font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 10)
+                            Text(category).chatNavigationFont().padding(.horizontal, 12).frame(minHeight: 40)
                                 .background(filter == category ? VesperTheme.ink.opacity(0.12) : .clear, in: Capsule())
                         }.buttonStyle(.plain).accessibilityAddTraits(filter == category ? .isSelected : [])
                     }
@@ -370,12 +375,12 @@ struct ChatSpaceView: View {
                                 if item.kind == "Images", let url = item.url {
                                     AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "photo") }
                                 } else { Image(systemName: item.symbol).font(.title2).foregroundStyle(VesperTheme.accent) }
-                            }.frame(width: 48, height: 48).clipped()
+                            }.frame(width: 40, height: 40).clipped()
                                 .vesperGlass(in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                Text(item.name).chatNavigationFont(14, weight: .medium).lineLimit(2)
                                 Text((item.fromVera ? "Vera" : "Rowan") + " · " + ChatPresentation.time(item.date))
-                                    .font(.caption).foregroundStyle(VesperTheme.muted)
+                                    .chatNavigationFont(12, weight: .regular).foregroundStyle(VesperTheme.muted)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).contentShape(Rectangle())
                     }.buttonStyle(.plain).listRowBackground(Color.clear).listRowSeparator(.hidden)
@@ -386,13 +391,13 @@ struct ChatSpaceView: View {
                                            description: Text(index.items.isEmpty ? "你和 Rowan 在这个联系人的聊天中发过的文件会出现在这里。" : "Try another type, sender, or search."))
                         .listRowBackground(Color.clear)
                 }
-            }.listStyle(.plain).scrollContentBackground(.hidden).refreshable { await index.refresh(force: true) }
+            }.listStyle(.plain).scrollContentBackground(.hidden).refreshable { await index.refresh(force: true, conversationIDs: conversationIDs) }
         }.foregroundStyle(VesperTheme.ink).background { Background() }
-            .navigationTitle("Space").navigationBarTitleDisplayMode(.inline)
+            .modifier(SpaceNavigationTitle(embedded: embedded))
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
-                    TextField("Search files", text: $query).accessibilityIdentifier("space-search")
+                    TextField("Search files", text: $query).chatNavigationFont(14, weight: .regular).accessibilityIdentifier("space-search")
                     Menu {
                         Picker("Sent by", selection: $sender) {
                             ForEach(["Everyone", "Vera", "Rowan"], id: \.self) { Text($0).tag($0) }
@@ -404,6 +409,82 @@ struct ChatSpaceView: View {
             .sheet(item: $preview) { item in
                 if let url = item.url { ChatAttachmentPreview(url: url, name: item.name) }
             }
-            .task { await index.refresh() }
+            .task(id: conversationIDs) { await index.refresh(conversationIDs: conversationIDs) }
+    }
+}
+
+private struct ChatNavigationFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    let weight: Font.Weight
+    init(size: CGFloat, weight: Font.Weight) { _size = ScaledMetric(wrappedValue: size, relativeTo: .subheadline); self.weight = weight }
+    func body(content: Content) -> some View { content.font(.system(size: size, weight: weight)) }
+}
+extension View {
+    func chatNavigationFont(_ size: CGFloat = 14, weight: Font.Weight = .medium) -> some View {
+        modifier(ChatNavigationFont(size: size, weight: weight))
+    }
+}
+
+struct ChatProjectPage<Chats: View, Sources: View>: View {
+    let project: ChatProject
+    @Binding var tab: String
+    @Binding var draft: String
+    let canSend: Bool
+    let newChat: () -> Void
+    let send: () -> Void
+    @ViewBuilder var chats: () -> Chats
+    @ViewBuilder var sources: () -> Sources
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                ForEach(["Chats", "Sources"], id: \.self) { value in
+                    Button { tab = value } label: {
+                        Text(value).chatNavigationFont(14, weight: .medium)
+                            .foregroundStyle(tab == value ? VesperTheme.ink : VesperTheme.muted)
+                            .padding(.horizontal, 16).frame(minHeight: 40)
+                            .background(tab == value ? VesperTheme.ink.opacity(0.08) : .clear, in: Capsule())
+                    }.buttonStyle(.plain).accessibilityAddTraits(tab == value ? .isSelected : [])
+                }
+                Spacer()
+            }.padding(.horizontal, 16).padding(.top, 8)
+            if tab == "Chats" { chats() } else { sources() }
+        }.background { Background() }.foregroundStyle(VesperTheme.ink)
+            .navigationTitle(project.name).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: project.symbol)
+                        Text(project.name).lineLimit(1)
+                    }.chatNavigationFont(16, weight: .semibold)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if tab == "Chats" {
+                    HStack(spacing: 10) {
+                        Button(action: newChat) { Image(systemName: "plus").font(.system(size: 20)).frame(width: 36, height: 44) }
+                            .accessibilityLabel("New chat in " + project.name).disabled(!canSend)
+                        TextField("Message " + project.name, text: $draft, axis: .vertical)
+                            .chatNavigationFont(14, weight: .regular).lineLimit(1...4)
+                            .submitLabel(.send).onSubmit { if canSend { send() } }
+                        Button(action: send) {
+                            Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(VesperTheme.palette == .black ? Color.black : Color.white).frame(width: 34, height: 34)
+                                .background(VesperTheme.ink, in: Circle())
+                        }.accessibilityLabel("Send in new project chat")
+                            .disabled(!canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .opacity(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.35 : 1)
+                    }.buttonStyle(.plain).padding(.horizontal, 10).padding(.vertical, 5)
+                        .vesperGlass(in: RoundedRectangle(cornerRadius: 28), interactive: true)
+                        .padding(.horizontal, 20).padding(.vertical, 10)
+                }
+            }
+    }
+}
+
+private struct SpaceNavigationTitle: ViewModifier {
+    let embedded: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if embedded { content }
+        else { content.navigationTitle("Space").navigationBarTitleDisplayMode(.inline) }
     }
 }

@@ -2630,6 +2630,25 @@ final class ChatRecentCacheTests: XCTestCase {
         deleted = true
         await index.refresh(); XCTAssertTrue(index.items.isEmpty)
     }
+    func testProjectSourcesOnlyScanTheirMemberConversations() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("space.json")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let api = APIClient(baseURL: "https://fixture.example", historyURL: "https://fixture.example/history", token: "fixture")
+        var paths: [String] = []
+        let room: JSONValue = .object(["id": .string("member"), "updatedAt": .string("1")])
+        let index = ChatSpaceIndex(api: api, cacheURL: file) { path in
+            paths.append(path)
+            if path == "/conversations" { return .object(["conversations": .array([room, .object(["id": .string("outside")])])]) }
+            return .object(["conversation": room, "messages": .array([]), "hasMore": .bool(false)])
+        }
+        await index.refresh(conversationIDs: ["member"])
+        XCTAssertEqual(paths.count, 2)
+        XCTAssertTrue(paths.last?.hasPrefix("/conversations/member?") == true)
+        XCTAssertFalse(paths.contains { $0.contains("outside") })
+        paths.removeAll()
+        await index.refresh(force: true, conversationIDs: [])
+        XCTAssertEqual(paths, ["/conversations"])
+    }
     func testInvalidAttachmentLinksAreExcluded() {
         let room: JSONValue = .object(["id": .string("r")])
         let messages: [JSONValue] = [.object(["id": .string("m"), "metadata": .object(["attachments": .array([

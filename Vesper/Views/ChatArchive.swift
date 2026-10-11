@@ -168,6 +168,9 @@ private struct NativeChatBackendHome: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private enum Destination: Equatable { case conversation, schedule, space, projects, project(String), activity }
+    @State private var projectTab = "Chats"
+    @State private var projectDrafts: [String: String] = [:]
+    @State private var startingProjectChat = false
     @State private var destination = Destination.conversation
     @State private var drawerOpen = true
     @State private var welcomeLine = "A place for today, too."
@@ -214,7 +217,7 @@ private struct NativeChatBackendHome: View {
     private var mainConversationID: String {
         selectedContacts.mainID
     }
-    private var rowDisabled: Bool { store.loading || loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
+    private var rowDisabled: Bool { startingProjectChat || store.loading || loadingChat || chat.busy || chat.openingMainRoom || chat.callActive || deleting || renaming || savingContactName }
     var body: some View {
         Group {
             if sideBySide {
@@ -306,6 +309,7 @@ private struct NativeChatBackendHome: View {
     }
 
     private func navigate(_ target: Destination) {
+        if destination != target { projectTab = "Chats" }
         destination = target; setDrawer(false)
     }
     @ViewBuilder private var destinationPage: some View {
@@ -340,10 +344,12 @@ private struct NativeChatBackendHome: View {
     }
     private func sidebarLink(_ title: String, icon: String, target: Destination) -> some View {
         Button { navigate(target) } label: {
-            Label { Text(title).font(.body.weight(.semibold)) } icon: {
-                Image(systemName: icon).font(.title3).frame(width: 26)
-            }.frame(maxWidth: .infinity, minHeight: 46, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(.plain).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            Label { Text(title).chatNavigationFont() } icon: {
+                Image(systemName: icon).font(.system(size: 20)).frame(width: 24)
+            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
+            .listRowBackground(Color.clear).listRowSeparator(.hidden)
     }
     private var contactList: some View {
         List {
@@ -356,18 +362,18 @@ private struct NativeChatBackendHome: View {
                 Section {
                     ForEach(organization.projects.filter { organization.isPinned($0) }) { project in projectFolder(project) }
                     ForEach(pinnedWindows) { window in organizedRow(window) }
-                } header: { Text("Pinned").font(.headline).foregroundStyle(VesperTheme.ink).textCase(nil) }
+                } header: { Text("Pinned").chatNavigationFont(13, weight: .semibold).foregroundStyle(VesperTheme.ink).textCase(nil) }
             }
             Section {
                 ForEach(otherWindows) { window in organizedRow(window) }
-            } header: { Text("Recents").font(.headline).foregroundStyle(VesperTheme.ink).textCase(nil) }
+            } header: { Text("Recents").chatNavigationFont(13, weight: .semibold).foregroundStyle(VesperTheme.ink).textCase(nil) }
         }.listStyle(.plain).scrollContentBackground(.hidden).transparentNavigationTop()
             .background { Background() }
             .foregroundStyle(VesperTheme.ink)
             .safeAreaInset(edge: .bottom) {
                 HStack {
                     Button { createChat() } label: {
-                        Label("New chat", systemImage: "square.and.pencil").font(.subheadline.weight(.semibold))
+                        Label("New chat", systemImage: "square.and.pencil").chatNavigationFont()
                             .padding(.horizontal, 20).frame(height: 48).vesperGlass(in: Capsule(), interactive: true)
                     }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
                         .accessibilityIdentifier("chat-new-conversation")
@@ -377,7 +383,7 @@ private struct NativeChatBackendHome: View {
                         Button { performForSelectedBackend { showingFavorites = true } } label: { Label("Favorite messages", systemImage: "bookmark") }
                         Button { navigate(.activity) } label: { Label("Our days", systemImage: "calendar") }
                     } label: {
-                        Image(systemName: "gearshape").font(.title3).frame(width: 48, height: 48)
+                        Image(systemName: "gearshape").font(.system(size: 19)).frame(width: 48, height: 48)
                             .vesperGlass(in: Circle(), interactive: true)
                     }.accessibilityLabel("Chat settings")
                 }.padding(.horizontal, 20).padding(.vertical, 12)
@@ -396,27 +402,72 @@ private struct NativeChatBackendHome: View {
                 ContentUnavailableView("Projects", systemImage: "folder", description: Text("Group conversations and give each project its own instruction."))
                     .listRowBackground(Color.clear)
             }
-        }.listStyle(.plain).scrollContentBackground(.hidden).navigationTitle("Project")
+        }.listStyle(.plain).scrollContentBackground(.hidden).navigationTitle("Project").navigationBarTitleDisplayMode(.inline)
     }
     private func projectPage(_ project: ChatProject) -> some View {
-        List {
-            HStack(spacing: 14) {
-                Image(systemName: project.symbol).font(.largeTitle)
-                Text(project.name).font(.title2.weight(.semibold))
-            }.padding(.vertical, 12).listRowBackground(Color.clear).listRowSeparator(.hidden)
-            Button { createChat(in: project) } label: { Label("New chat", systemImage: "square.and.pencil").frame(minHeight: 44) }
-                .disabled(rowDisabled || chat.loadingModels).listRowBackground(Color.clear)
-            Button { editingProject = project } label: { Label("Name, icon & instruction", systemImage: "doc.text").frame(minHeight: 44) }
-                .listRowBackground(Color.clear)
-            Section("Chats") {
-                ForEach(selectedContacts.windows.filter { organization.project(for: $0.id)?.id == project.id }) { organizedRow($0) }
-            }
-        }.listStyle(.plain).scrollContentBackground(.hidden).navigationTitle("Project")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu { projectActions(project) } label: { Image(systemName: "ellipsis") }
+        let windows = selectedContacts.windows.filter { organization.project(for: $0.id)?.id == project.id }
+            .sorted { ($0.conversation?["updatedAt"].string ?? "") > ($1.conversation?["updatedAt"].string ?? "") }
+        return ChatProjectPage(project: project, tab: $projectTab,
+                               draft: Binding(get: { projectDrafts[project.id] ?? "" }, set: { projectDrafts[project.id] = $0 }),
+                               canSend: !rowDisabled && !chat.loadingModels,
+                               newChat: { createChat(in: project) }, send: { sendProjectMessage(project) }) {
+            List {
+                ForEach(windows) { window in
+                    Button { enterChat(window.conversation) } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(title(window)).chatNavigationFont(15, weight: .medium).lineLimit(1)
+                            Text(preview(window.conversation, empty: "Start chatting"))
+                                .chatNavigationFont(14, weight: .regular).foregroundStyle(VesperTheme.muted).lineLimit(1)
+                        }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.vertical, 5).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(rowDisabled)
+                        .contextMenu { conversationActions(window) }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 24, bottom: 8, trailing: 24))
+                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                }
+                if windows.isEmpty {
+                    ContentUnavailableView("Start a conversation", systemImage: "bubble.left", description: Text("Messages here use this project's instruction."))
+                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                }
+            }.listStyle(.plain).scrollContentBackground(.hidden)
+        } sources: {
+            VStack(spacing: 0) {
+                Button { editingProject = project } label: {
+                    Label("Instruction", systemImage: "doc.text").chatNavigationFont()
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 24)
+                }.buttonStyle(.plain)
+                ChatSpaceView(api: store.api, conversationIDs: Set(windows.map(\.id)), embedded: true) { item in
+                    Task {
+                        if await chat.openSearchResult(.object(["id": .string(item.messageID), "conversationId": .string(item.conversationID)])) {
+                            destination = .conversation; open = true; setDrawer(false)
+                        }
+                    }
                 }
             }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu { projectActions(project) } label: { Image(systemName: "ellipsis") }
+            }
+        }
+    }
+    private func sendProjectMessage(_ project: ChatProject) {
+        let text = (projectDrafts[project.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !rowDisabled, !chat.loadingModels else { return }
+        startingProjectChat = true
+        Task {
+            defer { startingProjectChat = false }
+            chat.configure(store)
+            guard await chat.createConversation() else { return }
+            // Persist membership before the first turn so the project instruction applies immediately.
+            var current = ChatOrganization.load(store.api)
+            current.move(chat.conversationID, to: project.id)
+            do { try current.save(store.api); organization = current }
+            catch { chat.error = error.localizedDescription; return }
+            chat.composer.draft = text
+            projectDrafts[project.id] = ""
+            captureActiveContacts(); destination = .conversation; open = true; setDrawer(false)
+            _ = await chat.send(text, onAccepted: { chat.composer.draft = "" })
+        }
     }
 
     private var contactsWithNavigation: some View {
@@ -436,7 +487,7 @@ private struct NativeChatBackendHome: View {
                         }
                     } label: {
                         HStack(spacing: 5) {
-                            Text("Chat").font(.headline)
+                            Text("Chat").chatNavigationFont(16, weight: .semibold)
                             Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                         }.foregroundStyle(VesperTheme.ink).frame(minHeight: 44)
                     }.accessibilityLabel("Switch contact").accessibilityValue(agentName + " · " + selectedBackend.title)
@@ -585,8 +636,8 @@ private struct NativeChatBackendHome: View {
         HStack(spacing: 4) {
             Button { enterChat(window.conversation) } label: {
                 HStack(spacing: 12) {
-                    if organization.pinned.contains(window.id) { Image(systemName: "bubble.left").font(.title3).frame(width: 26) }
-                    Text(title(window)).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    if organization.pinned.contains(window.id) { Image(systemName: "bubble.left").font(.system(size: 20)).frame(width: 24) }
+                    Text(title(window)).chatNavigationFont().lineLimit(1)
                 }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(rowDisabled)
             Menu { conversationActions(window) } label: {
@@ -621,8 +672,9 @@ private struct NativeChatBackendHome: View {
     private func projectFolder(_ project: ChatProject) -> some View {
         HStack(spacing: 4) {
             Button { navigate(.project(project.id)) } label: {
-                Label { Text(project.name).font(.subheadline.weight(.semibold)).lineLimit(1) } icon: {
-                    Image(systemName: project.symbol).font(.title3).frame(width: 26)
+                HStack(spacing: 12) {
+                    Image(systemName: project.symbol).font(.system(size: 20)).frame(width: 24)
+                    Text(project.name).chatNavigationFont().lineLimit(1)
                 }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(.plain)
             Menu { projectActions(project) } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }

@@ -230,7 +230,7 @@ private struct NativeChatBackendHome: View {
                 }
             } else {
                 GeometryReader { geometry in
-                    let width = min(340, geometry.size.width * 0.84)
+                    let width = min(340, geometry.size.width * 0.77)
                     ZStack(alignment: .leading) {
                         Background()
                         NavigationStack { contactsWithDialogs }
@@ -270,9 +270,12 @@ private struct NativeChatBackendHome: View {
         }
         .onChange(of: drawerOpen) { _, value in
             contactsVisible = value
-            onRootVisibilityChange(value)
+            onRootVisibilityChange(!value && destination != .conversation)
         }
-        .background { Background() }
+        .background {
+            if drawerOpen { sidebarBackground } else { Background() }
+        }
+        .toolbar(drawerOpen && !sideBySide ? .hidden : .visible, for: .tabBar)
     }
 
     private func setDrawer(_ visible: Bool) {
@@ -342,55 +345,96 @@ private struct NativeChatBackendHome: View {
             }
         }
     }
+    private var sidebarBackground: some View {
+        (VesperTheme.palette == .black ? Color(white: 0.07) : Color.white)
+            .opacity(0.92).background(.regularMaterial).ignoresSafeArea()
+    }
+    private func sidebarItem(_ title: String, icon: String? = nil, selected: Bool = false) -> some View {
+        HStack(spacing: 13) {
+            if let icon { Image(systemName: icon).font(.system(size: 18, weight: .regular)).frame(width: 21) }
+            Text(title).chatNavigationFont(15, weight: .medium).lineLimit(1)
+            Spacer(minLength: 0)
+        }.padding(.horizontal, 20).frame(minHeight: 46).contentShape(Rectangle())
+            .background(selected ? VesperTheme.ink.opacity(0.055) : .clear, in: RoundedRectangle(cornerRadius: 13))
+    }
     private func sidebarLink(_ title: String, icon: String, target: Destination) -> some View {
-        Button { navigate(target) } label: {
-            Label { Text(title).chatNavigationFont() } icon: {
-                Image(systemName: icon).font(.system(size: 20)).frame(width: 24)
-            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(.plain)
-            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
-            .listRowBackground(Color.clear).listRowSeparator(.hidden)
+        Button { navigate(target) } label: { sidebarItem(title, icon: icon, selected: destination == target) }
+            .buttonStyle(.plain)
+    }
+    private var sidebarHeader: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(VesperBackend.allCases) { backend in
+                    let contact = backendContacts.snapshot(backend)
+                    Button { backendSelection.wrappedValue = backend } label: {
+                        Label(contact.agentName + " · " + backend.title,
+                              systemImage: backend == selectedBackend ? "checkmark" : backend == .vps ? "server.rack" : "laptopcomputer")
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Chat").chatNavigationFont(21, weight: .semibold)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                }.frame(minHeight: 44)
+            }.accessibilityLabel("Switch contact").accessibilityValue(agentName + " · " + selectedBackend.title)
+                .accessibilityIdentifier("chat-contact-picker")
+            Spacer(minLength: 0)
+            Button { performForSelectedBackend { searching = true } } label: {
+                Image(systemName: "magnifyingglass").font(.system(size: 19)).frame(width: 44, height: 44)
+                    .vesperGlass(in: Circle(), interactive: true)
+            }.accessibilityLabel("Search messages")
+        }.buttonStyle(.plain).padding(.leading, 30).padding(.trailing, 18).padding(.top, 6).padding(.bottom, 12)
+    }
+    private func sidebarHeading(_ text: String) -> some View {
+        Text(text).chatNavigationFont(15, weight: .semibold)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 20)
+            .padding(.top, 26).padding(.bottom, 12)
     }
     private var contactList: some View {
-        List {
-            Section {
-                sidebarLink("Schedule", icon: "clock", target: .schedule)
-                sidebarLink("Space", icon: "books.vertical", target: .space)
-                sidebarLink("Project", icon: "folder", target: .projects)
-            }
-            if !pinnedWindows.isEmpty || organization.projects.contains(where: { organization.isPinned($0) }) {
-                Section {
-                    ForEach(organization.projects.filter { organization.isPinned($0) }) { project in projectFolder(project) }
-                    ForEach(pinnedWindows) { window in organizedRow(window) }
-                } header: { Text("Pinned").chatNavigationFont(13, weight: .semibold).foregroundStyle(VesperTheme.ink).textCase(nil) }
-            }
-            Section {
-                ForEach(otherWindows) { window in organizedRow(window) }
-            } header: { Text("Recents").chatNavigationFont(13, weight: .semibold).foregroundStyle(VesperTheme.ink).textCase(nil) }
-        }.listStyle(.plain).scrollContentBackground(.hidden).transparentNavigationTop()
-            .background { Background() }
-            .foregroundStyle(VesperTheme.ink)
-            .safeAreaInset(edge: .bottom) {
-                HStack {
-                    Button { createChat() } label: {
-                        Label("New chat", systemImage: "square.and.pencil").chatNavigationFont()
-                            .padding(.horizontal, 20).frame(height: 48).vesperGlass(in: Capsule(), interactive: true)
-                    }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
-                        .accessibilityIdentifier("chat-new-conversation")
-                    Spacer(minLength: 8)
-                    Menu {
-                        Button { showingChatPrompt = true } label: { Label("Instruction", systemImage: "doc.text") }
-                        Button { performForSelectedBackend { showingFavorites = true } } label: { Label("Favorite messages", systemImage: "bookmark") }
-                        Button { navigate(.activity) } label: { Label("Our days", systemImage: "calendar") }
-                    } label: {
-                        Image(systemName: "gearshape").font(.system(size: 19)).frame(width: 48, height: 48)
-                            .vesperGlass(in: Circle(), interactive: true)
-                    }.accessibilityLabel("Chat settings")
-                }.padding(.horizontal, 20).padding(.vertical, 12)
-            }
-            .onAppear { contactsVisible = drawerOpen; onRootVisibilityChange(drawerOpen) }
+        VStack(spacing: 0) {
+            sidebarHeader
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    sidebarLink("Schedule", icon: "clock", target: .schedule)
+                    sidebarLink("Space", icon: "books.vertical", target: .space)
+                    sidebarLink("Project", icon: "folder", target: .projects)
+                    if !pinnedWindows.isEmpty || organization.projects.contains(where: { organization.isPinned($0) }) {
+                        sidebarHeading("Pinned")
+                        ForEach(organization.projects.filter { organization.isPinned($0) }) { project in
+                            Button { navigate(.project(project.id)) } label: {
+                                sidebarItem(project.name, icon: project.symbol, selected: destination == .project(project.id))
+                            }.buttonStyle(.plain).contextMenu { projectActions(project) }
+                        }
+                        ForEach(pinnedWindows) { window in organizedRow(window) }
+                    }
+                    sidebarHeading("Recents")
+                    ForEach(otherWindows) { window in organizedRow(window) }
+                }.padding(.horizontal, 10).padding(.bottom, 16)
+            }.scrollIndicators(.hidden).refreshable { await refreshContacts(); activityRefreshID += 1 }
+            HStack {
+                Button { createChat() } label: {
+                    Label("Chat", systemImage: "square.and.pencil").chatNavigationFont(15, weight: .semibold)
+                        .foregroundStyle(VesperTheme.palette == .black ? Color.black : Color.white)
+                        .padding(.horizontal, 20).frame(height: 46)
+                        .background(VesperTheme.ink, in: Capsule())
+                        .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
+                }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
+                    .accessibilityLabel("New chat").accessibilityIdentifier("chat-new-conversation")
+                Spacer(minLength: 8)
+                Menu {
+                    Button { showingChatPrompt = true } label: { Label("Instruction", systemImage: "doc.text") }
+                    Button { performForSelectedBackend { showingFavorites = true } } label: { Label("Favorite messages", systemImage: "bookmark") }
+                    Button { navigate(.activity) } label: { Label("Our days", systemImage: "calendar") }
+                    Button { setDrawer(false) } label: { Label("Close sidebar", systemImage: "sidebar.left") }
+                    if let onMenu { Button(action: onMenu) { Label("Vesper navigation", systemImage: "square.grid.2x2") } }
+                } label: {
+                    Image(systemName: "gearshape").font(.system(size: 19)).frame(width: 44, height: 44)
+                        .vesperGlass(in: Circle(), interactive: true)
+                }.accessibilityLabel("Chat settings")
+            }.padding(.leading, 30).padding(.trailing, 18).padding(.top, 12).padding(.bottom, 16)
+        }.background { sidebarBackground }.foregroundStyle(VesperTheme.ink)
+            .onAppear { contactsVisible = drawerOpen; onRootVisibilityChange(!drawerOpen && destination != .conversation) }
             .onDisappear { contactsVisible = false; onRootVisibilityChange(false) }
-            .refreshable { await refreshContacts(); activityRefreshID += 1 }
     }
     private var projectDirectory: some View {
         List {
@@ -472,37 +516,15 @@ private struct NativeChatBackendHome: View {
 
     private var contactsWithNavigation: some View {
         contactList
-            .safeAreaInset(edge: .bottom, spacing: 4) {
-                if !NativeMusicAccessory.isSupported, let onOpenMusic { MiniMusicPlayer(openMusic: onOpenMusic) }
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $searching) {
+                ChatSearchView { destination = .conversation; open = true; searching = false; setDrawer(false) }
+                    .toolbar(.visible, for: .navigationBar)
             }
-            .navigationTitle("Chat").navigationBarTitleDisplayMode(.inline).toolbar {
-                ToolbarItem(placement: .principal) {
-                    Menu {
-                        ForEach(VesperBackend.allCases) { backend in
-                            let contact = backendContacts.snapshot(backend)
-                            Button { backendSelection.wrappedValue = backend } label: {
-                                Label(contact.agentName + " · " + backend.title,
-                                      systemImage: backend == selectedBackend ? "checkmark" : backend == .vps ? "server.rack" : "laptopcomputer")
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text("Chat").chatNavigationFont(16, weight: .semibold)
-                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
-                        }.foregroundStyle(VesperTheme.ink).frame(minHeight: 44)
-                    }.accessibilityLabel("Switch contact").accessibilityValue(agentName + " · " + selectedBackend.title)
-                        .accessibilityIdentifier("chat-contact-picker")
-                }
-                ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { performForSelectedBackend { searching = true } } label: { Image(systemName: "magnifyingglass") }
-                        .accessibilityLabel("Search messages")
-                    Button { setDrawer(false) } label: { Image(systemName: "xmark") }
-                        .accessibilityLabel("Close chat sidebar")
-                }
+            .navigationDestination(isPresented: $showingFavorites) {
+                ChatFavoritesView { destination = .conversation; open = true; showingFavorites = false; setDrawer(false) }
+                    .toolbar(.visible, for: .navigationBar)
             }
-            .navigationDestination(isPresented: $searching) { ChatSearchView { destination = .conversation; open = true; searching = false; setDrawer(false) } }
-            .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { destination = .conversation; open = true; showingFavorites = false; setDrawer(false) } }
             .task {
                 chat.configure(store)
                 captureActiveContacts(); prepareOtherContacts(); reloadOrganization()
@@ -514,7 +536,7 @@ private struct NativeChatBackendHome: View {
                 if !store.token.isEmpty { await refreshContacts() }
                 if !openedOnce { openedOnce = true }
             }
-            .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(sideBySide ? !detail : drawerOpen) }
+            .onChange(of: open || searching || showingFavorites) { _, detail in onRootVisibilityChange(!drawerOpen && destination != .conversation) }
             .onChange(of: open) { _, isOpen in
                 workspace?.setOpen(isOpen, backend: store.activeBackend)
                 if !isOpen {
@@ -633,21 +655,11 @@ private struct NativeChatBackendHome: View {
         return saved.isEmpty ? window.title : saved
     }
     private func organizedRow(_ window: ChatConversationWindow) -> some View {
-        HStack(spacing: 4) {
-            Button { enterChat(window.conversation) } label: {
-                HStack(spacing: 12) {
-                    if organization.pinned.contains(window.id) { Image(systemName: "bubble.left").font(.system(size: 20)).frame(width: 24) }
-                    Text(title(window)).chatNavigationFont().lineLimit(1)
-                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled(rowDisabled)
-            Menu { conversationActions(window) } label: {
-                Image(systemName: "ellipsis").frame(width: 36, height: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("Options for " + title(window))
-                .disabled(rowDisabled || window.conversation == nil)
-        }.foregroundStyle(VesperTheme.ink)
+        Button { enterChat(window.conversation) } label: {
+            sidebarItem(title(window), icon: organization.pinned.contains(window.id) ? "bubble.left" : nil,
+                        selected: destination == .conversation && open && chat.conversationID == window.id)
+        }.buttonStyle(.plain).disabled(rowDisabled)
             .contextMenu { conversationActions(window) }
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-            .listRowBackground(Color.clear).listRowSeparator(.hidden)
     }
     @ViewBuilder private func conversationActions(_ window: ChatConversationWindow) -> some View {
         if let item = window.conversation {

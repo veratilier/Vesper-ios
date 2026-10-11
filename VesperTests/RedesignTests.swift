@@ -900,7 +900,10 @@ private struct GlassOpacityFixture: View {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         for (width, palette) in [(320, "white"), (393, "black")] {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
-            let content = NativeChatHome(sideBySide: false).environmentObject(store).environmentObject(chat)
+            let content = TabView(selection: .constant(1)) {
+                Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+                NativeChatHome(sideBySide: false).tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+            }.environmentObject(store).environmentObject(chat)
                 .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
                 .preferredColorScheme(palette == "black" ? .dark : .light)
             let host = UIHostingController(rootView: content)

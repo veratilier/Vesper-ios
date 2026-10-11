@@ -193,7 +193,11 @@ swiping left also closes it. Mac/iPad use a collapsible column beside the conten
 The top search button opens message search; the bottom settings menu includes
 Instruction, favorite messages, and Our days. Sidebar and file-list typography use a
 shared compact font with Dynamic Type support; pinned chat and project titles use
-the same size and weight. Project detail uses an inline icon/name title, Chats and
+the same size and weight. The drawer uses a neutral frosted surface, a left-aligned
+contact selector, 46-point rows, and long-press context menus. While open on iPhone,
+the tab bar and music accessory are hidden; closing the drawer restores navigation.
+The exposed content pane or a leftward swipe closes the drawer, with an accessible
+Close sidebar option in its settings menu. Project detail uses an inline icon/name title, Chats and
 Sources tabs, and a bottom new-conversation composer. Chats show one preview line;
 Sources filters the attachment index to member conversations and exposes project
 Instruction. Sending from the project composer persists membership before the

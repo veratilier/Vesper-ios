@@ -287,6 +287,30 @@ struct ChatView: View {
                     })
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
+                        if !chat.queuedMessages.isEmpty && !chat.sending {
+                            HStack {
+                                Spacer()
+                                Button {
+                                    focused = false
+                                    Task { _ = await chat.sendCollectedMessages() }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 14))
+                                        Text("开始回复").font(.system(size: 14, weight: .medium))
+                                        Text("\(chat.queuedMessages.count)").font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                                            .padding(.horizontal, 6).frame(minWidth: 22, minHeight: 22)
+                                            .background(VesperTheme.ink.opacity(0.08), in: Capsule())
+                                    }.padding(.horizontal, 15).frame(height: 44)
+                                        .foregroundStyle(VesperTheme.ink)
+                                        .vesperGlass(in: Capsule(), interactive: true)
+                                        .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
+                                }.buttonStyle(.plain)
+                                    .disabled(chat.busy || chat.unconfirmedSend || chat.showingCachedHistory || chat.openingMainRoom || chat.loadingModels || store.loading)
+                                    .accessibilityLabel("开始回复，共\(chat.queuedMessages.count)条待发送消息")
+                                    .accessibilityHint("一起发送已攒好的消息，输入框中的草稿会保留")
+                                    .accessibilityIdentifier("chat-reply-collected")
+                            }.padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 2)
+                        }
                         composer
                             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
                                 composerFrame = frame; markDisplayedMessages()
@@ -639,38 +663,6 @@ struct ChatView: View {
     }
     private var composer: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                Menu {
-                    ForEach(ChatReplyMode.allCases, id: \.rawValue) { mode in
-                        Button { chat.replyMode = mode } label: {
-                            Label(mode.title, systemImage: chat.replyMode == mode ? "checkmark" : (mode == .immediate ? "bolt" : "text.bubble"))
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: chat.replyMode == .immediate ? "bolt" : "text.bubble")
-                        Text(chat.replyMode.title)
-                        Image(systemName: "chevron.down").font(.system(size: 9))
-                    }.font(.system(size: 12)).frame(minHeight: 30)
-                }.accessibilityLabel("回复模式").accessibilityValue(chat.replyMode.title)
-                    .disabled(chat.sending || chat.callActive)
-                Spacer(minLength: 0)
-                if !chat.queuedMessages.isEmpty {
-                    Button {
-                        focused = false
-                        Task { _ = await chat.sendCollectedMessages() }
-                    } label: {
-                        Text("开始回复 · \(chat.queuedMessages.count)条").font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 10).frame(minHeight: 32)
-                            .vesperGlass(in: Capsule(), interactive: true)
-                    }.disabled(chat.busy || chat.sending || chat.unconfirmedSend || chat.showingCachedHistory || chat.openingMainRoom || chat.loadingModels || store.loading)
-                        .accessibilityIdentifier("chat-reply-collected")
-                }
-            }
-            if chat.replyMode == .immediate && !chat.queuedMessages.isEmpty {
-                Text("待发送消息仍保留，点「开始回复」后恢复即时回复。")
-                    .font(.system(size: 11)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity, alignment: .leading)
-            }
             if let reply = draftStore.replyTo {
                 HStack {
                     ChatQuotePreview(quote: reply)
@@ -984,36 +976,49 @@ struct ChatHeaderMenu: View {
     let onMemory: () -> Void
     let onTerminal: () -> Void
     var showsVPSDisplay = false
+    @EnvironmentObject private var chat: ChatSession
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     var body: some View {
-        ZStack(alignment: .trailing) {
-            if expanded {
-                HStack(spacing: 8) {
-                    actionIcon("相关记忆", symbol: "brain", action: onMemory)
-                    actionIcon(showsVPSDisplay ? "查看 VPS" : "终端", symbol: showsVPSDisplay ? "display" : "terminal", action: onTerminal)
-                    if VesperLayout.usesSidebar {
-                        MacAppearanceButton().frame(width: 44, height: 44)
-                    } else {
-                    actionIcon(navigationStyle == "native" ? "切换到 Vesper" : "切换到 Apple Native",
-                               symbol: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled") {
-                        navigationStyle = navigationStyle == "native" ? "vesper" : "native"
+        Button { expanded = true } label: {
+            Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .vesperGlass(in: Circle(), interactive: true)
+        }.buttonStyle(.plain).foregroundStyle(VesperTheme.ink)
+            .accessibilityLabel("聊天更多选项")
+            .accessibilityIdentifier("chat-header-more")
+            .popover(isPresented: $expanded, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        actionIcon("相关记忆", symbol: "brain", action: onMemory)
+                        Spacer()
+                        actionIcon(showsVPSDisplay ? "查看 VPS" : "终端", symbol: showsVPSDisplay ? "display" : "terminal", action: onTerminal)
+                        Spacer()
+                        if VesperLayout.usesSidebar {
+                            MacAppearanceButton().frame(width: 44, height: 44)
+                        } else {
+                            actionIcon(navigationStyle == "native" ? "切换到 Vesper" : "切换到 Apple Native",
+                                       symbol: navigationStyle == "native" ? "sidebar.left" : "rectangle.bottomthird.inset.filled") {
+                                navigationStyle = navigationStyle == "native" ? "vesper" : "native"
+                            }
+                        }
                     }
+                    Divider()
+                    Text("回复模式").font(.system(size: 11)).foregroundStyle(VesperTheme.muted).padding(.top, 4)
+                    ForEach(ChatReplyMode.allCases, id: \.rawValue) { mode in
+                        Button { chat.replyMode = mode; expanded = false } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: mode == .immediate ? "bolt" : "text.bubble").frame(width: 20)
+                                Text(mode.title)
+                                Spacer()
+                                if chat.replyMode == mode { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)) }
+                            }.font(.system(size: 14)).frame(minHeight: 38).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(chat.sending || chat.callActive)
+                            .accessibilityValue(chat.replyMode == mode ? "已选中" : "")
                     }
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .trailing)))
-            } else {
-                Button { expanded = true } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                }.buttonStyle(.plain).accessibilityLabel("聊天更多选项")
-                    .accessibilityIdentifier("chat-header-more")
-                    .transition(.opacity)
+                }.padding(14).frame(width: 230).foregroundStyle(VesperTheme.ink)
+                    .presentationCompactAdaptation(.popover)
             }
-        }
-        .frame(width: expanded ? 148 : 44, height: 44, alignment: .trailing)
-        .foregroundStyle(VesperTheme.ink)
-        .vesperGlass(in: Capsule(), interactive: true)
-        .accessibilityAction(.escape) { expanded = false }
+            .accessibilityAction(.escape) { expanded = false }
     }
     private func actionIcon(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button { expanded = false; action() } label: {

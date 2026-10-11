@@ -1,5 +1,50 @@
 import SwiftUI
 
+struct ChatPromptEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("vesperPalette") private var palette = "blue"
+    @State private var draft = ChatPromptPreferences.load()
+    @State private var original = ChatPromptPreferences.load()
+    @State private var confirmingDiscard = false
+    private var changed: Bool { draft != original }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("写下你希望 Rowan 如何与你聊天。")
+                    .font(.subheadline).foregroundStyle(VesperTheme.muted)
+                TextEditor(text: $draft)
+                    .font(.body).scrollContentBackground(.hidden)
+                    .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .vesperGlass(in: RoundedRectangle(cornerRadius: 22))
+                    .accessibilityLabel("Chat prompt text").accessibilityIdentifier("chat-prompt-editor")
+                Text("保存在本机，VPS / MAC 聊天共用。从下一条消息开始使用，已有窗口也生效；不修改自唤醒 prompt。清空并保存即可停用。")
+                    .font(.caption).foregroundStyle(VesperTheme.muted)
+            }.padding(20).background { Background() }
+                .navigationTitle("Chat prompt").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { if changed { confirmingDiscard = true } else { dismiss() } }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") {
+                            ChatPromptPreferences.save(draft)
+                            original = draft
+                            dismiss()
+                        }.accessibilityIdentifier("chat-prompt-save")
+                    }
+                }
+                .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                    Button("放弃修改", role: .destructive) { dismiss() }
+                    Button("继续编辑", role: .cancel) {}
+                }
+        }.foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+            .preferredColorScheme(palette == "black" ? .dark : .light)
+            .interactiveDismissDisabled(changed)
+            .presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+}
+
 struct NativeChatHome: View {
     var sideBySide = VesperLayout.isMac
     var onMenu: (() -> Void)? = nil
@@ -48,6 +93,7 @@ private struct NativeChatBackendHome: View {
     @State private var openingTask: Task<Void, Never>?
     @State private var searching = false
     @State private var showingFavorites = false
+    @State private var showingChatPrompt = false
     @State private var openedOnce = false
     @State private var deletingConversation: JSONValue?
     @State private var deleting = false
@@ -196,6 +242,7 @@ private struct NativeChatBackendHome: View {
                         .buttonStyle(.plain).accessibilityLabel("New Chat")
                         .disabled(rowDisabled || chat.loadingModels)
                 }
+                promptToolbar
             }
             .navigationDestination(isPresented: Binding(get: { open && !sideBySide }, set: { if !sideBySide { open = $0 } })) {
                 if loadingChat {
@@ -241,8 +288,32 @@ private struct NativeChatBackendHome: View {
             .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true }
     }
 
+    private var promptButton: some View {
+        Button { showingChatPrompt = true } label: {
+            Image(systemName: "doc.text")
+                .font(.system(size: 21, weight: .medium))
+                .foregroundStyle(VesperTheme.ink)
+                .frame(width: 44, height: 44)
+                .vesperGlass(in: Circle(), interactive: true)
+        }.buttonStyle(.plain)
+            .accessibilityLabel("Chat prompt").accessibilityIdentifier("chat-prompt-button")
+    }
+    @ToolbarContentBuilder private var promptToolbar: some ToolbarContent {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .topBarTrailing) { promptButton }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarTrailing) { promptButton }
+        }
+        #else
+        ToolbarItem(placement: .topBarTrailing) { promptButton }
+        #endif
+    }
+
     private var contactsWithDialogs: some View {
         contactsWithNavigation
+            .sheet(isPresented: $showingChatPrompt) { ChatPromptEditor() }
             .confirmationDialog("Delete this conversation?", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }), titleVisibility: .visible) {
                 Button("Delete conversation", role: .destructive) {
                     guard let item = deletingConversation else { return }

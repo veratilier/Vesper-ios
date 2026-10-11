@@ -1298,6 +1298,53 @@ private final class SendPreparationProtocol: URLProtocol {
 }
 
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
+    func testEditedChatPromptAppliesToExistingThreadOnceAndCanBeCleared() async throws {
+        let previous = UserDefaults.standard.object(forKey: ChatPromptPreferences.key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: ChatPromptPreferences.key) }
+            else { UserDefaults.standard.removeObject(forKey: ChatPromptPreferences.key) }
+        }
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config)
+        let socket = RecoverySocket()
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.model = ""; chat.effort = ""
+        defer { chat.disconnect(); outbox.stop(); http.invalidateAndCancel() }
+        ChatPromptPreferences.save("Initial preference fixture")
+        let first = await chat.send("first")
+        XCTAssertTrue(first)
+        XCTAssertTrue(socket.packets.last { $0["method"].string == "thread/resume" }!["params"]["developerInstructions"].string.contains("Initial preference fixture"))
+        let resumes = socket.packets.filter { $0["method"].string == "thread/resume" }.count
+        ChatPromptPreferences.save("Updated preference fixture")
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/resume" }.count, resumes, "Saving must not interrupt a running reply")
+        chat.busy = false
+        let second = await chat.send("second")
+        XCTAssertTrue(second)
+        let updated = try XCTUnwrap(socket.packets.last { $0["method"].string == "thread/resume" })
+        XCTAssertEqual(updated["params"]["threadId"].string, "thread")
+        XCTAssertTrue(updated["params"]["developerInstructions"].string.contains("Updated preference fixture"))
+        XCTAssertFalse(updated["params"]["developerInstructions"].string.contains("Initial preference fixture"))
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/resume" }.count, resumes + 1)
+        chat.busy = false
+        let third = await chat.send("third")
+        XCTAssertTrue(third)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "thread/resume" }.count, resumes + 1, "Unchanged prompts must not add preparation on each send")
+        ChatPromptPreferences.save("")
+        XCTAssertEqual(ChatPromptPreferences.load(), "")
+        chat.busy = false
+        let fourth = await chat.send("fourth")
+        XCTAssertTrue(fourth)
+        let cleared = try XCTUnwrap(socket.packets.last { $0["method"].string == "thread/resume" })
+        XCTAssertFalse(cleared["params"]["developerInstructions"].string.contains("Vera's chat preferences:"))
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "thread/start" }, "Editing must preserve the existing thread")
+        try await outbox.flush(api)
+    }
+
     private func session(_ sockets: [RecoverySocket], heartbeat: Double = 1000, stableInterval: Double = 60, timeout: Double = 5, attemptTimeout: Double? = nil, historyReader: ((String) async throws -> JSONValue)? = nil) -> ChatSession {
         var index = 0
         let chat = ChatSession(socketFactory: { _ in

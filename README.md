@@ -169,6 +169,15 @@ the new entry. General Memory creation no longer offers a dream category.
 
 ## Native chat sending and synchronization
 
+The circular document button at the top-right of Chat's contacts page opens
+**Chat prompt**. It starts with Vera's supplied wording and saves explicit edits
+on this device, shared by its VPS and Mac contacts. Existing and new conversations
+use the saved text on their next send, without interrupting an active reply.
+Unchanged prompts reuse the installed session configuration. Saving an empty
+editor disables this additional prompt; cancelling leaves the saved text intact.
+This does not replace base instructions, synchronize preferences between devices,
+or change the separate autonomous wake prompt.
+
 Daily replies request brief spoken Chinese, usually one utterance or idea per
 bubble, separated by blank lines. Detailed explanations and documents remain
 available when requested. Native plain-text replies also display complete

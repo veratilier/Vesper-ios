@@ -732,7 +732,7 @@ struct AgentSettingsView: View {
     @AppStorage("nativeInstructions") private var instructions = "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese. Use Vesper’s built-in tools for its data."
     var body: some View {
         Page(title: "Agent") {
-            GlassCard { VStack(alignment: .leading, spacing: 12) { FormField(label: "Instructions for new conversations", text: $instructions, multiline: true); Text("Saved on this device. Existing conversations retain their instructions.").font(.caption).foregroundStyle(VesperTheme.muted) } }
+            GlassCard { VStack(alignment: .leading, spacing: 12) { FormField(label: "Base instructions", text: $instructions, multiline: true); Text("Saved on this device. Changes apply when you next send a message, including in existing conversations. Edit your chat preferences with the document button on Chat.").font(.caption).foregroundStyle(VesperTheme.muted) } }
             EmptyCard(title: "Models", message: "Choose an available model from the model picker inside a connected chat.")
         }
     }

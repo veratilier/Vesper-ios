@@ -23,6 +23,59 @@ enum ChatPromptPreferences {
     }
 }
 
+/// Device-local organization, scoped to the exact backend and account. Thread IDs are never copied.
+struct ChatProject: Codable, Identifiable, Equatable {
+    var id = UUID().uuidString
+    var name: String
+    var instructions = ""
+}
+struct ChatOrganization: Codable, Equatable {
+    var projects: [ChatProject] = []
+    var memberships: [String: String] = [:]
+    var pinned: Set<String> = []
+    var contactInstructions: String? = nil
+
+    static func key(_ api: APIClient) -> String? {
+        ChatRecentCache.directory(api: api).map { "chatOrganization.v1." + $0.lastPathComponent }
+    }
+    static func load(_ api: APIClient, defaults: UserDefaults = .standard) -> Self {
+        guard let key = key(api), let data = defaults.data(forKey: key),
+              let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
+        return value
+    }
+    func save(_ api: APIClient, defaults: UserDefaults = .standard) throws {
+        guard let key = Self.key(api) else { throw ServiceError(message: "Configure this contact’s connection first.") }
+        defaults.set(try JSONEncoder().encode(self), forKey: key)
+    }
+    func project(for conversation: String) -> ChatProject? {
+        projects.first { $0.id == memberships[conversation] }
+    }
+    mutating func move(_ conversation: String, to projectID: String?) {
+        guard !conversation.isEmpty else { return }
+        if let projectID, projects.contains(where: { $0.id == projectID }) { memberships[conversation] = projectID }
+        else { memberships.removeValue(forKey: conversation) }
+    }
+    mutating func removeProject(_ id: String) {
+        projects.removeAll { $0.id == id }
+        memberships = memberships.filter { $0.value != id }
+    }
+    func instructions(for conversation: String, fallback: String) -> String {
+        let contact = (contactInstructions ?? fallback).trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = contact.isEmpty ? "" : "\nVera's chat preferences:\n" + contact + "\n"
+        if let project = project(for: conversation) {
+            let instruction = project.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !instruction.isEmpty {
+                text += "\nInstructions for this conversation's project (apply to this project only):\n" + instruction + "\n"
+            }
+        }
+        return text
+    }
+    static func instructions(api: APIClient?, conversation: String) -> String {
+        guard let api else { return ChatPromptPreferences.instructions }
+        return load(api).instructions(for: conversation, fallback: ChatPromptPreferences.load())
+    }
+}
+
 /// One place for chat identity, history reconciliation and presentation order.
 /// The history service owns durable messages; live Codex items fill gaps until
 /// they are persisted. Neither paging nor reconnecting may discard older rows.

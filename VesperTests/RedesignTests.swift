@@ -840,6 +840,49 @@ private struct GlassOpacityFixture: View {
         }
     }
 
+    func testChatProjectsRenderOnSmallPhoneAndInDarkMode() async throws {
+        URLProtocol.registerClass(DesktopContactProtocol.self)
+        defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
+        let previous = UserDefaults.standard.object(forKey: "vesperPalette")
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let store = AppStore()
+        store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example/history"
+        store.token = UUID().uuidString
+        let chat = ChatSession()
+        var organization = ChatOrganization()
+        let project = ChatProject(name: "一起学习", instructions: "Explain terms in Chinese and English.")
+        organization.projects = [project]
+        organization.move("reading", to: project.id); organization.pinned.insert("main")
+        try organization.save(store.api)
+        defer {
+            chat.disconnect()
+            if let key = ChatOrganization.key(store.api) { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (width, palette) in [(320, "white"), (393, "black")] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let content = NativeChatHome(sideBySide: false).environmentObject(store).environmentObject(chat)
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+                .preferredColorScheme(palette == "black" ? .dark : .light)
+            let host = UIHostingController(rootView: content)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: 852)
+            window.rootViewController = host; window.makeKeyAndVisible()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while chat.conversations.count < 2 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(50)) }
+            XCTAssertEqual(chat.conversations.count, 2)
+            try await Task.sleep(for: .milliseconds(500))
+            host.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Chat-projects-\(width)-\(palette)"; attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+
     func testContactWelcomeRendersBelowRowsInRemainingSpace() async throws {
         URLProtocol.registerClass(DesktopContactProtocol.self)
         defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }

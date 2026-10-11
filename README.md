@@ -169,14 +169,27 @@ the new entry. General Memory creation no longer offers a dream category.
 
 ## Native chat sending and synchronization
 
-The circular document button at the top-right of Chat's contacts page opens
-**Chat prompt**. It starts with Vera's supplied wording and saves explicit edits
-on this device, shared by its VPS and Mac contacts. Existing and new conversations
-use the saved text on their next send, without interrupting an active reply.
-Unchanged prompts reuse the installed session configuration. Saving an empty
-editor disables this additional prompt; cancelling leaves the saved text intact.
-This does not replace base instructions, synchronize preferences between devices,
-or change the separate autonomous wake prompt.
+Chat now uses an expanded conversation list under the selected VPS or Mac contact:
+**New chat**, **Pinned**, collapsible **Projects**, and ungrouped **Chats**.
+Each conversation's ellipsis/context menu offers rename, pin/unpin, move to a
+project, and the existing confirmed deletion flow. Project menus create a chat
+inside the project or edit its name/instruction. Removing a project returns its
+chats to the ungrouped list and preserves their history and pins. Our days remains
+available in a disclosure at the bottom.
+
+The circular document button opens **Contact instruction**, initialized from
+Vera's previously saved Chat prompt (or her supplied wording). Each backend/account
+can now save its own override, including an explicitly empty value. Project
+instructions add to that contact's instructions only for member conversations;
+moving out removes that addition on the next send. Existing thread IDs are
+preserved, active replies are not interrupted, and unchanged settings reuse the
+installed session configuration.
+
+Projects, membership, pins, and instructions are device-local, keyed by a hash of
+API origin, history origin, and account credential. They do not yet sync between
+devices; conversation history and rename still use the existing history backend.
+These settings do not change base instructions, autonomous wake prompts, or make
+separate conversations share context or memories.
 
 Daily replies request brief spoken Chinese, usually one utterance or idea per
 bubble, separated by blank lines. Detailed explanations and documents remain

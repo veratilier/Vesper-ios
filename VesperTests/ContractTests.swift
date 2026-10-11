@@ -4,6 +4,40 @@ import SwiftUI
 import UIKit
 @testable import Vesper
 
+final class ChatOrganizationTests: XCTestCase {
+    func testProjectsPinsAndContactInstructionsStayScopedAndPersist() throws {
+        let suite = "ChatOrganization-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let vps = APIClient(baseURL: "https://vps.fixture", historyURL: "https://vps.fixture/history", token: "fixture")
+        let mac = APIClient(baseURL: "https://mac.fixture", historyURL: "https://mac.fixture/history", token: "fixture")
+        var otherAccount = vps; otherAccount.token = "another-fixture"
+        var value = ChatOrganization()
+        let project = ChatProject(name: "Study", instructions: "Use Chinese and English terms.")
+        value.projects = [project]; value.move("same-room", to: project.id)
+        value.pinned.insert("same-room"); value.contactInstructions = "Contact fixture"
+        try value.save(vps, defaults: defaults)
+        XCTAssertEqual(ChatOrganization.load(vps, defaults: defaults), value)
+        XCTAssertTrue(ChatOrganization.load(mac, defaults: defaults).projects.isEmpty)
+        XCTAssertTrue(ChatOrganization.load(otherAccount, defaults: defaults).pinned.isEmpty)
+        XCTAssertTrue(value.instructions(for: "same-room", fallback: "Legacy").contains(project.instructions))
+        XCTAssertFalse(value.instructions(for: "other-room", fallback: "Legacy").contains(project.instructions))
+        value.move("same-room", to: nil)
+        XCTAssertFalse(value.instructions(for: "same-room", fallback: "Legacy").contains(project.instructions))
+        value.move("same-room", to: project.id)
+        value.removeProject(project.id)
+        XCTAssertNil(value.project(for: "same-room"))
+        XCTAssertTrue(value.memberships.isEmpty)
+        XCTAssertTrue(value.pinned.contains("same-room"), "Removing a folder must not delete or unpin its conversations")
+        value.contactInstructions = ""
+        XCTAssertEqual(value.instructions(for: "same-room", fallback: "Legacy"), "")
+        try value.save(vps, defaults: defaults)
+        XCTAssertEqual(ChatOrganization.load(vps, defaults: defaults).contactInstructions, "")
+        var unconfigured = vps; unconfigured.token = ""
+        XCTAssertThrowsError(try value.save(unconfigured, defaults: defaults))
+    }
+}
+
 final class BackendConnectionTests: XCTestCase {
     func testMacProfileNeverOverwritesLegacyVPSAddresses() throws {
         let suite = "VesperBackendTests-" + UUID().uuidString
@@ -1298,6 +1332,41 @@ private final class SendPreparationProtocol: URLProtocol {
 }
 
 @MainActor final class ChatConnectionRecoveryTests: XCTestCase {
+    func testMovingExistingChatAppliesAndRemovesProjectInstructionWithoutNewThread() async throws {
+        SendPreparationProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: config), socket = RecoverySocket()
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        defer {
+            chat.disconnect(); outbox.stop(); http.invalidateAndCancel()
+            if let key = ChatOrganization.key(api) { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.model = ""; chat.effort = ""
+        var organization = ChatOrganization()
+        let project = ChatProject(name: "Study", instructions: "Project-only fixture")
+        organization.projects = [project]; organization.contactInstructions = "Contact-only fixture"
+        organization.move(chat.conversationID, to: project.id)
+        try organization.save(api)
+        let first = await chat.send("first")
+        XCTAssertTrue(first)
+        let firstConfig = try XCTUnwrap(socket.packets.last { $0["method"].string == "thread/resume" })
+        XCTAssertTrue(firstConfig["params"]["developerInstructions"].string.contains("Project-only fixture"))
+        XCTAssertTrue(firstConfig["params"]["developerInstructions"].string.contains("Contact-only fixture"))
+        organization.move(chat.conversationID, to: nil); try organization.save(api)
+        chat.busy = false
+        let second = await chat.send("second")
+        XCTAssertTrue(second)
+        let secondConfig = try XCTUnwrap(socket.packets.last { $0["method"].string == "thread/resume" })
+        XCTAssertEqual(secondConfig["params"]["threadId"].string, "thread")
+        XCTAssertFalse(secondConfig["params"]["developerInstructions"].string.contains("Project-only fixture"))
+        XCTAssertTrue(secondConfig["params"]["developerInstructions"].string.contains("Contact-only fixture"))
+        XCTAssertFalse(socket.packets.contains { $0["method"].string == "thread/start" })
+        try await outbox.flush(api)
+    }
     func testEditedChatPromptAppliesToExistingThreadOnceAndCanBeCleared() async throws {
         let previous = UserDefaults.standard.object(forKey: ChatPromptPreferences.key)
         defer {

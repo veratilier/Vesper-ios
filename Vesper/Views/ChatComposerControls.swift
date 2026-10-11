@@ -199,7 +199,6 @@ struct ChatQueuedBubble: View {
                     if let location = message.location { ChatLocationCard(location: location) }
                     if !message.text.isEmpty { Text(message.text).font(.system(size: 15)).lineSpacing(4) }
                 }.modifier(ChatBubbleSurface(user: true))
-                Label("待发送 · 等你点开始回复", systemImage: "clock").font(.system(size: 11)).foregroundStyle(VesperTheme.muted)
             }.contextMenu {
                 Button("撤回这条", systemImage: "arrow.uturn.backward", action: onRemove).disabled(!canRemove)
             }

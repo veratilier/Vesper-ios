@@ -296,7 +296,6 @@ struct ChatView: View {
                                 } label: {
                                     HStack(spacing: 8) {
                                         Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 14))
-                                        Text("开始回复").font(.system(size: 14, weight: .medium))
                                         Text("\(chat.queuedMessages.count)").font(.system(size: 11, weight: .semibold)).monospacedDigit()
                                             .padding(.horizontal, 6).frame(minWidth: 22, minHeight: 22)
                                             .background(VesperTheme.ink.opacity(0.08), in: Capsule())

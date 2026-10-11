@@ -370,13 +370,70 @@ struct DesireTide: View {
         return p
     }
     private func waterShape(size: CGSize, time: Double) -> Path {
-        var water = line(size: size, time: time)
+        var water = glass ? gentleLine(size: size, time: time, layer: 0) : line(size: size, time: time)
         water.addLine(to: CGPoint(x: size.width, y: size.height))
         water.addLine(to: CGPoint(x: 0, y: size.height))
         water.closeSubpath()
         return water
     }
+    // Broad, blended emotion regions form the tide; each layer drifts independently.
+    // Coordinates match the approved preview, so resizing never changes its rhythm.
+    private func gentleEmotion(_ x: Double, time: Double) -> Double {
+        var total = 0.0, weight = 0.0
+        for i in 0..<8 {
+            let distance = (x - (Double(i) + 0.5) / 8) / 0.075
+            let influence = exp(-distance * distance * 0.5)
+            total += value(i, time: time) / 100 * influence
+            weight += influence
+        }
+        return total / max(weight, 0.0001)
+    }
+    private func gentleNoise(_ x: Double, _ y: Double) -> Double {
+        func hash(_ a: Double, _ b: Double) -> Double {
+            let n = sin(a * 127.1 + b * 311.7) * 43758.5453
+            return n - floor(n)
+        }
+        let ix = floor(x), iy = floor(y), fx = x - ix, fy = y - iy
+        let sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy)
+        let a = hash(ix, iy) * (1 - sx) + hash(ix + 1, iy) * sx
+        let b = hash(ix, iy + 1) * (1 - sx) + hash(ix + 1, iy + 1) * sx
+        return a * (1 - sy) + b * sy
+    }
+    private func gentleLine(size: CGSize, time: Double, layer: Int) -> Path {
+        let t = reduceMotion ? 15 : time * 0.7
+        let phase = Double(layer) * 2.41
+        var path = Path()
+        for step in 0...120 {
+            let x = Double(step) / 120
+            let emotion = gentleEmotion(x, time: time)
+            let motion = sin(x * 5.1 - t * 0.42 + phase) * 0.58
+                + sin(x * 8.7 + t * 0.27 + phase * 1.7) * 0.27
+                + (gentleNoise(x * 4.7 - t * 0.1, t * 0.13 + phase) - 0.5) * 1.2
+            let level = 0.54 - Double(layer) * 0.055 + (emotion - 0.5) * 0.35
+            let height = level + (0.016 + emotion * 0.028) * motion
+            let point = CGPoint(x: x * size.width, y: (1 - height) * size.height)
+            if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        return path
+    }
+    private func drawGentle(context: GraphicsContext, size: CGSize, time: Double) {
+        let tint = dark ? Color(red: 0.15, green: 0.37, blue: 0.46)
+            : Color(red: 0.40, green: 0.64, blue: 0.70)
+        for layer in 0..<3 {
+            let surface = gentleLine(size: size, time: time, layer: layer)
+            var water = surface
+            water.addLine(to: CGPoint(x: size.width, y: size.height))
+            water.addLine(to: CGPoint(x: 0, y: size.height))
+            water.closeSubpath()
+            context.fill(water, with: .color(tint.opacity((0.22 + Double(layer) * 0.035) * (0.37 + Double(layer) * 0.07))))
+            context.stroke(surface, with: .color(.white.opacity(0.28 - Double(layer) * 0.06)), lineWidth: 0.8)
+        }
+    }
     private func draw(context: GraphicsContext, size: CGSize, time: Double) {
+        if glass {
+            drawGentle(context: context, size: size, time: time)
+            return
+        }
         let rect = CGRect(origin: .zero, size: size), bottom = size.height
         if !glass {
             let sand = dark ? [Color(red: 0.10, green: 0.17, blue: 0.23), Color(red: 0.15, green: 0.22, blue: 0.27)] : [Color(red: 0.95, green: 0.95, blue: 0.91), Color(red: 0.83, green: 0.88, blue: 0.86)]

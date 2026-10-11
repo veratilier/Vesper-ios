@@ -135,19 +135,19 @@ struct HomeView: View {
             DesireTide(values: DesireEmotion.fields.map { key, _ in
                 if case .number(let value) = desireState["values"][key] { return value }
                 return nil
-            }, compact: true)
+            }, compact: true, glass: true)
             .overlay(alignment: .topLeading) {
                 HStack {
                     Text("Desire").font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1)
                     Spacer(minLength: 1)
                     Image(systemName: "chevron.right").font(.system(size: 10))
                 }
-                .foregroundStyle(palette == .black ? Color.white : Color(red: 0.16, green: 0.29, blue: 0.34))
+                .foregroundStyle(palette.ink)
                 .padding(12)
             }
             .frame(height: height)
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .vesperGlass(in: RoundedRectangle(cornerRadius: 22))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 22), interactive: true)
         }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-tide")
     }
     private func loadDesire() async {
@@ -314,6 +314,7 @@ private struct PaperEdge: Shape {
 struct DesireTide: View {
     let values: [Double?]
     var compact = false
+    var glass = false
     @AppStorage("vesperPalette") private var paletteName = "blue"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
@@ -325,7 +326,16 @@ struct DesireTide: View {
     private var ink: Color { dark ? Color(red: 0.89, green: 0.94, blue: 0.96) : Color(red: 0.16, green: 0.29, blue: 0.34) }
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active)) { timeline in
-            Canvas { context, size in draw(context: context, size: size, time: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate) }
+            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            GeometryReader { geometry in
+                ZStack {
+                    if glass {
+                        let water = waterShape(size: geometry.size, time: time)
+                        water.fill(.clear).vesperGlass(in: water)
+                    }
+                    Canvas { context, size in draw(context: context, size: size, time: time) }
+                }
+            }
         }
         .onAppear { previous = normalized; target = normalized }
         .onChange(of: values) { _, _ in
@@ -359,18 +369,26 @@ struct DesireTide: View {
         }
         return p
     }
+    private func waterShape(size: CGSize, time: Double) -> Path {
+        var water = line(size: size, time: time)
+        water.addLine(to: CGPoint(x: size.width, y: size.height))
+        water.addLine(to: CGPoint(x: 0, y: size.height))
+        water.closeSubpath()
+        return water
+    }
     private func draw(context: GraphicsContext, size: CGSize, time: Double) {
         let rect = CGRect(origin: .zero, size: size), bottom = size.height
-        let sand = dark ? [Color(red: 0.10, green: 0.17, blue: 0.23), Color(red: 0.15, green: 0.22, blue: 0.27)] : [Color(red: 0.95, green: 0.95, blue: 0.91), Color(red: 0.83, green: 0.88, blue: 0.86)]
-        context.fill(Path(rect), with: .linearGradient(Gradient(colors: sand), startPoint: .zero, endPoint: CGPoint(x: size.width, y: bottom)))
-        for i in 0..<300 {
-            let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width, y = CGFloat((i * 211 + 43) % 991) / 991 * bottom
-            context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(dark ? 0.08 : 0.3)))
+        if !glass {
+            let sand = dark ? [Color(red: 0.10, green: 0.17, blue: 0.23), Color(red: 0.15, green: 0.22, blue: 0.27)] : [Color(red: 0.95, green: 0.95, blue: 0.91), Color(red: 0.83, green: 0.88, blue: 0.86)]
+            context.fill(Path(rect), with: .linearGradient(Gradient(colors: sand), startPoint: .zero, endPoint: CGPoint(x: size.width, y: bottom)))
+            for i in 0..<300 {
+                let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width, y = CGFloat((i * 211 + 43) % 991) / 991 * bottom
+                context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(dark ? 0.08 : 0.3)))
+            }
         }
-        var water = line(size: size, time: time)
-        water.addLine(to: CGPoint(x: size.width, y: bottom)); water.addLine(to: CGPoint(x: 0, y: bottom)); water.closeSubpath()
+        let water = waterShape(size: size, time: time)
         let colors = dark ? [Color(red: 0.21, green: 0.40, blue: 0.46), Color(red: 0.08, green: 0.22, blue: 0.33), Color(red: 0.04, green: 0.10, blue: 0.19)] : [Color(red: 0.66, green: 0.82, blue: 0.81), Color(red: 0.35, green: 0.62, blue: 0.68), Color(red: 0.15, green: 0.37, blue: 0.49)]
-        context.fill(water, with: .linearGradient(Gradient(colors: colors), startPoint: CGPoint(x: 0, y: bottom * 0.25), endPoint: CGPoint(x: 0, y: bottom)))
+        context.fill(water, with: .linearGradient(Gradient(colors: glass ? colors.enumerated().map { $0.element.opacity(0.10 + Double($0.offset) * 0.06) } : colors), startPoint: CGPoint(x: 0, y: bottom * 0.25), endPoint: CGPoint(x: 0, y: bottom)))
         var sea = context; sea.clip(to: water)
         for i in 0..<4 {
             let progress = (time / 9 + Double(i) / 4).truncatingRemainder(dividingBy: 1)

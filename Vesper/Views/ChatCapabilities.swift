@@ -7,8 +7,8 @@ import MapKit
 import UniformTypeIdentifiers
 import os
 
-struct ChatFile: Identifiable {
-    let id = UUID()
+struct ChatFile: Identifiable, Codable {
+    var id = UUID()
     let name: String
     let mime: String
     let data: Data

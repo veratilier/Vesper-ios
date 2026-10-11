@@ -242,18 +242,41 @@ enum ChatBubbles {
         }
     }
 
+    static func batchOriginals(_ message: JSONValue) -> [JSONValue] {
+        let batch = message["metadata"]["batchMessages"].array
+        guard !batch.isEmpty else { return [message] }
+        let attachments = message["metadata"]["attachments"].array
+        return batch.enumerated().map { index, child in
+            var value = child
+            value["id"] = .string(message.id + "#batch-\(index)")
+            value["status"] = message["status"]
+            value["metadata"]["sourceMessageId"] = .string(message.id)
+            let savedIndices = child["metadata"]["batchAttachmentIndices"].array
+            let indices = savedIndices.isEmpty ? child["metadata"]["attachments"].array.map { attachment in
+                JSONValue.number(Double(attachments.firstIndex(of: attachment) ?? 0))
+            } : savedIndices
+            value["metadata"]["batchAttachmentIndices"] = .array(indices)
+            value["metadata"]["attachments"] = .array(indices.compactMap { index in
+                let position = Int(index.number)
+                return attachments.indices.contains(position) ? attachments[position] : nil
+            })
+            return value
+        }
+    }
+
     static func part(_ original: JSONValue, key: String, text: String, metadata: JSONValue = .object([:])) -> JSONValue {
         var value = original
         value["id"] = .string(original.id + "#" + key)
         value["content"] = .string(text)
         value["metadata"] = metadata
-        value["metadata"]["sourceMessageId"] = .string(original.id)
+        value["metadata"]["sourceMessageId"] = .string(original["metadata"]["sourceMessageId"].string.isEmpty ? original.id : original["metadata"]["sourceMessageId"].string)
         value["metadata"]["partId"] = value["id"]
         return value
     }
 
     static func textParts(_ message: JSONValue) -> [JSONValue] {
         let meta = message["metadata"]
+        if !meta["batchMessages"].array.isEmpty { return batchOriginals(message).flatMap { textParts($0) } }
         if ["attachmentOnly", "musicOnly", "locationOnly", "voiceMessage"].contains(where: { meta[$0] == .bool(true) }) || meta["call"] != .null { return [] }
         let explicit = meta["bubbles"].array
         if !explicit.isEmpty {

@@ -840,6 +840,40 @@ private struct GlassOpacityFixture: View {
         }
     }
 
+    func testCollectedComposerFitsSmallPhone() async throws {
+        let previous = UserDefaults.standard.object(forKey: "chatReplyMode")
+        let palette = UserDefaults.standard.object(forKey: "vesperPalette")
+        URLProtocol.registerClass(DesktopContactProtocol.self)
+        defer {
+            URLProtocol.unregisterClass(DesktopContactProtocol.self)
+            UserDefaults.standard.set(previous, forKey: "chatReplyMode")
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+        }
+        let store = AppStore()
+        store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example/history"; store.token = UUID().uuidString
+        let chat = ChatSession()
+        chat.configure(store); chat.replyMode = .collected
+        defer { chat.disconnect(); try? ChatQueuedStore.save([], api: store.api, conversationID: chat.conversationID) }
+        _ = await chat.send("我还没说完，等一下")
+        _ = await chat.send("第二条补充在这里")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (paletteName, width) in [("white", 320.0), ("black", 393.0)] {
+            UserDefaults.standard.set(paletteName, forKey: "vesperPalette")
+            let page = NavigationStack {
+                ChatView(restoreLatest: false, native: true)
+            }.environmentObject(store).environmentObject(chat).environmentObject(chat.composer)
+            let host = UIHostingController(rootView: page)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: 852)
+            window.rootViewController = host; window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Collected-composer-" + paletteName; attachment.lifetime = .keepAlways; add(attachment)
+            XCTAssertEqual(chat.queuedMessages.count, 2)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+
     func testProjectDetailHasCompactTabsAndComposer() async throws {
         let previous = UserDefaults.standard.object(forKey: "vesperPalette")
         UserDefaults.standard.set("white", forKey: "vesperPalette")

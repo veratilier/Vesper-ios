@@ -1337,6 +1337,12 @@ private final class SendPreparationProtocol: URLProtocol {
         finish(status: Self.deletedRoom && request.url!.path.hasPrefix("/conversations/deleted") ? 410 : failed ? 503 : 200)
     }
     private func finish(status: Int) {
+        if request.url?.path == "/api/media" {
+            let value: JSONValue = .object(["key": .string(UUID().uuidString), "url": .string("https://send-preparation.example/media/" + UUID().uuidString), "name": .string("fixture"), "type": .string("image/jpeg")])
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: try! JSONEncoder().encode(value))
+            client?.urlProtocolDidFinishLoading(self); return
+        }
         let body = status == 410 ? #"{"error":"Conversation was deleted","code":"conversation_deleted"}"# : request.url!.path == "/api/codex/tools" ? #"{"tools":[]}"# : #"{"status":"prepared","deliveryId":"fixture","additionalContext":{}}"#
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type":"application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
@@ -2655,5 +2661,136 @@ final class ChatRecentCacheTests: XCTestCase {
             .object(["url": .string("file:///etc/passwd")]), .object(["url": .string("https://user:password@example.com/a")])
         ])])])]
         XCTAssertTrue(ChatSpaceItem.extract(messages: messages, room: room, tombstones: []).isEmpty)
+    }
+}
+
+extension ChatConnectionRecoveryTests {
+    func testCollectedMessagesWaitPersistAndSubmitOneOrderedTurn() async throws {
+        let previous = UserDefaults.standard.object(forKey: "chatReplyMode")
+        defer { UserDefaults.standard.set(previous, forKey: "chatReplyMode") }
+        SendPreparationProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: configuration), socket = RecoverySocket()
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        let room = chat.conversationID
+        defer { chat.disconnect(); outbox.stop(); http.invalidateAndCancel(); try? ChatQueuedStore.save([], api: api, conversationID: room) }
+        chat.model = ""; chat.effort = ""; chat.replyMode = .collected
+        var accepted = 0
+        let first = await chat.send("先等我说完", onAccepted: { accepted += 1 })
+        let second = await chat.send("这是第二条", music: .object(["title": .string("Fixture song")]), onAccepted: { accepted += 1 })
+        XCTAssertTrue(first && second); XCTAssertEqual(accepted, 2)
+        XCTAssertTrue(socket.packets.isEmpty); XCTAssertTrue(SendPreparationProtocol.captured.isEmpty)
+        XCTAssertFalse(chat.busy); XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertEqual(try ChatQueuedStore.load(api: api, conversationID: room).map(\.text), ["先等我说完", "这是第二条"])
+        chat.newConversation(id: "another-room")
+        XCTAssertTrue(chat.queuedMessages.isEmpty)
+        chat.newConversation(id: room)
+        XCTAssertEqual(chat.queuedMessages.count, 2)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        chat.replyMode = .immediate
+        XCTAssertTrue(socket.packets.isEmpty, "Changing mode must not submit existing drafts")
+        let third = await chat.send("最后补充一句")
+        XCTAssertTrue(third); XCTAssertEqual(chat.queuedMessages.count, 3)
+        let sent = await chat.sendCollectedMessages()
+        XCTAssertTrue(sent)
+        XCTAssertTrue(chat.queuedMessages.isEmpty)
+        XCTAssertTrue(try ChatQueuedStore.load(api: api, conversationID: room).isEmpty)
+        let turns = socket.packets.filter { $0["method"].string == "turn/start" }
+        XCTAssertEqual(turns.count, 1)
+        let input = try XCTUnwrap(turns.first)["params"]["input"].array.map { $0["text"].string }.joined()
+        XCTAssertLessThan(try XCTUnwrap(input.range(of: "先等我说完")).lowerBound, try XCTUnwrap(input.range(of: "这是第二条")).lowerBound)
+        XCTAssertTrue(input.contains("Fixture song")); XCTAssertTrue(input.contains("最后补充一句"))
+        let user = try XCTUnwrap(chat.messages.first { $0["role"].string == "user" })
+        XCTAssertEqual(ChatBubbles.textParts(user).map { $0["content"].string }, ["先等我说完", "这是第二条", "最后补充一句"])
+        XCTAssertTrue(ChatBubbles.textParts(user).allSatisfy { $0["metadata"]["sourceMessageId"].string == user.id })
+        let again = await chat.sendCollectedMessages()
+        XCTAssertFalse(again); XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 1)
+        chat.busy = false
+        let immediate = await chat.send("现在即时回复")
+        XCTAssertTrue(immediate); XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 2)
+    }
+
+    func testCollectedRejectionRestoresQueueAndLostReceiptDoesNotResubmit() async throws {
+        let previous = UserDefaults.standard.object(forKey: "chatReplyMode")
+        defer { UserDefaults.standard.set(previous, forKey: "chatReplyMode") }
+        SendPreparationProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: configuration), socket = RecoverySocket()
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let chat = ChatSession(socketFactory: { _ in socket }, delay: { _ in try await Task.sleep(for: .seconds(60)) }, heartbeatInterval: 1000, sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        defer { chat.disconnect(); outbox.stop(); http.invalidateAndCancel(); try? ChatQueuedStore.save([], api: api, conversationID: chat.conversationID) }
+        chat.model = ""; chat.effort = ""; chat.replyMode = .collected
+        let queued = await chat.send("请一起回复")
+        XCTAssertTrue(queued)
+        socket.rejectTurn = true
+        let rejected = await chat.sendCollectedMessages()
+        XCTAssertFalse(rejected); XCTAssertFalse(chat.busy)
+        XCTAssertEqual(chat.queuedMessages.count, 1); XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertEqual(try ChatQueuedStore.load(api: api, conversationID: chat.conversationID).count, 1)
+        socket.rejectTurn = false; socket.loseReceipt = true
+        let ambiguous = await chat.sendCollectedMessages()
+        XCTAssertFalse(ambiguous); XCTAssertTrue(chat.unconfirmedSend)
+        XCTAssertTrue(chat.queuedMessages.isEmpty)
+        XCTAssertEqual(try outbox.pending(api, conversationID: chat.conversationID).count, 1)
+        let retry = await chat.sendCollectedMessages()
+        XCTAssertFalse(retry)
+        XCTAssertEqual(socket.packets.filter { $0["method"].string == "turn/start" }.count, 2)
+    }
+
+    func testCollectedAttachmentsPersistAndStayScopedToBackendAndAccount() throws {
+        let api = APIClient(baseURL: "https://batch.example", historyURL: "https://batch.example/history", token: UUID().uuidString)
+        let room = UUID().uuidString
+        defer { try? ChatQueuedStore.save([], api: api, conversationID: room) }
+        let image = Data([1, 2, 3]), file = ChatFile(name: "voice.m4a", mime: "audio/mp4", data: Data([4, 5]), transcript: "一句语音", duration: 2)
+        let entry = ChatQueuedMessage(text: "带附件", images: [image], files: [file], replyTo: .object(["messageId": .string("quote")]))
+        try ChatQueuedStore.save([entry], api: api, conversationID: room)
+        let restored = try XCTUnwrap(ChatQueuedStore.load(api: api, conversationID: room).first)
+        XCTAssertEqual(restored.images, [image]); XCTAssertEqual(restored.files.first?.data, file.data)
+        XCTAssertEqual(restored.files.first?.transcript, "一句语音"); XCTAssertEqual(restored.replyTo?["messageId"].string, "quote")
+        var other = api; other.baseURL = "https://mac.example"
+        XCTAssertTrue(try ChatQueuedStore.load(api: other, conversationID: room).isEmpty)
+        other = api; other.token = UUID().uuidString
+        XCTAssertTrue(try ChatQueuedStore.load(api: other, conversationID: room).isEmpty)
+        XCTAssertTrue(try ChatQueuedStore.load(api: api, conversationID: "other-room").isEmpty)
+    }
+}
+
+
+extension ChatConnectionRecoveryTests {
+    func testCollectedMixedAttachmentsKeepTheirMessageAndOneModelTurn() async throws {
+        let previous = UserDefaults.standard.object(forKey: "chatReplyMode")
+        URLProtocol.registerClass(SendPreparationProtocol.self)
+        defer { URLProtocol.unregisterClass(SendPreparationProtocol.self); UserDefaults.standard.set(previous, forKey: "chatReplyMode") }
+        SendPreparationProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [SendPreparationProtocol.self]
+        let http = URLSession(configuration: configuration), socket = RecoverySocket()
+        let api = APIClient(baseURL: "https://send-preparation.example", historyURL: "https://send-preparation.example", token: UUID().uuidString, requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let chat = ChatSession(socketFactory: { _ in socket }, heartbeatInterval: 1000, sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://send-preparation.example", threadID: "thread")
+        defer { chat.disconnect(); outbox.stop(); http.invalidateAndCancel(); try? ChatQueuedStore.save([], api: api, conversationID: chat.conversationID) }
+        chat.model = ""; chat.effort = ""; chat.replyMode = .collected
+        _ = await chat.send("看这张图", images: [Data([1, 2, 3])])
+        _ = await chat.send("再看文件", files: [ChatFile(name: "note.txt", mime: "text/plain", data: Data("文件内容".utf8))])
+        _ = await chat.send("第二张图", images: [Data([4, 5, 6])])
+        XCTAssertTrue(SendPreparationProtocol.captured.isEmpty)
+        let sent = await chat.sendCollectedMessages()
+        XCTAssertTrue(sent, chat.error ?? "")
+        let turns = socket.packets.filter { $0["method"].string == "turn/start" }
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns.first?["params"]["input"].array.filter { $0["type"].string == "image" }.count, 2)
+        let parent = try XCTUnwrap(chat.messages.first { $0["role"].string == "user" })
+        let children = ChatBubbles.batchOriginals(parent)
+        XCTAssertEqual(children.count, 3)
+        XCTAssertEqual(children.map { $0["metadata"]["attachments"].array.first?["type"].string ?? "" }, ["image/jpeg", "text/plain", "image/jpeg"])
+        XCTAssertEqual(children.map { $0["metadata"]["batchAttachmentIndices"].array.first?.number ?? -1 }, [0, 2, 1])
+        XCTAssertEqual(Set(parent["metadata"]["attachments"].array.map { $0["url"].string }).count, 3)
+        XCTAssertEqual(SendPreparationProtocol.captured.filter { $0.url?.path == "/api/media" }.count, 3)
     }
 }

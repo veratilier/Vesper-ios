@@ -223,7 +223,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if chat.hasOlderMessages { Button(chat.loadingOlder ? "Loading…" : "Load earlier messages") { followsLatest = false; Task { await chat.loadOlder() } }.disabled(chat.loadingOlder) }
-                        if chat.messages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
+                        if chat.messages.isEmpty && chat.queuedMessages.isEmpty { Text("A little space for us.").font(VesperTheme.title(30)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity).padding(.top, 70) }
                         ForEach(chat.presentation.rows) { row in
                             if let message = row.messages.first {
                                 if ChatPresentation.isLetterReminder(message) {
@@ -248,6 +248,11 @@ struct ChatView: View {
                             }.font(.system(size: 12)).foregroundStyle(VesperTheme.muted).frame(height: 44)
                         } else if chat.waitingForReply && chat.liveHeadingID == nil {
                             AssistantMessageHeading(message: .object(["status": .string("streaming"), "metadata": .object(["thoughtSummary": .string(chat.thinkingSummary)])]), liveEvents: chat.events, isLive: true)
+                        }
+                        if !chat.sending {
+                            ForEach(chat.queuedMessages) { entry in
+                                ChatQueuedBubble(message: entry, canRemove: !chat.busy) { chat.removeQueuedMessage(entry.id) }.id(entry.id)
+                            }
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(.horizontal, 20).padding(.top, 62).padding(.bottom, 14)
@@ -634,6 +639,38 @@ struct ChatView: View {
     }
     private var composer: some View {
         VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(ChatReplyMode.allCases, id: \.rawValue) { mode in
+                        Button { chat.replyMode = mode } label: {
+                            Label(mode.title, systemImage: chat.replyMode == mode ? "checkmark" : (mode == .immediate ? "bolt" : "text.bubble"))
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: chat.replyMode == .immediate ? "bolt" : "text.bubble")
+                        Text(chat.replyMode.title)
+                        Image(systemName: "chevron.down").font(.system(size: 9))
+                    }.font(.system(size: 12)).frame(minHeight: 30)
+                }.accessibilityLabel("回复模式").accessibilityValue(chat.replyMode.title)
+                    .disabled(chat.sending || chat.callActive)
+                Spacer(minLength: 0)
+                if !chat.queuedMessages.isEmpty {
+                    Button {
+                        focused = false
+                        Task { _ = await chat.sendCollectedMessages() }
+                    } label: {
+                        Text("开始回复 · \(chat.queuedMessages.count)条").font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 10).frame(minHeight: 32)
+                            .vesperGlass(in: Capsule(), interactive: true)
+                    }.disabled(chat.busy || chat.sending || chat.unconfirmedSend || chat.showingCachedHistory || chat.openingMainRoom || chat.loadingModels || store.loading)
+                        .accessibilityIdentifier("chat-reply-collected")
+                }
+            }
+            if chat.replyMode == .immediate && !chat.queuedMessages.isEmpty {
+                Text("待发送消息仍保留，点「开始回复」后恢复即时回复。")
+                    .font(.system(size: 11)).foregroundStyle(VesperTheme.muted).frame(maxWidth: .infinity, alignment: .leading)
+            }
             if let reply = draftStore.replyTo {
                 HStack {
                     ChatQuotePreview(quote: reply)
@@ -839,7 +876,7 @@ struct ChatMessageRow: View, Equatable {
         lhs.replyIsRunning == rhs.replyIsRunning && lhs.favorite == rhs.favorite && lhs.sourceMessages == rhs.sourceMessages &&
         lhs.saving == rhs.saving && lhs.busy == rhs.busy && lhs.highlighted == rhs.highlighted
     }
-    private var originals: [JSONValue] { sourceMessages.isEmpty ? [message] : sourceMessages }
+    private var originals: [JSONValue] { (sourceMessages.isEmpty ? [message] : sourceMessages).flatMap { ChatBubbles.batchOriginals($0) } }
     var body: some View {
         let user = ChatPresentation.isUser(message)
         HStack(alignment: .top, spacing: 0) {
@@ -919,8 +956,8 @@ struct ChatMessageRow: View, Equatable {
                             .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
                     }
                 } else if attachment["type"].string.hasPrefix("audio/") {
-                    VoiceMessageBar(attachment: attachment, alignment: user ? .trailing : .leading, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item.id, attachmentIndex: index, text: text) } },
-                                    onTranslation: { source, text in Task { await chat.saveVoiceTranslation(messageID: item.id, attachmentIndex: index, source: source, text: text) } })
+                    VoiceMessageBar(attachment: attachment, alignment: user ? .trailing : .leading, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item["metadata"]["sourceMessageId"].string.isEmpty ? item.id : item["metadata"]["sourceMessageId"].string, attachmentIndex: item["metadata"]["batchAttachmentIndices"].array.isEmpty ? index : Int(item["metadata"]["batchAttachmentIndices"].array[index].number), text: text) } },
+                                    onTranslation: { source, text in Task { await chat.saveVoiceTranslation(messageID: item["metadata"]["sourceMessageId"].string.isEmpty ? item.id : item["metadata"]["sourceMessageId"].string, attachmentIndex: item["metadata"]["batchAttachmentIndices"].array.isEmpty ? index : Int(item["metadata"]["batchAttachmentIndices"].array[index].number), source: source, text: text) } })
                 } else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
                     ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
                         .modifier(ChatLongPress(id: part.id, actions: { actions(part) }))

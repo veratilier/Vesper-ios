@@ -167,3 +167,42 @@ struct ChatModelPopover: View {
         } catch { switchError = error.localizedDescription }
     }
 }
+
+
+struct ChatQueuedBubble: View {
+    let message: ChatQueuedMessage
+    let canRemove: Bool
+    let onRemove: () -> Void
+    var body: some View {
+        HStack {
+            Spacer(minLength: 42)
+            VStack(alignment: .trailing, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let quote = message.replyTo { ChatQuotePreview(quote: quote) }
+                    if !message.images.isEmpty {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 6) {
+                                ForEach(Array(message.images.enumerated()), id: \.offset) { _, data in
+                                    if let image = UIImage(data: data) {
+                                        Image(uiImage: image).resizable().scaledToFill().frame(width: 72, height: 72)
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
+                                }
+                            }
+                        }.frame(maxWidth: 250)
+                    }
+                    ForEach(message.files) { file in
+                        Label(file.name, systemImage: file.mime.hasPrefix("audio/") ? "waveform" : "doc").font(.system(size: 13)).lineLimit(2)
+                    }
+                    if let music = message.music { ChatMusicCard(track: music) }
+                    if let sticker = message.sticker { StickerArtwork(sticker: sticker).frame(width: 100, height: 100) }
+                    if let location = message.location { ChatLocationCard(location: location) }
+                    if !message.text.isEmpty { Text(message.text).font(.system(size: 15)).lineSpacing(4) }
+                }.modifier(ChatBubbleSurface(user: true))
+                Label("待发送 · 等你点开始回复", systemImage: "clock").font(.system(size: 11)).foregroundStyle(VesperTheme.muted)
+            }.contextMenu {
+                Button("撤回这条", systemImage: "arrow.uturn.backward", action: onRemove).disabled(!canRemove)
+            }
+        }.accessibilityElement(children: .contain)
+    }
+}

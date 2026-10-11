@@ -169,22 +169,31 @@ the new entry. General Memory creation no longer offers a dream category.
 
 ## Native chat sending and synchronization
 
-Chat keeps conversation management in a sidebar under the selected VPS or Mac contact:
-**New chat**, **Pinned**, collapsible **Projects**, and ungrouped **Chats**.
-Each conversation's ellipsis/context menu offers rename, pin/unpin, move to a
-project, and the existing confirmed deletion flow. Project menus create a chat
-inside the project or edit its name/instruction. Removing a project returns its
-chats to the ungrouped list and preserves their history and pins. Our days remains
-available in a disclosure at the bottom.
+Chat uses a compact sidebar under the selected VPS or Mac contact. Fixed entries
+are **Schedule**, **Space**, and **Project**, followed by **Pinned** and **Recents**.
+The redundant contact avatar row is removed. Both projects and chats can be pinned;
+project settings offer 16 icons, a name, and an instruction. Conversation menus
+retain rename, pin/unpin, move to project, and confirmed deletion. Removing a
+project preserves its conversations and their pins. Recents includes unpinned
+conversations inside projects too. New chat and the settings menu stay at the bottom.
+
+Schedule opens the existing VPS autonomous wake settings. Space indexes files,
+images, audio, and videos sent by either participant in the selected backend's
+conversations. Type chips, sender filters, and filename/conversation search narrow
+the list; preview supports save/share and a context menu returns to the message.
+Attachment metadata is cached by backend/account. History pagination runs only
+while Space is open, skips unchanged conversations, and preserves cached entries
+if a refresh fails. Deleted conversations/messages are excluded. A first visit
+may take time to index long histories; pull to refresh rescans them. The index is
+local and contains metadata, not downloaded file bodies or full chat text.
 
 On iPhone, the chat header menu or a rightward swipe from the left edge opens the
-sidebar. Selecting a conversation closes it; tapping the exposed chat pane, the
-close button, or swiping left also closes it. The chat view remains mounted while
-the drawer moves, preserving the draft and connection. Mac/iPad use a collapsible
-column beside the chat. Search, favorites, projects, pins, and **Instruction** all
-live inside the sidebar.
+sidebar. Selecting a conversation closes it; tapping the exposed chat pane or
+swiping left also closes it. Mac/iPad use a collapsible column beside the content.
+The top search button opens message search; the bottom settings menu includes
+Instruction, favorite messages, and Our days.
 
-The **Instruction** row opens **Contact instruction**, initialized from
+**Instruction** opens **Contact instruction**, initialized from
 Vera's previously saved Chat prompt (or her supplied wording). Each backend/account
 can now save its own override, including an explicitly empty value. Project
 instructions add to that contact's instructions only for member conversations;

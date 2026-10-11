@@ -5,6 +5,20 @@ import UIKit
 @testable import Vesper
 
 final class ChatOrganizationTests: XCTestCase {
+    func testLegacyProjectsKeepInstructionsAndGainIndependentProjectPins() throws {
+        let old = Data(#"{"projects":[{"id":"p","name":"Study","instructions":"Original"}],"memberships":{"c":"p"},"pinned":["c"],"contactInstructions":"Keep"}"#.utf8)
+        var value = try JSONDecoder().decode(ChatOrganization.self, from: old)
+        var project = try XCTUnwrap(value.projects.first)
+        XCTAssertEqual(project.symbol, "folder")
+        XCTAssertEqual(value.project(for: "c")?.instructions, "Original")
+        project.icon = "pawprint"; value.projects = [project]; value.togglePin(project)
+        let restored = try JSONDecoder().decode(ChatOrganization.self, from: JSONEncoder().encode(value))
+        XCTAssertTrue(restored.isPinned(project)); XCTAssertEqual(restored.projects.first?.symbol, "pawprint")
+        value.removeProject("p")
+        XCTAssertTrue(value.pinned.contains("c")); XCTAssertFalse(value.isPinned(project))
+        XCTAssertEqual(value.contactInstructions, "Keep")
+    }
+
     func testProjectsPinsAndContactInstructionsStayScopedAndPersist() throws {
         let suite = "ChatOrganization-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -2579,5 +2593,48 @@ final class ChatRecentCacheTests: XCTestCase {
         XCTAssertNil(DesireEmotion.attached("<vesper-emotion>{incomplete"))
         let user: JSONValue = .object(["id": .string("user"), "role": .string("user"), "content": .string("请解释 <vesper-emotion>")])
         XCTAssertEqual(ChatBubbles.textParts(user).first?["content"].string, "请解释 <vesper-emotion>")
+    }
+}
+
+@MainActor final class ChatSpaceIndexTests: XCTestCase {
+    func testBothSendersPaginationCachingAndFailedRefreshPreserveFiles() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("space.json")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let api = APIClient(baseURL: "https://fixture.example", historyURL: "https://fixture.example/history", token: "fixture")
+        var revision = "1", calls = [String](), fail = false, deleted = false
+        func message(_ id: String, _ role: String, _ name: String) -> JSONValue {
+            .object(["id": .string(id), "role": .string(role), "createdAt": .string("2026-10-11T10:00:00Z"),
+                     "metadata": .object(["attachments": .array([.object(["name": .string(name), "url": .string("https://fixture.example/media/" + id)])])])])
+        }
+        let index = ChatSpaceIndex(api: api, cacheURL: file) { path in
+            calls.append(path)
+            let room: JSONValue = .object(["id": .string("room-with-hyphens"), "title": .string("Chat"), "updatedAt": .string(revision)])
+            if path == "/conversations" { return .object(["conversations": .array(deleted ? [] : [room])]) }
+            if fail { throw ServiceError(message: "Offline") }
+            XCTAssertTrue(path.hasPrefix("/conversations/room-with-hyphens?"))
+            let older = path.contains("before=")
+            return .object(["conversation": room, "messages": .array(older ? [message("b", "assistant", "photo.png"), message("removed", "assistant", "gone.pdf")] : [message("a", "user", "notes.pdf")]),
+                            "tombstones": .array([.object(["messageId": .string("removed")])]),
+                            "hasMore": .bool(!older), "before": .string(older ? "" : "older")])
+        }
+        await index.refresh()
+        XCTAssertEqual(index.items.count, 2)
+        XCTAssertEqual(Set(index.items.map(\.kind)), ["Files", "Images"])
+        XCTAssertEqual(index.items.filter(\.fromVera).count, 1)
+        XCTAssertEqual(calls.count, 3)
+        await index.refresh(); XCTAssertEqual(calls.count, 4, "Unchanged rooms must not page history again")
+        let cached = ChatSpaceIndex(api: api, cacheURL: file)
+        XCTAssertEqual(cached.items, index.items)
+        revision = "2"; fail = true
+        await index.refresh(); XCTAssertNotNil(index.error); XCTAssertEqual(index.items.count, 2)
+        deleted = true
+        await index.refresh(); XCTAssertTrue(index.items.isEmpty)
+    }
+    func testInvalidAttachmentLinksAreExcluded() {
+        let room: JSONValue = .object(["id": .string("r")])
+        let messages: [JSONValue] = [.object(["id": .string("m"), "metadata": .object(["attachments": .array([
+            .object(["url": .string("file:///etc/passwd")]), .object(["url": .string("https://user:password@example.com/a")])
+        ])])])]
+        XCTAssertTrue(ChatSpaceItem.extract(messages: messages, room: room, tombstones: []).isEmpty)
     }
 }

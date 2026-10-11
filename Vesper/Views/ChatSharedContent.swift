@@ -214,3 +214,196 @@ struct ChatBubbleSurface: ViewModifier {
             .vesperGlass(in: shape)
     }
 }
+
+// Space indexes attachment metadata only. Opening chat and sending messages never run this scan.
+struct ChatSpaceItem: Codable, Identifiable, Equatable {
+    let id: String
+    let conversationID: String
+    let conversationTitle: String
+    let messageID: String
+    let date: String
+    let fromVera: Bool
+    let attachment: JSONValue
+    var name: String { attachment["name"].string.isEmpty ? "Shared file" : attachment["name"].string }
+    var kind: String {
+        let mime = attachment["type"].string.lowercased()
+        let ext = (name as NSString).pathExtension.lowercased()
+        if mime.hasPrefix("image/") || ["jpg", "jpeg", "png", "webp", "gif", "heic"].contains(ext) { return "Images" }
+        if mime.hasPrefix("audio/") || ["mp3", "m4a", "wav", "aac", "ogg"].contains(ext) { return "Audio" }
+        if mime.hasPrefix("video/") || ["mp4", "mov", "webm"].contains(ext) { return "Videos" }
+        return "Files"
+    }
+    var symbol: String { kind == "Images" ? "photo" : kind == "Audio" ? "waveform" : kind == "Videos" ? "film" : "doc.text" }
+    var url: URL? {
+        guard let value = URL(string: attachment["url"].string), value.scheme == "https", ChatWebURL.accepts(value) else { return nil }
+        return value
+    }
+    static func extract(messages: [JSONValue], room: JSONValue, tombstones: [JSONValue]) -> [Self] {
+        messages.filter { !ChatTranscript.isDeleted($0, tombstones: tombstones) }.flatMap { message in
+            message["metadata"]["attachments"].array.enumerated().compactMap { index, attachment in
+                let item = Self(id: room.id + ":" + message.id + ":" + String(index), conversationID: room.id,
+                                conversationTitle: room["title"].string, messageID: message.id,
+                                date: ChatTranscript.timestamp(message), fromVera: ChatPresentation.isUser(message), attachment: attachment)
+                return item.url == nil ? nil : item
+            }
+        }
+    }
+}
+
+@MainActor final class ChatSpaceIndex: ObservableObject {
+    struct Room: Codable { var revision: String; var items: [ChatSpaceItem] }
+    @Published private(set) var items: [ChatSpaceItem] = []
+    @Published private(set) var loading = false
+    @Published private(set) var progress = ""
+    @Published private(set) var error: String?
+    private var rooms: [String: Room] = [:]
+    private let api: APIClient
+    private let file: URL?
+    private let request: (String) async throws -> JSONValue
+    init(api: APIClient, cacheURL: URL? = nil, request: ((String) async throws -> JSONValue)? = nil) {
+        self.api = api
+        file = cacheURL ?? ChatRecentCache.directory(api: api)?.appendingPathComponent("space-index.json")
+        self.request = request ?? { try await api.request($0, history: true) }
+        if let file, let data = try? Data(contentsOf: file), data.count <= 30_000_000,
+           let cached = try? JSONDecoder().decode([String: Room].self, from: data) { rooms = cached }
+        publish()
+    }
+    private func publish(extra: [ChatSpaceItem] = [], replacing: String? = nil) {
+        let all = rooms.filter { $0.key != replacing }.values.flatMap(\.items) + extra
+        items = Array(Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }).values)
+            .sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+    }
+    private func persist() {
+        guard let file else { return }
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(rooms).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch { self.error = "Files loaded, but the local index could not be saved." }
+    }
+    func refresh(force: Bool = false) async {
+        guard !loading, !api.token.isEmpty else { return }
+        loading = true; error = nil; progress = "Looking for shared files…"
+        defer { loading = false; progress = ""; publish() }
+        do {
+            let listing = try await request("/conversations")
+            guard case .array(let conversations) = listing["conversations"] else { throw ServiceError(message: "Conversation list unavailable.") }
+            try Task.checkCancellation()
+            let ids = Set(conversations.map(\.id))
+            rooms = rooms.filter { ids.contains($0.key) }; publish(); persist()
+            var failed = 0
+            var firstFailure = ""
+            for (index, room) in conversations.enumerated() {
+                try Task.checkCancellation()
+                let revision = room["updatedAt"].string
+                if !force, !revision.isEmpty, rooms[room.id]?.revision == revision { continue }
+                progress = "整理附件 · \(index + 1)/\(conversations.count) 个对话"
+                do {
+                    var cursor = "", seen: Set<String> = [], collected: [ChatSpaceItem] = []
+                    while true {
+                        try Task.checkCancellation()
+                        var query = URLComponents()
+                        query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200")]
+                        if !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
+                        let escaped = room.id.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")) ?? ""
+                        let page = try await request("/conversations/" + escaped + "?" + (query.percentEncodedQuery ?? ""))
+                        try Task.checkCancellation()
+                        try ChatSession.validateHistoryRecord(page, expectedID: room.id)
+                        guard case .array(let messages) = page["messages"] else { throw ServiceError(message: "Message page unavailable.") }
+                        collected += ChatSpaceItem.extract(messages: messages, room: room, tombstones: page["tombstones"].array)
+                        publish(extra: collected, replacing: room.id)
+                        if !page["hasMore"].bool { break }
+                        cursor = page["before"].string
+                        guard !cursor.isEmpty, seen.insert(cursor).inserted else { throw ServiceError(message: "History pagination stopped before all files were indexed.") }
+                    }
+                    rooms[room.id] = Room(revision: revision, items: collected); publish(); persist()
+                } catch is CancellationError { throw CancellationError() }
+                catch let failure as ServiceError where failure.conversationDeleted {
+                    rooms.removeValue(forKey: room.id); publish(); persist()
+                } catch {
+                    failed += 1
+                    if firstFailure.isEmpty { firstFailure = error.localizedDescription }
+                    publish()
+                }
+            }
+            if failed > 0 { error = "\(failed) 个对话的附件未更新，已保留可用内容。可下拉重试。\n" + firstFailure }
+        } catch is CancellationError { }
+        catch { self.error = "附件索引暂未更新：" + error.localizedDescription }
+    }
+}
+
+struct ChatSpaceView: View {
+    @StateObject private var index: ChatSpaceIndex
+    @State private var filter = "All"
+    @State private var sender = "Everyone"
+    @State private var query = ""
+    @State private var preview: ChatSpaceItem?
+    let showMessage: (ChatSpaceItem) -> Void
+    init(api: APIClient, showMessage: @escaping (ChatSpaceItem) -> Void) {
+        _index = StateObject(wrappedValue: ChatSpaceIndex(api: api)); self.showMessage = showMessage
+    }
+    private var visible: [ChatSpaceItem] {
+        index.items.filter {
+            (filter == "All" || $0.kind == filter) &&
+            (sender == "Everyone" || (sender == "Vera" ? $0.fromVera : !$0.fromVera)) &&
+            (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.conversationTitle.localizedCaseInsensitiveContains(query))
+        }
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(["All", "Images", "Files", "Audio", "Videos"], id: \.self) { category in
+                        Button { filter = category } label: {
+                            Text(category).font(.subheadline.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 10)
+                                .background(filter == category ? VesperTheme.ink.opacity(0.12) : .clear, in: Capsule())
+                        }.buttonStyle(.plain).accessibilityAddTraits(filter == category ? .isSelected : [])
+                    }
+                }.padding(.horizontal, 16)
+            }.padding(.vertical, 8)
+            List {
+                if index.loading { HStack { ProgressView(); Text(index.progress).font(.caption) }.listRowBackground(Color.clear) }
+                if let error = index.error { Text(error).font(.caption).foregroundStyle(VesperTheme.muted).listRowBackground(Color.clear) }
+                ForEach(visible) { item in
+                    Button { preview = item } label: {
+                        HStack(spacing: 14) {
+                            Group {
+                                if item.kind == "Images", let url = item.url {
+                                    AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "photo") }
+                                } else { Image(systemName: item.symbol).font(.title2).foregroundStyle(VesperTheme.accent) }
+                            }.frame(width: 48, height: 48).clipped()
+                                .vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                Text((item.fromVera ? "Vera" : "Rowan") + " · " + ChatPresentation.time(item.date))
+                                    .font(.caption).foregroundStyle(VesperTheme.muted)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).contentShape(Rectangle())
+                    }.buttonStyle(.plain).listRowBackground(Color.clear).listRowSeparator(.hidden)
+                        .contextMenu { Button { showMessage(item) } label: { Label("Show in chat", systemImage: "bubble.left") } }
+                }
+                if visible.isEmpty && !index.loading {
+                    ContentUnavailableView(query.isEmpty ? "No shared files" : "No matches", systemImage: "tray",
+                                           description: Text(index.items.isEmpty ? "你和 Rowan 在这个联系人的聊天中发过的文件会出现在这里。" : "Try another type, sender, or search."))
+                        .listRowBackground(Color.clear)
+                }
+            }.listStyle(.plain).scrollContentBackground(.hidden).refreshable { await index.refresh(force: true) }
+        }.foregroundStyle(VesperTheme.ink).background { Background() }
+            .navigationTitle("Space").navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                    TextField("Search files", text: $query).accessibilityIdentifier("space-search")
+                    Menu {
+                        Picker("Sent by", selection: $sender) {
+                            ForEach(["Everyone", "Vera", "Rowan"], id: \.self) { Text($0).tag($0) }
+                        }
+                    } label: { Image(systemName: sender == "Everyone" ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill").frame(width: 40, height: 40) }
+                        .accessibilityLabel("Filter by sender").accessibilityValue(sender)
+                }.padding(.horizontal, 16).padding(.vertical, 6).vesperGlass(in: Capsule()).padding(16)
+            }
+            .sheet(item: $preview) { item in
+                if let url = item.url { ChatAttachmentPreview(url: url, name: item.name) }
+            }
+            .task { await index.refresh() }
+    }
+}

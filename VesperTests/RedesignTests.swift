@@ -853,7 +853,8 @@ private struct GlassOpacityFixture: View {
         store.token = UUID().uuidString
         let chat = ChatSession()
         var organization = ChatOrganization()
-        let project = ChatProject(name: "一起学习", instructions: "Explain terms in Chinese and English.")
+        let project = ChatProject(name: "一起学习", instructions: "Explain terms in Chinese and English.", icon: "pawprint")
+        organization.togglePin(project)
         organization.projects = [project]
         organization.move("reading", to: project.id); organization.pinned.insert("main")
         try organization.save(store.api)

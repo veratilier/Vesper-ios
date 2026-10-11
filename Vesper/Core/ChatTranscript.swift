@@ -28,12 +28,22 @@ struct ChatProject: Codable, Identifiable, Equatable {
     var id = UUID().uuidString
     var name: String
     var instructions = ""
+    var icon: String? = nil
+    static let icons = ["folder", "pawprint", "book", "graduationcap", "heart", "sparkles", "moon", "star", "leaf", "music.note", "film", "paintpalette", "desktopcomputer", "hammer", "airplane", "globe"]
+    var symbol: String { Self.icons.contains(icon ?? "") ? icon! : "folder" }
 }
 struct ChatOrganization: Codable, Equatable {
     var projects: [ChatProject] = []
     var memberships: [String: String] = [:]
     var pinned: Set<String> = []
     var contactInstructions: String? = nil
+    var pinnedProjects: Set<String>? = nil
+    func isPinned(_ project: ChatProject) -> Bool { pinnedProjects?.contains(project.id) == true }
+    mutating func togglePin(_ project: ChatProject) {
+        var ids = pinnedProjects ?? []
+        if !ids.insert(project.id).inserted { ids.remove(project.id) }
+        pinnedProjects = ids
+    }
 
     static func key(_ api: APIClient) -> String? {
         ChatRecentCache.directory(api: api).map { "chatOrganization.v1." + $0.lastPathComponent }
@@ -57,6 +67,7 @@ struct ChatOrganization: Codable, Equatable {
     }
     mutating func removeProject(_ id: String) {
         projects.removeAll { $0.id == id }
+        pinnedProjects?.remove(id)
         memberships = memberships.filter { $0.value != id }
     }
     func instructions(for conversation: String, fallback: String) -> String {

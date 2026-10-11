@@ -37,7 +37,7 @@ private struct ChatAttachmentPreviewButton<Label: View>: View {
     }
 }
 
-private struct ChatAttachmentPreview: View {
+struct ChatAttachmentPreview: View {
     let url: URL
     let name: String
     @Environment(\.dismiss) private var dismiss

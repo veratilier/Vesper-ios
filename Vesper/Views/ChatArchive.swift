@@ -79,6 +79,17 @@ private struct ChatProjectEditor: View {
                     .font(.title2.weight(.semibold)).padding(16)
                     .vesperGlass(in: RoundedRectangle(cornerRadius: 20))
                     .accessibilityIdentifier("chat-project-name")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(ChatProject.icons, id: \.self) { symbol in
+                            Button { draft.icon = symbol } label: {
+                                Image(systemName: symbol).font(.title3).frame(width: 44, height: 44)
+                                    .background(draft.symbol == symbol ? VesperTheme.ink.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                            }.buttonStyle(.plain).accessibilityLabel(symbol)
+                                .accessibilityAddTraits(draft.symbol == symbol ? .isSelected : [])
+                        }
+                    }
+                }.accessibilityLabel("Project icon")
                 Label("Instruction", systemImage: "doc.text").font(.headline)
                 TextEditor(text: $draft.instructions).scrollContentBackground(.hidden)
                     .padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 22))
@@ -156,6 +167,8 @@ private struct NativeChatBackendHome: View {
     @Environment(\.chatWorkspace) private var workspace
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private enum Destination: Equatable { case conversation, schedule, space, projects, project(String), activity }
+    @State private var destination = Destination.conversation
     @State private var drawerOpen = true
     @State private var welcomeLine = "A place for today, too."
     @State private var contactsVisible = false
@@ -267,7 +280,9 @@ private struct NativeChatBackendHome: View {
         NavigationStack {
             ZStack {
                 Background()
-                if loadingChat && !chat.showingCachedHistory {
+                if destination != .conversation {
+                    destinationPage
+                } else if loadingChat && !chat.showingCachedHistory {
                     VStack(spacing: 20) {
                         ProgressView("Opening chat…")
                         Button("Show chats") { setDrawer(true) }
@@ -290,93 +305,118 @@ private struct NativeChatBackendHome: View {
         }
     }
 
+    private func navigate(_ target: Destination) {
+        destination = target; setDrawer(false)
+    }
+    @ViewBuilder private var destinationPage: some View {
+        Group {
+            switch destination {
+            case .schedule:
+                WakeView().environmentObject(workspace?.vps.store ?? store)
+            case .space:
+                ChatSpaceView(api: store.api) { item in
+                    Task {
+                        if await chat.openSearchResult(.object(["id": .string(item.messageID), "conversationId": .string(item.conversationID)])) {
+                            destination = .conversation; open = true; setDrawer(false)
+                        }
+                    }
+                }
+            case .projects:
+                projectDirectory
+            case .project(let id):
+                if let project = organization.projects.first(where: { $0.id == id }) { projectPage(project) }
+                else { projectDirectory }
+            case .activity:
+                ScrollView { ChatActivityHeatmap(refreshID: activityRefreshID, client: selectedClient).padding(20) }
+                    .navigationTitle("Our days")
+            case .conversation: EmptyView()
+            }
+        }.toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { setDrawer(true) } label: { Image(systemName: "line.3.horizontal") }
+                    .accessibilityLabel("Open chat sidebar")
+            }
+        }
+    }
+    private func sidebarLink(_ title: String, icon: String, target: Destination) -> some View {
+        Button { navigate(target) } label: {
+            Label { Text(title).font(.body.weight(.semibold)) } icon: {
+                Image(systemName: icon).font(.title3).frame(width: 26)
+            }.frame(maxWidth: .infinity, minHeight: 46, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).listRowBackground(Color.clear).listRowSeparator(.hidden)
+    }
     private var contactList: some View {
         List {
-                HStack(spacing: 10) {
-                    ChatListAvatar(source: selectedContacts.profile["agentAvatar"].string, baseURL: selectedContacts.baseURL, size: 36)
-                    Text(agentName).font(.headline)
-                    Text(selectedBackend.title).font(.caption.weight(.semibold))
-                        .foregroundStyle(VesperTheme.muted)
-                    Spacer()
-                }.listRowBackground(Color.clear).listRowSeparator(.hidden)
-                Button { performForSelectedBackend { searching = true } } label: {
-                    Label("Search messages", systemImage: "magnifyingglass")
-                        .font(.subheadline)
-                        .foregroundStyle(VesperTheme.muted)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contactGlassSurface(verticalPadding: 12)
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-
-                Button { createChat() } label: {
-                    Label("New chat", systemImage: "square.and.pencil")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contactGlassSurface(verticalPadding: 14)
-                }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
-                    .accessibilityIdentifier("chat-new-conversation")
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
-
-                HStack(spacing: 12) {
-                    Button { showingChatPrompt = true } label: {
-                        Label("Instruction", systemImage: "doc.text")
-                            .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    }.accessibilityIdentifier("chat-prompt-button")
-                    Button { performForSelectedBackend { showingFavorites = true } } label: {
-                        Image(systemName: "bookmark").frame(width: 44, height: 44)
-                    }.accessibilityLabel("Favorite messages")
-                }.buttonStyle(.plain).foregroundStyle(VesperTheme.ink)
-                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
-
-                if !pinnedWindows.isEmpty {
-                    Section {
-                        ForEach(pinnedWindows) { window in organizedRow(window) }
-                    } header: { Label("Pinned", systemImage: "pin").textCase(nil) }
-                }
-                Section {
-                    ForEach(organization.projects) { project in projectFolder(project) }
-                    Button { editingProject = ChatProject(name: "") } label: {
-                        Label("New project", systemImage: "folder.badge.plus")
-                            .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 10)
-                    }.buttonStyle(.plain).disabled(!selectedContacts.configured)
-                        .accessibilityIdentifier("chat-new-project")
-                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
-                } header: { Text("Projects").textCase(nil) }
-                if !otherWindows.isEmpty {
-                    Section {
-                        ForEach(otherWindows) { window in organizedRow(window) }
-                    } header: { Text("Chats").textCase(nil) }
-                }
-
-                Text(welcomeLine)
-                    .font(.system(.title3, design: .serif)).italic()
-                    .foregroundStyle(VesperTheme.muted)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 28)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .accessibilityIdentifier("chat-contact-greeting")
-                DisclosureGroup("Our days", isExpanded: $showingActivity) {
-                    ChatActivityHeatmap(refreshID: activityRefreshID, client: selectedClient).id(selectedBackend)
-                }.foregroundStyle(VesperTheme.muted)
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
-                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
-            }.scrollContentBackground(.hidden).transparentNavigationTop().background { Background() }
-            .listStyle(.plain)
-            .onAppear { contactsVisible = drawerOpen; onRootVisibilityChange(drawerOpen); updateWelcomeLine() }
-            .onDisappear { contactsVisible = false; onRootVisibilityChange(false) }
-            .onChange(of: phase) { _, value in
-                if value == .active && contactsVisible && !open && !searching && !showingFavorites { updateWelcomeLine() }
+            Section {
+                sidebarLink("Schedule", icon: "clock", target: .schedule)
+                sidebarLink("Space", icon: "books.vertical", target: .space)
+                sidebarLink("Project", icon: "folder", target: .projects)
             }
+            if !pinnedWindows.isEmpty || organization.projects.contains(where: { organization.isPinned($0) }) {
+                Section {
+                    ForEach(organization.projects.filter { organization.isPinned($0) }) { project in projectFolder(project) }
+                    ForEach(pinnedWindows) { window in organizedRow(window) }
+                } header: { Text("Pinned").font(.headline).foregroundStyle(VesperTheme.ink).textCase(nil) }
+            }
+            Section {
+                ForEach(otherWindows) { window in organizedRow(window) }
+            } header: { Text("Recents").font(.headline).foregroundStyle(VesperTheme.ink).textCase(nil) }
+        }.listStyle(.plain).scrollContentBackground(.hidden).transparentNavigationTop()
+            .background { Background() }
+            .foregroundStyle(VesperTheme.ink)
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Button { createChat() } label: {
+                        Label("New chat", systemImage: "square.and.pencil").font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 20).frame(height: 48).vesperGlass(in: Capsule(), interactive: true)
+                    }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
+                        .accessibilityIdentifier("chat-new-conversation")
+                    Spacer(minLength: 8)
+                    Menu {
+                        Button { showingChatPrompt = true } label: { Label("Instruction", systemImage: "doc.text") }
+                        Button { performForSelectedBackend { showingFavorites = true } } label: { Label("Favorite messages", systemImage: "bookmark") }
+                        Button { navigate(.activity) } label: { Label("Our days", systemImage: "calendar") }
+                    } label: {
+                        Image(systemName: "gearshape").font(.title3).frame(width: 48, height: 48)
+                            .vesperGlass(in: Circle(), interactive: true)
+                    }.accessibilityLabel("Chat settings")
+                }.padding(.horizontal, 20).padding(.vertical, 12)
+            }
+            .onAppear { contactsVisible = drawerOpen; onRootVisibilityChange(drawerOpen) }
+            .onDisappear { contactsVisible = false; onRootVisibilityChange(false) }
             .refreshable { await refreshContacts(); activityRefreshID += 1 }
+    }
+    private var projectDirectory: some View {
+        List {
+            Button { editingProject = ChatProject(name: "") } label: { Label("New project", systemImage: "folder.badge.plus").frame(minHeight: 44) }
+                .disabled(!selectedContacts.configured).accessibilityIdentifier("chat-new-project")
+                .listRowBackground(Color.clear)
+            ForEach(organization.projects) { project in projectFolder(project) }
+            if organization.projects.isEmpty {
+                ContentUnavailableView("Projects", systemImage: "folder", description: Text("Group conversations and give each project its own instruction."))
+                    .listRowBackground(Color.clear)
+            }
+        }.listStyle(.plain).scrollContentBackground(.hidden).navigationTitle("Project")
+    }
+    private func projectPage(_ project: ChatProject) -> some View {
+        List {
+            HStack(spacing: 14) {
+                Image(systemName: project.symbol).font(.largeTitle)
+                Text(project.name).font(.title2.weight(.semibold))
+            }.padding(.vertical, 12).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            Button { createChat(in: project) } label: { Label("New chat", systemImage: "square.and.pencil").frame(minHeight: 44) }
+                .disabled(rowDisabled || chat.loadingModels).listRowBackground(Color.clear)
+            Button { editingProject = project } label: { Label("Name, icon & instruction", systemImage: "doc.text").frame(minHeight: 44) }
+                .listRowBackground(Color.clear)
+            Section("Chats") {
+                ForEach(selectedContacts.windows.filter { organization.project(for: $0.id)?.id == project.id }) { organizedRow($0) }
+            }
+        }.listStyle(.plain).scrollContentBackground(.hidden).navigationTitle("Project")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu { projectActions(project) } label: { Image(systemName: "ellipsis") }
+                }
+            }
     }
 
     private var contactsWithNavigation: some View {
@@ -404,12 +444,14 @@ private struct NativeChatBackendHome: View {
                 }
                 ToolbarItem(placement: .topBarLeading) { if let onMenu { Button(action: onMenu) { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar") } }
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button { performForSelectedBackend { searching = true } } label: { Image(systemName: "magnifyingglass") }
+                        .accessibilityLabel("Search messages")
                     Button { setDrawer(false) } label: { Image(systemName: "xmark") }
                         .accessibilityLabel("Close chat sidebar")
                 }
             }
-            .navigationDestination(isPresented: $searching) { ChatSearchView { open = true; searching = false; setDrawer(false) } }
-            .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { open = true; showingFavorites = false; setDrawer(false) } }
+            .navigationDestination(isPresented: $searching) { ChatSearchView { destination = .conversation; open = true; searching = false; setDrawer(false) } }
+            .navigationDestination(isPresented: $showingFavorites) { ChatFavoritesView { destination = .conversation; open = true; showingFavorites = false; setDrawer(false) } }
             .task {
                 chat.configure(store)
                 captureActiveContacts(); prepareOtherContacts(); reloadOrganization()
@@ -439,7 +481,7 @@ private struct NativeChatBackendHome: View {
                 chat.configure(store); captureActiveContacts(); prepareOtherContacts()
                 Task { await refreshContacts() }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in open = true; setDrawer(false) }
+            .onReceive(NotificationCenter.default.publisher(for: .init("VesperConversationOpened"))) { _ in destination = .conversation; open = true; setDrawer(false) }
     }
 
     private var contactsWithDialogs: some View {
@@ -516,7 +558,9 @@ private struct NativeChatBackendHome: View {
         selectedContacts.windows.filter { organization.pinned.contains($0.id) }
     }
     private var otherWindows: [ChatConversationWindow] {
-        selectedContacts.windows.filter { !organization.pinned.contains($0.id) && organization.project(for: $0.id) == nil }
+        selectedContacts.windows.filter { !organization.pinned.contains($0.id) }.sorted {
+            ($0.conversation?["updatedAt"].string ?? "") > ($1.conversation?["updatedAt"].string ?? "")
+        }
     }
     private func reloadOrganization() { organization = ChatOrganization.load(store.api) }
     private func editOrganization(_ change: (inout ChatOrganization) -> Void) {
@@ -529,7 +573,7 @@ private struct NativeChatBackendHome: View {
         performForSelectedBackend {
             if await chat.createConversation() {
                 if let project { editOrganization { $0.move(chat.conversationID, to: project.id) } }
-                captureActiveContacts(); open = true; setDrawer(false)
+                captureActiveContacts(); destination = .conversation; open = true; setDrawer(false)
             }
         }
     }
@@ -540,23 +584,16 @@ private struct NativeChatBackendHome: View {
     private func organizedRow(_ window: ChatConversationWindow) -> some View {
         HStack(spacing: 4) {
             Button { enterChat(window.conversation) } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 5) {
-                        if organization.pinned.contains(window.id) { Image(systemName: "pin.fill").font(.caption2) }
-                        Text(title(window)).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    }
-                    Text(preview(window.conversation, empty: selectedContacts.configured ? "Start chatting" : "Not configured"))
-                        .font(.caption).foregroundStyle(VesperTheme.muted).lineLimit(1)
-                    if let project = organization.project(for: window.id) {
-                        Label(project.name, systemImage: "folder").font(.caption2).foregroundStyle(VesperTheme.muted)
-                    }
+                HStack(spacing: 12) {
+                    if organization.pinned.contains(window.id) { Image(systemName: "bubble.left").font(.title3).frame(width: 26) }
+                    Text(title(window)).font(.subheadline.weight(.semibold)).lineLimit(1)
                 }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(rowDisabled)
             Menu { conversationActions(window) } label: {
                 Image(systemName: "ellipsis").frame(width: 36, height: 44).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Options for " + title(window))
                 .disabled(rowDisabled || window.conversation == nil)
-        }.foregroundStyle(VesperTheme.ink).contactGlassSurface(verticalPadding: 10)
+        }.foregroundStyle(VesperTheme.ink)
             .contextMenu { conversationActions(window) }
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
             .listRowBackground(Color.clear).listRowSeparator(.hidden)
@@ -582,37 +619,26 @@ private struct NativeChatBackendHome: View {
         }
     }
     private func projectFolder(_ project: ChatProject) -> some View {
-        let windows = selectedContacts.windows.filter { organization.project(for: $0.id)?.id == project.id && !organization.pinned.contains($0.id) }
-        return VStack(spacing: 8) {
-            HStack {
-                Button {
-                    withAnimation { if !expandedProjects.insert(project.id).inserted { expandedProjects.remove(project.id) } }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "folder")
-                        Text(project.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Spacer(minLength: 2)
-                        Image(systemName: expandedProjects.contains(project.id) ? "chevron.down" : "chevron.right").font(.caption)
-                    }.frame(minHeight: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel(project.name + " project")
-                Menu {
-                    Button { createChat(in: project) } label: { Label("New chat", systemImage: "square.and.pencil") }
-                        .disabled(rowDisabled || chat.loadingModels)
-                    Button { editingProject = project } label: { Label("Name & instruction", systemImage: "doc.text") }
-                    Button(role: .destructive) { deletingProject = project } label: { Label("Remove project", systemImage: "folder.badge.minus") }
-                } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }
-                    .accessibilityLabel("Settings for " + project.name)
-            }
-            if expandedProjects.contains(project.id) {
-                ForEach(windows) { window in organizedRow(window) }
-                Button { createChat(in: project) } label: {
-                    Label("New chat in project", systemImage: "plus").font(.caption)
-                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-                }.buttonStyle(.plain).disabled(rowDisabled || chat.loadingModels)
-            }
-        }.foregroundStyle(VesperTheme.ink).contactGlassSurface(verticalPadding: 8)
+        HStack(spacing: 4) {
+            Button { navigate(.project(project.id)) } label: {
+                Label { Text(project.name).font(.subheadline.weight(.semibold)).lineLimit(1) } icon: {
+                    Image(systemName: project.symbol).font(.title3).frame(width: 26)
+                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            Menu { projectActions(project) } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }
+                .accessibilityLabel("Settings for " + project.name)
+        }.foregroundStyle(VesperTheme.ink).contextMenu { projectActions(project) }
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
             .listRowBackground(Color.clear).listRowSeparator(.hidden)
+    }
+    @ViewBuilder private func projectActions(_ project: ChatProject) -> some View {
+        Button { editOrganization { $0.togglePin(project) } } label: {
+            Label(organization.isPinned(project) ? "Unpin" : "Pin", systemImage: organization.isPinned(project) ? "pin.slash" : "pin")
+        }
+        Button { createChat(in: project) } label: { Label("New chat", systemImage: "square.and.pencil") }
+            .disabled(rowDisabled || chat.loadingModels)
+        Button { editingProject = project } label: { Label("Name, icon & instruction", systemImage: "pencil") }
+        Button(role: .destructive) { deletingProject = project } label: { Label("Remove project", systemImage: "folder.badge.minus") }
     }
 
     private func updateWelcomeLine() {
@@ -627,11 +653,13 @@ private struct NativeChatBackendHome: View {
         chat.configure(store)
         if (item?.id ?? mainConversationID) == chat.conversationID,
            !chat.messages.isEmpty, !chat.showingCachedHistory {
-            open = true; loadingChat = false
+            destination = .conversation; open = true; loadingChat = false
+            if dismissSidebar { setDrawer(false) }
             return
         }
         guard !rowDisabled else { return }
         chat.configure(store)
+        destination = .conversation
         let previewVisible = chat.previewConversation(item?.id)
         loadingChat = !previewVisible
         open = true

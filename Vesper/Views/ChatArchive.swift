@@ -157,6 +157,18 @@ private struct ChatWorkspaceHome: View {
     }
 }
 
+// Keep horizontal drawer clipping, while allowing the transcript beneath the status bar.
+private struct ChatPaneClip: Shape {
+    var topInset: CGFloat
+    var cornerRadius: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let bounds = CGRect(x: rect.minX, y: rect.minY - topInset,
+                            width: rect.width, height: rect.height + topInset)
+        return RoundedRectangle(cornerRadius: cornerRadius).path(in: bounds)
+    }
+}
+
 private struct NativeChatBackendHome: View {
     var sideBySide = VesperLayout.isMac
     var onMenu: (() -> Void)? = nil
@@ -251,7 +263,7 @@ private struct NativeChatBackendHome: View {
                                         .accessibilityAddTraits(.isButton)
                                 }
                             }
-                            .clipShape(RoundedRectangle(cornerRadius: drawerOpen ? 28 : 0))
+                            .clipShape(ChatPaneClip(topInset: geometry.safeAreaInsets.top, cornerRadius: drawerOpen ? 28 : 0))
                             .shadow(color: .black.opacity(drawerOpen ? 0.18 : 0), radius: 18, x: -8)
                             .offset(x: drawerOpen ? width : 0)
                         if !drawerOpen {
@@ -261,7 +273,7 @@ private struct NativeChatBackendHome: View {
                                 })
                                 .accessibilityHidden(true)
                         }
-                    }.clipped()
+                    }.clipShape(ChatPaneClip(topInset: geometry.safeAreaInsets.top))
                         .simultaneousGesture(DragGesture(minimumDistance: 25).onEnded { value in
                             if drawerOpen && value.translation.width < -60 && abs(value.translation.height) < abs(value.translation.width) { setDrawer(false) }
                         })

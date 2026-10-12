@@ -259,6 +259,8 @@ struct ChatView: View {
                     .background(GeometryReader { geometry in Color.clear.preference(key: ChatBottomPosition.self, value: geometry.frame(in: .named("chat-scroll")).maxY) })
                     .opacity(positionedConversationID == chat.conversationID || chat.messages.isEmpty ? 1 : 0)
                 }.scrollDismissesKeyboard(.interactively)
+                // Let scrolled bubbles remain visible behind the status bar and header.
+                .scrollClipDisabled()
                 .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
                     scrollFrame = frame; markDisplayedMessages()
                 }

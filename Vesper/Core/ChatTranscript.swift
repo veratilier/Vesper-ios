@@ -248,7 +248,8 @@ enum ChatBubbles {
         let attachments = message["metadata"]["attachments"].array
         return batch.enumerated().map { index, child in
             var value = child
-            value["id"] = .string(message.id + "#batch-\(index)")
+            let key = child["metadata"]["batchKey"].string
+            value["id"] = .string(message.id + "#" + (key.isEmpty ? "batch-\(index)" : key))
             value["status"] = message["status"]
             value["metadata"]["sourceMessageId"] = .string(message.id)
             let savedIndices = child["metadata"]["batchAttachmentIndices"].array
@@ -281,7 +282,7 @@ enum ChatBubbles {
         let explicit = meta["bubbles"].array
         if !explicit.isEmpty {
             return explicit.enumerated().map { index, bubble in
-                part(message, key: "text-\(index)", text: bubble["text"].string,
+                part(message, key: bubble["key"].string.isEmpty ? "text-\(index)" : bubble["key"].string, text: bubble["text"].string,
                      metadata: .object(["replyTo": bubble["replyTo"]]))
             }
         }
@@ -478,5 +479,68 @@ enum ChatRecentCache {
                 try FileManager.default.removeItem(at: file)
             } catch { break }
         }
+    }
+}
+
+/// Removes the selected visible bubble while retaining its siblings and server identity.
+enum ChatMessageDeletion {
+    static func removing(_ part: JSONValue, from original: JSONValue) throws -> JSONValue? {
+        if part.id == original.id { return nil }
+        guard part.id.hasPrefix(original.id + "#") else { throw ServiceError(message: "消息已变化，请重新长按后删除。") }
+        var value = original
+        if !original["metadata"]["batchMessages"].array.isEmpty {
+            var children = ChatBubbles.batchOriginals(original)
+            guard let index = children.firstIndex(where: { part.id == $0.id || part.id.hasPrefix($0.id + "#") }) else {
+                throw ServiceError(message: "消息已变化，请重新长按后删除。")
+            }
+            if let child = try removing(part, from: children[index]) { children[index] = child }
+            else { children.remove(at: index) }
+            guard !children.isEmpty else { return nil }
+            var attachments: [JSONValue] = []
+            for i in children.indices {
+                children[i]["metadata"]["batchKey"] = .string(String(children[i].id.dropFirst(original.id.count + 1)))
+                let added = children[i]["metadata"]["attachments"].array
+                children[i]["metadata"]["batchAttachmentIndices"] = .array((attachments.count..<(attachments.count + added.count)).map { .number(Double($0)) })
+                attachments += added
+            }
+            value["metadata"]["batchMessages"] = .array(children)
+            value["metadata"]["attachments"] = .array(attachments)
+            value["content"] = .string(children.map { $0["content"].string }.joined(separator: "\n\n"))
+        } else {
+            var texts = ChatBubbles.textParts(original)
+            let selectedAttachments = part["metadata"]["attachments"].array
+            if let index = texts.firstIndex(where: { $0.id == part.id && $0["content"] == part["content"] }) {
+                texts.remove(at: index)
+            } else if !selectedAttachments.isEmpty {
+                var attachments = original["metadata"]["attachments"].array
+                for attachment in selectedAttachments {
+                    guard let index = attachments.firstIndex(of: attachment) else { throw ServiceError(message: "附件已变化，请重新选择。") }
+                    attachments.remove(at: index)
+                }
+                value["metadata"]["attachments"] = .array(attachments)
+            } else if let key = ["locationCard", "musicCard", "sticker"].first(where: { part.id == original.id + "#" + $0 }) {
+                value["metadata"][key] = .null
+                if key == "sticker" { value["type"] = .string("text") }
+            } else if let link = ChatMusicShare.links(in: original["content"].string).first(where: { part.id == original.id + "#" + $0.id }) {
+                let url = link["appleMusicURL"].string
+                texts = texts.compactMap { text in
+                    var updated = text
+                    updated["content"] = .string(text["content"].string.replacingOccurrences(of: url, with: "").trimmingCharacters(in: .whitespacesAndNewlines))
+                    return updated["content"].string.isEmpty ? nil : updated
+                }
+            } else { throw ServiceError(message: "消息已变化，请重新长按后删除。") }
+            value["metadata"]["bubbles"] = .array(texts.map { .object(["key": .string(String($0.id.dropFirst(original.id.count + 1))), "text": $0["content"], "replyTo": $0["metadata"]["replyTo"]]) })
+            value["content"] = .string(texts.map { $0["content"].string }.joined(separator: "\n\n"))
+            let hasMedia = !value["metadata"]["attachments"].array.isEmpty || ["locationCard", "musicCard", "sticker", "call"].contains { value["metadata"][$0] != .null }
+            guard !texts.isEmpty || hasMedia else { return nil }
+            if texts.isEmpty {
+                // History accepts a nonempty fallback; it is never rendered as a bubble.
+                value["content"] = .string("附件")
+                value["metadata"]["attachmentOnly"] = .bool(true)
+            }
+        }
+        value["metadata"]["userEdited"] = .bool(true)
+        value["status"] = .string("delivered")
+        return value
     }
 }

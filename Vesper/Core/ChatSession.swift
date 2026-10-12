@@ -1030,15 +1030,55 @@ enum ChatUserInput {
             await loadConversations(); return true
         } catch { busy = false; self.error = error.localizedDescription; return false }
     }
+    func deleteMessagePart(_ part: JSONValue) async {
+        guard !busy, let api else { return }
+        let source = part["metadata"]["sourceMessageId"].string
+        let id = source.isEmpty ? part.id : source
+        guard let original = messages.first(where: { $0.id == id }) else { return }
+        let room = conversationID
+        do {
+            guard let updated = try ChatMessageDeletion.removing(part, from: original) else {
+                await deleteMessages([original]); return
+            }
+            busy = true
+            defer { if conversationID == room { busy = turnID != nil } }
+            try await sendOutbox.flush(api)
+            let response = try await api.request("/conversations/\(room)/messages", method: "POST", body: updated, history: true)
+            var saved = response["message"]
+            if saved == .null, response["ok"] == .bool(true) {
+                // The Mac adapter acknowledges writes without returning the record.
+                // Read the exact message back before changing the local transcript.
+                var query = URLComponents()
+                query.queryItems = [URLQueryItem(name: "around", value: original.id), URLQueryItem(name: "limit", value: "1")]
+                let history = try await api.request("/conversations/\(room)?" + (query.percentEncodedQuery ?? ""), history: true)
+                try Self.validateHistoryRecord(history, expectedID: room)
+                saved = history["messages"].array.first(where: { $0.id == original.id }) ?? .null
+            }
+            guard saved.id == original.id, saved["content"] == updated["content"], saved["metadata"]["userEdited"] == .bool(true) else {
+                throw ServiceError(message: "服务器未确认删除，请刷新后重试。")
+            }
+            try sendOutbox.discard(api, conversationID: room, messageID: original.id)
+            if conversationID == room, let index = messages.firstIndex(where: { $0.id == original.id }) {
+                messages[index] = saved
+                cacheRecentHistory()
+            } else { ChatRecentCache.remove(api: api, id: room) }
+            if let store = appStore, !(await ChatFavorites.removeCopies(conversationID: room, messageID: part.id, in: store)) {
+                self.error = "消息已删除，但收藏副本清理失败，请在收藏中移除。"
+            }
+        } catch { self.error = error.localizedDescription }
+    }
     func deleteMessage(_ message: JSONValue) async { await deleteMessages([message]) }
     func deleteMessages(_ records: [JSONValue]) async {
         guard !busy, let api else { return }
         let targetConversation = conversationID, targetThread = threadID ?? ""
+        busy = true
+        defer { if conversationID == targetConversation { busy = turnID != nil } }
         let store = appStore
         for message in records {
             do {
                 try await sendOutbox.flush(api)
-                _ = try await api.request("/conversations/\(targetConversation)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(targetThread) : message["metadata"]["threadId"]]), history: true)
+                let receipt = try await api.request("/conversations/\(targetConversation)/messages/\(message.id)", method: "DELETE", body: .object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"], "threadId": message["metadata"]["threadId"] == .null ? .string(targetThread) : message["metadata"]["threadId"]]), history: true)
+                guard receipt["ok"] == .bool(true) else { throw ServiceError(message: "服务器未确认删除，请重试。") }
                 try sendOutbox.discard(api, conversationID: targetConversation, messageID: message.id)
                 if conversationID == targetConversation {
                     tombstones.append(.object(["messageId": .string(message.id), "itemId": message["metadata"]["itemId"]]))
@@ -1209,6 +1249,9 @@ enum ChatUserInput {
                     reconcile(snapshot)
                     if let historyReader {
                         let room = conversationID
+                        // Refresh after subscription: replies may have finished between
+                        // the initial HTTP read and thread/resume. The VPS synchronizer
+                        // indexes saved items once, so this catch-up is now inexpensive.
                         let history = try await stage(.history) { try await historyReader(room) }
                         try checkCallback()
                         try Self.validateHistoryRecord(history, expectedID: conversationID)
@@ -2576,7 +2619,7 @@ enum ChatRecovery {
                 guard !tombstones.contains(where: { $0["messageId"].string == item.id || $0["itemId"].string == item.id || $0["stableId"].string == item.id }) else { continue }
                 let index = result.firstIndex { $0.id == item.id || $0["metadata"]["itemId"].string == item.id }
                 var message = index.map { result[$0] } ?? .object(["id": .string(item.id), "conversationId": .string(conversationID), "role": .string("agent"), "source": .string("codex")])
-                message["content"] = item["text"]
+                if message["metadata"]["userEdited"] != .bool(true) { message["content"] = item["text"] }
                 message["status"] = .string(["inProgress", "running", "started"].contains(turn["status"].string) ? "streaming" : "delivered")
                 if message["createdAt"].string.isEmpty {
                     let time = item["createdAt"] == .null ? turn["startedAt"] : item["createdAt"]

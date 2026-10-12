@@ -211,7 +211,7 @@ struct ChatView: View {
     @State private var viewportHeight: CGFloat = 0
     @State private var locationPicker = false
     @State private var confirmNew = false
-    @State private var deleting: [JSONValue]?
+    @State private var deleting: JSONValue?
     @State private var selectedPhotos: [PhotosPickerItem] = []
     private var images: [Data] { get { draftStore.images } nonmutating set { draftStore.images = newValue } }
     private var files: [ChatFile] { get { draftStore.files } nonmutating set { draftStore.files = newValue } }
@@ -521,8 +521,8 @@ struct ChatView: View {
         .sheet(isPresented: $musicPicker) { musicSheet }
         .sheet(isPresented: $history) { historySheet }
         .confirmationDialog("Start a new chat and clear this draft?", isPresented: $confirmNew) { Button("New chat", role: .destructive) { newChat() } }
-        .confirmationDialog("Delete this message?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("Delete", role: .destructive) { if let messages = deleting { Task { await chat.deleteMessages(messages) } }; deleting = nil }
+        .confirmationDialog("删除这条消息？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("同步删除", role: .destructive) { if let part = deleting { Task { await chat.deleteMessagePart(part) } }; deleting = nil }
         }
     }
     var body: some View {
@@ -637,9 +637,10 @@ struct ChatView: View {
                        highlighted: row.messages.contains { $0.id == chat.jumpMessageID },
                        onFavorite: { Task { await favorite(message) } },
                        onRemember: { Task { await remember(row.messages.first { $0.id == row.id } ?? message) } },
-                       onDelete: { deleting = row.messages },
+                       onDelete: { deleting = row.messages.first },
                        sourceMessages: row.messages,
                        onPartFavorite: { part in Task { await favorite(part) } },
+                       onPartDelete: { deleting = $0 },
                        onReply: { part in
                            draftStore.replyTo = ChatBubbles.quote(part, conversationID: chat.conversationID)
                            focused = true
@@ -858,6 +859,7 @@ struct ChatMessageRow: View, Equatable {
     let onDelete: () -> Void
     var sourceMessages: [JSONValue] = []
     var onPartFavorite: (JSONValue) -> Void = { _ in }
+    var onPartDelete: (JSONValue) -> Void = { _ in }
     var onReply: (JSONValue) -> Void = { _ in }
     var onOpenQuote: (JSONValue) -> Void = { _ in }
     @EnvironmentObject private var store: AppStore
@@ -914,7 +916,7 @@ struct ChatMessageRow: View, Equatable {
             ChatMessageAction(title: "复制", icon: "doc.on.doc", run: { copy(part) }),
             ChatMessageAction(title: saved ? "取消收藏" : "收藏", icon: saved ? "bookmark.fill" : "bookmark", run: { onPartFavorite(part) }),
             ChatMessageAction(title: "引用", icon: "arrowshape.turn.up.left", run: { onReply(part) })
-        ]
+        ] + (busy || saving ? [] : [ChatMessageAction(title: "删除", icon: "trash", run: { onPartDelete(part) })])
     }
     private func copy(_ part: JSONValue) {
         let attachment = part["metadata"]["attachments"].array.first ?? .null
@@ -942,16 +944,22 @@ struct ChatMessageRow: View, Equatable {
                         let photos = photoIndices.map { attachments[$0] }
                         let album = ChatBubbles.part(item, key: "attachment-\(index)", text: photos.count > 1 ? "\(photos.count) Photos" : label,
                                                     metadata: .object(["attachments": .array(photos)]))
-                        ChatPhotoStack(photos: photos, alignment: user ? .trailing : .leading)
+                        ChatPhotoStack(photos: photos, alignment: user ? .trailing : .leading, showsDownload: !user)
                             .modifier(ChatLongPress(id: part.id, actions: { actions(album) }))
                             .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
                     }
                 } else if attachment["type"].string.hasPrefix("audio/") {
+                    HStack(alignment: .center, spacing: 8) {
                     VoiceMessageBar(attachment: attachment, alignment: user ? .trailing : .leading, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item["metadata"]["sourceMessageId"].string.isEmpty ? item.id : item["metadata"]["sourceMessageId"].string, attachmentIndex: item["metadata"]["batchAttachmentIndices"].array.isEmpty ? index : Int(item["metadata"]["batchAttachmentIndices"].array[index].number), text: text) } },
                                     onTranslation: { source, text in Task { await chat.saveVoiceTranslation(messageID: item["metadata"]["sourceMessageId"].string.isEmpty ? item.id : item["metadata"]["sourceMessageId"].string, attachmentIndex: item["metadata"]["batchAttachmentIndices"].array.isEmpty ? index : Int(item["metadata"]["batchAttachmentIndices"].array[index].number), source: source, text: text) } })
+                    if !user { ChatAttachmentDownloadButton(attachment: attachment) }
+                    }
                 } else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
+                    HStack(alignment: .center, spacing: 8) {
                     ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
                         .modifier(ChatLongPress(id: part.id, actions: { actions(part) }))
+                    if !user { ChatAttachmentDownloadButton(attachment: attachment) }
+                    }
                 }
             }.id(part.id)
         }

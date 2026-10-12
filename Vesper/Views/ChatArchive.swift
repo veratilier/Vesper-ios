@@ -300,7 +300,7 @@ private struct NativeChatBackendHome: View {
                 } else {
                     VStack(spacing: 20) {
                         ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
-                                               description: Text("Choose a conversation, or start a new one."))
+                                               description: Text(chat.error ?? "Choose a conversation, or start a new one."))
                         Button { setDrawer(true) } label: {
                             Label("Show chats", systemImage: "sidebar.left")
                                 .padding(16).vesperGlass(in: Capsule(), interactive: true)

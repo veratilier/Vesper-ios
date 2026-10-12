@@ -488,3 +488,77 @@ private struct SpaceNavigationTitle: ViewModifier {
         else { content.navigationTitle("Space").navigationBarTitleDisplayMode(.inline) }
     }
 }
+
+/// Downloads bytes first, then offers the system's save destination picker.
+struct ChatAttachmentDownloadButton: View {
+    let attachment: JSONValue
+    @State private var downloading = false
+    @State private var exportURL: URL?
+    @State private var folder: URL?
+    @State private var showingExporter = false
+    @State private var failure: String?
+    var body: some View {
+        Button {
+            Task { await download() }
+        } label: {
+            Group {
+                if downloading { ProgressView().controlSize(.small) }
+                else { Image(systemName: "arrow.down.to.line").font(.system(size: 15, weight: .medium)) }
+            }.frame(width: 38, height: 38).foregroundStyle(VesperTheme.ink)
+                .vesperGlass(in: Circle(), interactive: true)
+        }.buttonStyle(.plain).disabled(downloading)
+            .accessibilityLabel("下载" + (attachment["name"].string.isEmpty ? "附件" : attachment["name"].string))
+            .sheet(isPresented: $showingExporter, onDismiss: cleanup) {
+                if let exportURL { ChatAttachmentExporter(url: exportURL) }
+            }
+            .alert("下载失败", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+                Button("好", role: .cancel) { failure = nil }
+            } message: { Text(failure ?? "") }
+    }
+    @MainActor private func download() async {
+        guard !downloading else { return }
+        downloading = true
+        defer { downloading = false }
+        do {
+            guard let url = URL(string: attachment["url"].string), ChatWebURL.accepts(url) else { throw URLError(.badURL) }
+            let (temporary, response) = try await URLSession.shared.download(from: url)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+            try Task.checkCancellation()
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VesperDownload-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            folder = directory
+            let name = ChatAttachmentDownload.filename(attachment, response: response)
+            let destination = directory.appendingPathComponent(name)
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            exportURL = destination; showingExporter = true
+        } catch {
+            cleanup()
+            failure = "附件暂时无法下载，请稍后重试。\n" + error.localizedDescription
+        }
+    }
+    private func cleanup() {
+        if let folder { try? FileManager.default.removeItem(at: folder) }
+        folder = nil; exportURL = nil
+    }
+}
+
+enum ChatAttachmentDownload {
+    static func filename(_ attachment: JSONValue, response: URLResponse) -> String {
+        let supplied = attachment["name"].string
+        var name = ((supplied.isEmpty ? response.suggestedFilename ?? "attachment" : supplied) as NSString).lastPathComponent
+        if name.isEmpty || name == "." || name == ".." || name == "/" { name = "attachment" }
+        if (name as NSString).pathExtension.isEmpty,
+           let type = UTType(mimeType: attachment["type"].string.isEmpty ? response.mimeType ?? "" : attachment["type"].string),
+           let ext = type.preferredFilenameExtension { name += "." + ext }
+        return name
+    }
+}
+
+private struct ChatAttachmentExporter: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+    }
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+}

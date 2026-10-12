@@ -7,6 +7,7 @@ import UIKit
 struct ChatPhotoStack: View {
     let photos: [JSONValue]
     var alignment: HorizontalAlignment = .leading
+    var showsDownload = false
     @State private var front = 0
     @State private var showingPhoto = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -25,6 +26,9 @@ struct ChatPhotoStack: View {
                 .accessibilityLabel("Photo")
                 .accessibilityAddTraits(.isButton)
             }
+            if showsDownload, photos.indices.contains(front) {
+                ChatAttachmentDownloadButton(attachment: photos[front])
+            }
         }
         .onChange(of: photos) { _, _ in front = 0; showingPhoto = false }
         .sheet(isPresented: $showingPhoto) {
@@ -38,7 +42,12 @@ struct ChatPhotoStack: View {
                 }.tabViewStyle(.page(indexDisplayMode: .automatic))
                     .background(.black).ignoresSafeArea(edges: .bottom)
                     .navigationTitle("\(front + 1) / \(photos.count)").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { Button("Done") { showingPhoto = false } }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Done") { showingPhoto = false } }
+                        ToolbarItem(placement: .primaryAction) {
+                            if photos.indices.contains(front) { ChatAttachmentDownloadButton(attachment: photos[front]) }
+                        }
+                    }
                     .preferredColorScheme(.dark)
             }
         }

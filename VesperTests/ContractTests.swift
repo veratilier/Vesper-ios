@@ -2794,3 +2794,119 @@ extension ChatConnectionRecoveryTests {
         XCTAssertEqual(SendPreparationProtocol.captured.filter { $0.url?.path == "/api/media" }.count, 3)
     }
 }
+
+final class ChatMessageDeletionTests: XCTestCase {
+    private func message() -> JSONValue {
+        .object(["id": .string("reply"), "role": .string("agent"), "content": .string("第一句。\n\n第二句。"), "status": .string("delivered"),
+                 "metadata": .object(["itemId": .string("reply"), "threadId": .string("thread"), "turnId": .string("turn")])])
+    }
+    func testDeletingOneBubblePreservesSiblingAndDoesNotReturnFromSnapshot() throws {
+        let original = message(), parts = ChatBubbles.textParts(original)
+        XCTAssertEqual(parts.count, 2)
+        let updated = try XCTUnwrap(ChatMessageDeletion.removing(parts[0], from: original))
+        XCTAssertEqual(ChatBubbles.textParts(updated).map { $0["content"].string }, ["第二句。"])
+        XCTAssertEqual(ChatBubbles.textParts(updated).first?.id, parts[1].id, "Surviving bubbles must keep their quote/favorite identity")
+        let snapshot: JSONValue = .object(["thread": .object(["id": .string("thread"), "turns": .array([
+            .object(["id": .string("turn"), "status": .string("completed"), "items": .array([
+                .object(["id": .string("reply"), "type": .string("agentMessage"), "text": original["content"]])])])])])])
+        let recovered = ChatRecovery.merge([updated], snapshot: snapshot, conversationID: "room", tombstones: [])
+        XCTAssertEqual(recovered.first?["content"], updated["content"])
+        XCTAssertNil(try ChatMessageDeletion.removing(ChatBubbles.textParts(updated)[0], from: updated))
+    }
+    func testAttachmentDeletionPreservesOtherFilesAndTextAndLastTextLeavesOnlyAttachment() throws {
+        var original = message()
+        let a: JSONValue = .object(["url": .string("https://example.com/a.pdf"), "type": .string("application/pdf")])
+        let b: JSONValue = .object(["url": .string("https://example.com/b.jpg"), "type": .string("image/jpeg")])
+        original["metadata"]["attachments"] = .array([a, b])
+        let part = ChatBubbles.part(original, key: "attachment-0", text: "a.pdf", metadata: .object(["attachments": .array([a])]))
+        var updated = try XCTUnwrap(ChatMessageDeletion.removing(part, from: original))
+        XCTAssertEqual(updated["metadata"]["attachments"].array, [b])
+        XCTAssertEqual(updated["content"], original["content"])
+        for _ in 0..<2 { updated = try XCTUnwrap(ChatMessageDeletion.removing(ChatBubbles.textParts(updated)[0], from: updated)) }
+        XCTAssertTrue(ChatBubbles.textParts(updated).isEmpty)
+        XCTAssertEqual(updated["metadata"]["attachments"].array, [b])
+    }
+    func testCollectedChildDeletionPreservesOtherChildAndRemapsAttachments() throws {
+        let a: JSONValue = .object(["url": .string("https://example.com/a.jpg"), "type": .string("image/jpeg")])
+        let b: JSONValue = .object(["url": .string("https://example.com/b.pdf"), "type": .string("application/pdf")])
+        var parent = message(); parent["role"] = .string("user")
+        parent["metadata"]["attachments"] = .array([a, b])
+        parent["metadata"]["batchMessages"] = .array([
+            .object(["role": .string("user"), "content": .string("one"), "metadata": .object(["batchAttachmentIndices": .array([.number(0)])])]),
+            .object(["role": .string("user"), "content": .string("two"), "metadata": .object(["batchAttachmentIndices": .array([.number(1)])])])])
+        let children = ChatBubbles.batchOriginals(parent)
+        let updated = try XCTUnwrap(ChatMessageDeletion.removing(children[0], from: parent))
+        let kept = try XCTUnwrap(ChatBubbles.batchOriginals(updated).first)
+        XCTAssertEqual(kept["content"].string, "two")
+        XCTAssertEqual(kept["metadata"]["attachments"].array, [b])
+        XCTAssertEqual(updated["metadata"]["attachments"].array, [b])
+    }
+    @MainActor func testOpeningAndReconnectCatchRepliesWrittenBeforeSocketSubscription() async throws {
+        MessageDeletionProtocol.fail = false
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [MessageDeletionProtocol.self]
+        let http = URLSession(configuration: configuration)
+        let api = APIClient(baseURL: "https://delete.fixture", historyURL: "https://delete.fixture", token: UUID().uuidString, requestSession: http)
+        var rereads = 0
+        let chat = ChatSession(socketFactory: { _ in RecoverySocket() }, heartbeatInterval: 1000)
+        let history: JSONValue = .object(["conversation": .object(["id": .string("room"), "codexThreadId": .string("thread")]), "messages": .array([])])
+        chat.configureConnection(api: api, endpoint: "wss://delete.fixture", historyReader: { _ in rereads += 1; return history })
+        defer { chat.disconnect(); http.invalidateAndCancel() }
+        let opened = await chat.open(.object(["id": .string("room")]))
+        XCTAssertTrue(opened)
+        try await chat.connect()
+        XCTAssertEqual(rereads, 1, "Resume must catch replies completed after the initial HTTP read")
+        chat.disconnect()
+        try await chat.connect()
+        XCTAssertEqual(rereads, 2, "A later reconnect must recover replies and deletions made while offline")
+    }
+    @MainActor func testServerFailureKeepsMessageAndSuccessPersistsExactBubble() async throws {
+        MessageDeletionProtocol.fail = true
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [MessageDeletionProtocol.self]
+        let http = URLSession(configuration: configuration)
+        let api = APIClient(baseURL: "https://delete.fixture", historyURL: "https://delete.fixture", token: "fixture", requestSession: http)
+        let outbox = ChatSendOutbox(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let chat = ChatSession(sendOutbox: outbox)
+        chat.configureConnection(api: api, endpoint: "wss://delete.fixture")
+        defer { chat.disconnect(); outbox.stop(); http.invalidateAndCancel() }
+        let original = message(); chat.messages = [original]
+        let part = ChatBubbles.textParts(original)[0]
+        await chat.deleteMessagePart(part)
+        XCTAssertEqual(chat.messages, [original])
+        XCTAssertNotNil(chat.error)
+        MessageDeletionProtocol.fail = false
+        await chat.deleteMessagePart(part)
+        XCTAssertEqual(chat.messages.first?["content"].string, "第二句。")
+        await chat.deleteMessagePart(ChatBubbles.textParts(chat.messages[0])[0])
+        XCTAssertTrue(chat.messages.isEmpty)
+        MessageDeletionProtocol.ackOnly = true
+        defer { MessageDeletionProtocol.ackOnly = false }
+        chat.messages = [original]
+        await chat.deleteMessagePart(part)
+        XCTAssertEqual(chat.messages.first?["content"].string, "第二句。", "Mac acknowledgements require a read-back of the edited message")
+    }
+}
+
+private final class MessageDeletionProtocol: URLProtocol {
+    nonisolated(unsafe) static var fail = false
+    nonisolated(unsafe) static var ackOnly = false
+    nonisolated(unsafe) static var saved: JSONValue = .null
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "delete.fixture" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var bytes = request.httpBody ?? Data()
+        if bytes.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; bytes.append(buffer, count: count) }
+        }
+        let body = (try? JSONDecoder().decode(JSONValue.self, from: bytes)) ?? .null
+        var result: JSONValue = Self.fail ? .object(["error": .string("synthetic offline")]) : (request.httpMethod == "DELETE" ? .object(["ok": .bool(true)]) : .object(["message": body]))
+        if Self.ackOnly, !Self.fail, request.httpMethod == "POST" { Self.saved = body; result = .object(["ok": .bool(true)]) }
+        if request.httpMethod == "GET" {
+            result = .object(["conversation": .object(["id": .string(Self.ackOnly ? request.url!.lastPathComponent : "room"), "codexThreadId": .string("thread")]), "messages": .array(Self.ackOnly ? [Self.saved] : [])])
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.fail ? 503 : 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONEncoder().encode(result)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}

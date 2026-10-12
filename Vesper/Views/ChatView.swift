@@ -862,6 +862,7 @@ struct ChatMessageRow: View, Equatable {
     var onPartDelete: (JSONValue) -> Void = { _ in }
     var onReply: (JSONValue) -> Void = { _ in }
     var onOpenQuote: (JSONValue) -> Void = { _ in }
+    @StateObject private var downloader = ChatAttachmentDownloader()
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -908,15 +909,22 @@ struct ChatMessageRow: View, Equatable {
             .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
             if !user { Spacer(minLength: 42) }
         }
+        .modifier(ChatAttachmentDownloadPresenter(downloader: downloader))
     }
     private func actions(_ part: JSONValue) -> [ChatMessageAction] {
         guard part["status"].string != "streaming" else { return [] }
         let saved = ChatFavorites.existing(part.id, conversationID: chat.conversationID, in: store) != nil
+        let attachments = part["metadata"]["attachments"].array
+        let downloadActions: [ChatMessageAction] = attachments.isEmpty ? [] : [
+            ChatMessageAction(title: downloader.downloading ? "下载中" : "下载", icon: "arrow.down.to.line", run: {
+                Task { await downloader.download(attachments) }
+            })
+        ]
         return [
             ChatMessageAction(title: "复制", icon: "doc.on.doc", run: { copy(part) }),
             ChatMessageAction(title: saved ? "取消收藏" : "收藏", icon: saved ? "bookmark.fill" : "bookmark", run: { onPartFavorite(part) }),
             ChatMessageAction(title: "引用", icon: "arrowshape.turn.up.left", run: { onReply(part) })
-        ] + (busy || saving ? [] : [ChatMessageAction(title: "删除", icon: "trash", run: { onPartDelete(part) })])
+        ] + downloadActions + (busy || saving ? [] : [ChatMessageAction(title: "删除", icon: "trash", run: { onPartDelete(part) })])
     }
     private func copy(_ part: JSONValue) {
         let attachment = part["metadata"]["attachments"].array.first ?? .null
@@ -944,22 +952,16 @@ struct ChatMessageRow: View, Equatable {
                         let photos = photoIndices.map { attachments[$0] }
                         let album = ChatBubbles.part(item, key: "attachment-\(index)", text: photos.count > 1 ? "\(photos.count) Photos" : label,
                                                     metadata: .object(["attachments": .array(photos)]))
-                        ChatPhotoStack(photos: photos, alignment: user ? .trailing : .leading, showsDownload: !user)
+                        ChatPhotoStack(photos: photos, alignment: user ? .trailing : .leading)
                             .modifier(ChatLongPress(id: part.id, actions: { actions(album) }))
                             .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
                     }
                 } else if attachment["type"].string.hasPrefix("audio/") {
-                    HStack(alignment: .center, spacing: 8) {
                     VoiceMessageBar(attachment: attachment, alignment: user ? .trailing : .leading, messageID: part.id, messageActions: { actions(part) }, onTranscript: { text in Task { await chat.saveVoiceTranscript(messageID: item["metadata"]["sourceMessageId"].string.isEmpty ? item.id : item["metadata"]["sourceMessageId"].string, attachmentIndex: item["metadata"]["batchAttachmentIndices"].array.isEmpty ? index : Int(item["metadata"]["batchAttachmentIndices"].array[index].number), text: text) } },
                                     onTranslation: { source, text in Task { await chat.saveVoiceTranslation(messageID: item["metadata"]["sourceMessageId"].string.isEmpty ? item.id : item["metadata"]["sourceMessageId"].string, attachmentIndex: item["metadata"]["batchAttachmentIndices"].array.isEmpty ? index : Int(item["metadata"]["batchAttachmentIndices"].array[index].number), source: source, text: text) } })
-                    if !user { ChatAttachmentDownloadButton(attachment: attachment) }
-                    }
                 } else if let url = URL(string: attachment["url"].string), url.scheme == "https" {
-                    HStack(alignment: .center, spacing: 8) {
                     ChatAttachmentPreviewButton(url: url, name: attachment["name"].string) { ChatFileCard(attachment: attachment) }
                         .modifier(ChatLongPress(id: part.id, actions: { actions(part) }))
-                    if !user { ChatAttachmentDownloadButton(attachment: attachment) }
-                    }
                 }
             }.id(part.id)
         }

@@ -7,7 +7,7 @@ import UIKit
 struct ChatPhotoStack: View {
     let photos: [JSONValue]
     var alignment: HorizontalAlignment = .leading
-    var showsDownload = false
+    @StateObject private var downloader = ChatAttachmentDownloader()
     @State private var front = 0
     @State private var showingPhoto = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,9 +26,6 @@ struct ChatPhotoStack: View {
                 .accessibilityLabel("Photo")
                 .accessibilityAddTraits(.isButton)
             }
-            if showsDownload, photos.indices.contains(front) {
-                ChatAttachmentDownloadButton(attachment: photos[front])
-            }
         }
         .onChange(of: photos) { _, _ in front = 0; showingPhoto = false }
         .sheet(isPresented: $showingPhoto) {
@@ -37,6 +34,11 @@ struct ChatPhotoStack: View {
                     ForEach(Array(photos.enumerated()), id: \.offset) { index, photo in
                         AsyncImage(url: URL(string: photo["url"].string)) { image in image.resizable().scaledToFit() }
                             placeholder: { ProgressView().tint(.white) }
+                            .contextMenu {
+                                Button { Task { await downloader.download([photo]) } } label: {
+                                    Label("下载", systemImage: "arrow.down.to.line")
+                                }.disabled(downloader.downloading)
+                            }
                             .tag(index).accessibilityLabel("Photo \(index + 1) of \(photos.count)")
                     }
                 }.tabViewStyle(.page(indexDisplayMode: .automatic))
@@ -44,12 +46,10 @@ struct ChatPhotoStack: View {
                     .navigationTitle("\(front + 1) / \(photos.count)").navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) { Button("Done") { showingPhoto = false } }
-                        ToolbarItem(placement: .primaryAction) {
-                            if photos.indices.contains(front) { ChatAttachmentDownloadButton(attachment: photos[front]) }
-                        }
                     }
                     .preferredColorScheme(.dark)
             }
+            .modifier(ChatAttachmentDownloadPresenter(downloader: downloader))
         }
     }
 }

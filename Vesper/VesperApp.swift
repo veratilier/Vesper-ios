@@ -412,6 +412,7 @@ struct RootView: View {
             case "desire": navigate(.desire)
             case "notes": navigate(.home)
             case "usage": sidebar = true; Task { await refreshUsage() }
+            case "companion": navigate(.chat)
             case "call": navigate(.chat); if callPresentation.presented { callPresentation.minimized = false }
             default: break
             }

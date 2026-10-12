@@ -6,12 +6,13 @@ import UIKit
 
 private struct CallIslandAvatar: View {
     let size: CGFloat
+    var avatarKey = "activeCallAvatar"
     var body: some View {
         ZStack {
             Circle().fill(Color(red: 0.28, green: 0.27, blue: 0.37))
             Text("R").font(.system(size: size * 0.48, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
-            if let data = UserDefaults(suiteName: "group.com.vera.vesper.native")?.data(forKey: "activeCallAvatar"),
+            if let data = UserDefaults(suiteName: "group.com.vera.vesper.native")?.data(forKey: avatarKey),
                let avatar = UIImage(data: data) {
                 Image(uiImage: avatar).resizable().scaledToFill()
             }
@@ -271,6 +272,71 @@ struct VesperCallWidget: Widget {
         }
     }
 }
+private struct CompanionBanner: View {
+    let attributes: VesperCompanionAttributes
+    private var contents: some View {
+        HStack(spacing: 12) {
+            CallIslandAvatar(size: 42, avatarKey: attributes.avatarKey)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Rowan").font(.system(size: 15, weight: .semibold))
+                Text("在这里，陪着你。").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Link(destination: URL(string: "vesper://companion")!) {
+                Image(systemName: "bubble.left").frame(width: 40, height: 44)
+            }.accessibilityLabel("回到 Vesper")
+            Button(intent: EndVesperCompanionIntent()) {
+                Image(systemName: "xmark").frame(width: 36, height: 44)
+            }.accessibilityLabel("收起陪伴灵动岛")
+        }.buttonStyle(.plain).foregroundStyle(.primary)
+            .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            contents.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))
+        } else {
+            contents.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        }
+    }
+}
+
+struct VesperCompanionWidget: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: VesperCompanionAttributes.self) { context in
+            CompanionBanner(attributes: context.attributes)
+                .activityBackgroundTint(.clear)
+                .activitySystemActionForegroundColor(.primary)
+                .widgetURL(URL(string: "vesper://companion"))
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    CallIslandAvatar(size: 46, avatarKey: context.attributes.avatarKey).padding(.leading, 6)
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Rowan").font(.headline)
+                        Text("在这里，陪着你。").font(.caption).foregroundStyle(.white.opacity(0.7))
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    Button(intent: EndVesperCompanionIntent()) {
+                        Image(systemName: "xmark").font(.system(size: 13, weight: .medium))
+                            .frame(width: 40, height: 44).background(.white.opacity(0.12), in: Circle())
+                    }.buttonStyle(.plain).foregroundStyle(.white).accessibilityLabel("收起陪伴灵动岛")
+                }
+            } compactLeading: {
+                CallIslandAvatar(size: 24, avatarKey: context.attributes.avatarKey)
+            } compactTrailing: {
+                Image(systemName: "moon.stars.fill").font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
+            } minimal: {
+                CallIslandAvatar(size: 22, avatarKey: context.attributes.avatarKey)
+            }
+            .widgetURL(URL(string: "vesper://companion"))
+            .keylineTint(.white.opacity(0.4))
+        }
+    }
+}
+
 @main struct VesperWidgetBundle: WidgetBundle {
-    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperCallWidget() }
+    var body: some Widget { VesperDayWidget(); VesperPictureWidget(); VesperDesireWidget(); VesperUsageWidget(); VesperCallWidget(); VesperCompanionWidget() }
 }

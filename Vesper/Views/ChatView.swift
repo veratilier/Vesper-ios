@@ -988,6 +988,10 @@ struct ChatHeaderMenu: View {
     let onTerminal: () -> Void
     var showsVPSDisplay = false
     @EnvironmentObject private var chat: ChatSession
+    @EnvironmentObject private var store: AppStore
+    #if !targetEnvironment(macCatalyst)
+    @ObservedObject private var companion = CompanionLiveActivity.shared
+    #endif
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
     var body: some View {
         Button { expanded = true } label: {
@@ -1026,8 +1030,28 @@ struct ChatHeaderMenu: View {
                         }.buttonStyle(.plain).disabled(chat.sending || chat.callActive)
                             .accessibilityValue(chat.replyMode == mode ? "已选中" : "")
                     }
+                    #if !targetEnvironment(macCatalyst)
+                    Divider()
+                    Button {
+                        if companion.isActive { Task { await companion.end() } }
+                        else { companion.start(avatar: store.document("profile")["agentAvatar"].string, baseURL: store.baseURL) }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "person.crop.circle").frame(width: 20)
+                            Text(companion.isActive ? "收起陪伴灵动岛" : "挂上陪伴灵动岛")
+                            Spacer(minLength: 0)
+                            if companion.isActive { Image(systemName: "checkmark").font(.caption) }
+                        }.font(.system(size: 14)).frame(minHeight: 38).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(companion.working)
+                        .accessibilityIdentifier("chat-companion-island")
+                    Text(companion.error ?? "退出 App 也能陪着你。单次最长约 8 小时，可回来重新开启。")
+                        .font(.system(size: 11)).foregroundStyle(VesperTheme.muted).fixedSize(horizontal: false, vertical: true)
+                    #endif
                 }.padding(14).frame(width: 230).foregroundStyle(VesperTheme.ink)
                     .presentationCompactAdaptation(.popover)
+                    #if !targetEnvironment(macCatalyst)
+                    .onAppear { companion.refresh() }
+                    #endif
             }
             .accessibilityAction(.escape) { expanded = false }
     }

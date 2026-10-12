@@ -42,3 +42,26 @@ struct VesperCallControlIntent: LiveActivityIntent {
 }
 
 #endif
+
+#if !targetEnvironment(macCatalyst)
+/// Independent of voice calls: a user-started, local companionship session.
+struct VesperCompanionAttributes: ActivityAttributes {
+    struct ContentState: Codable, Hashable {
+        var avatarRevision = 0
+    }
+    var startedAt: Date
+    var avatarKey: String
+}
+
+struct EndVesperCompanionIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "收起陪伴灵动岛"
+    static var openAppWhenRun: Bool = false
+    func perform() async throws -> some IntentResult {
+        for activity in Activity<VesperCompanionAttributes>.activities {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            UserDefaults(suiteName: "group.com.vera.vesper.native")?.removeObject(forKey: activity.attributes.avatarKey)
+        }
+        return .result()
+    }
+}
+#endif

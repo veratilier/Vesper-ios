@@ -29,7 +29,7 @@ private struct ControlsPalettePreview: View {
             Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
             if page != "Settings" { preview.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2) }
             else { Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2) }
-            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+            Text("Studio").tabItem { Label("Studio", systemImage: "books.vertical") }.tag(3)
             if page == "Settings" { preview.tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
             else { Text("Settings").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4) }
         }
@@ -41,7 +41,7 @@ private struct ControlsPalettePreview: View {
         NavigationStack {
                 ZStack {
                     Background()
-                    if page == "Music" { MusicView(showingLyrics: lyrics, observeDock: onDock) }
+                    if page == "Music" { MusicNowPlayingView(showingLyrics: lyrics, observeDock: onDock) }
                     else if page == "Settings" { SettingsView() }
                     else { ScrollView { VesperAppGrid(editing: .constant(false), open: { _ in }).padding(18) } }
                 }.navigationTitle(page).navigationBarTitleDisplayMode(.inline).transparentNavigationTop()
@@ -56,7 +56,7 @@ private struct SurfacePalettePreview: View {
     @AppStorage("vesperPalette") private var paletteName = "white"
     var body: some View {
         NavigationStack {
-            if page == "Connection" { ConnectionView() }
+            if page == "Connection" { Page(title: "Device token") { GlassCard { DeviceTokenEditor() } } }
             else if page == "Voice" { VoiceSettingsView() }
             else if page == "Tools" { ToolsView() }
             else if page == "Data" { DataSettingsView() }
@@ -65,7 +65,6 @@ private struct SurfacePalettePreview: View {
                 Background()
                 if page == "MyMusic" { MusicLibraryView(catalog: catalog, preview: true) }
                 else if page == "Contacts" { NativeChatHome() }
-                else if page == "Notes" { CollectionView(kind: .notes) }
                 else if page == "Alarms" { AlarmsView() }
                 else { GlassCard { VStack(alignment: .leading) { Text("Glass panels").font(.headline); FormField(label: "Search", text: .constant("")); Button("Add") {} } }.padding(20) }
             } }
@@ -125,7 +124,7 @@ private struct JournalLayoutFixture: View {
             }.tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
             NavigationStack { JournalView(date: date, author: author).navigationTitle("Journal").navigationBarTitleDisplayMode(.inline) }
                 .tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
-            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }.tag(3)
+            Text("Studio").tabItem { Label("Studio", systemImage: "books.vertical") }.tag(3)
             Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
         }.environment(\.scenePhase, .active)
     }
@@ -157,7 +156,7 @@ private struct MiniMusicNavigationFixture: View {
             }.tabItem { Label("Home", systemImage: "house") }
             Text("Chat").tabItem { Label("Chat", systemImage: "bubble.left") }
             Text("Collection").tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }
-            Text("Letters").tabItem { Label("Letters", systemImage: "envelope") }
+            Text("Studio").tabItem { Label("Studio", systemImage: "books.vertical") }
             Text("Setting").tabItem { Label("Setting", systemImage: "gearshape") }
         }
     }
@@ -192,6 +191,59 @@ private struct GlassOpacityFixture: View {
 }
 
 @MainActor final class RedesignTests: XCTestCase {
+    func testStudioLayoutRendersOnCompactPhone() async throws {
+        let store = AppStore(); store.token = ""
+        let chat = ChatSession(); chat.configure(store)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        defer { chat.disconnect() }
+        for size in [DynamicTypeSize.large, .accessibility2] {
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: 320, height: 700)
+            window.rootViewController = UIHostingController(rootView: NavigationStack {
+                StudioView().environmentObject(store).environmentObject(chat)
+                    .environment(\.dynamicTypeSize, size)
+            })
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(300))
+            window.rootViewController?.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Studio-compact-\(size)"; attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+
+    func testTokenUsageDetailsFitCompactPhoneInBothPalettes() async throws {
+        let previous = UserDefaults.standard.object(forKey: "vesperPalette")
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let value: JSONValue = .object(["inputTokens": .number(160209), "cachedInputTokens": .number(157312),
+            "outputTokens": .number(55), "reasoningOutputTokens": .number(41), "totalTokens": .number(160264), "complete": .bool(true)])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for palette in ["white", "black"] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let page = ZStack {
+                Background()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("Reply details").font(.title2.weight(.semibold))
+                        GlassCard { ChatTokenUsageDetails(value: value) }
+                        GlassCard { ChatTokenUsageDetails(value: .null) }
+                    }.padding(20)
+                }
+            }.preferredColorScheme(palette == "black" ? .dark : .light)
+            let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+            window.rootViewController = UIHostingController(rootView: page); window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(300)); window.rootViewController?.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Token-usage-" + palette; attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
     func testGlassTransparencyChangesOnlySurface() async throws {
         let suite = "glass-opacity-" + UUID().uuidString
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -502,7 +554,7 @@ private struct GlassOpacityFixture: View {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         for palette in ["white", "blue", "black"] {
             UserDefaults.standard.set(palette, forKey: "vesperPalette")
-            for page in ["MyMusic", "Contacts", "Notes", "Panels", "Alarms", "Connection", "Voice", "Tools", "Data", "Settings"] {
+            for page in ["MyMusic", "Contacts", "Panels", "Alarms", "Connection", "Voice", "Tools", "Data", "Settings"] {
                 store.token = ["Contacts", "Tools"].contains(page) ? "preview-contact-token" : ""
                 store.error = nil; chat.error = nil
                 if page == "Contacts" { chat.configure(store) }
@@ -772,21 +824,6 @@ private struct GlassOpacityFixture: View {
         }
     }
 
-    func testDesktopLetterUsesLatestNonemptyRowanNote() {
-        func note(_ id: String, _ kind: String, _ date: String, _ text: String = "A letter") -> JSONValue {
-            .object(["id": .string(id), "kind": .string(kind), "createdAt": .string(date), "text": .string(text)])
-        }
-        let notes = [note("old", "agent", "2026-10-01T10:00:00Z"),
-                     note("vera", "user", "2026-10-05T10:00:00Z"),
-                     note("new", "agent", "2026-10-04T10:00:00.500Z"),
-                     note("empty", "agent", "2026-10-05T11:00:00Z", "  ")]
-        XCTAssertEqual(HomeDesktopContent.latestRowanNote(notes)?.id, "new")
-        XCTAssertNil(HomeDesktopContent.latestRowanNote([notes[1], notes[3]]))
-        var fallback = note("updated", "agent", "invalid")
-        fallback["updatedAt"] = .string("2026-10-04T12:00:00Z")
-        XCTAssertEqual(HomeDesktopContent.latestRowanNote(notes + [fallback])?.id, "updated")
-    }
-
     func testDesktopDatePicksNextOccurrenceAndSkipsInvalidDates() throws {
         let now = try XCTUnwrap(DateCounter.baseDate(.object(["date": .string("2026-10-05")])))
         func item(_ id: String, _ date: String, _ repeating: Bool = false) -> JSONValue {
@@ -809,7 +846,7 @@ private struct GlassOpacityFixture: View {
         }
     }
 
-    func testDesktopPhoneLayoutsWithLetterAndAccessibilityText() async throws {
+    func testDesktopPhoneLayoutsAndAccessibilityText() async throws {
         let store = AppStore()
         store.token = ""
         store.connected = true
@@ -849,10 +886,125 @@ private struct GlassOpacityFixture: View {
             try await Task.sleep(for: .milliseconds(450))
             host.view.layoutIfNeeded()
             XCTAssertEqual(host.view.bounds.width, width)
-            XCTAssertNotNil(UIImage(named: "LetterPaper"))
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
             let attachment = XCTAttachment(image: image)
             attachment.name = "Home-desktop-" + label; attachment.lifetime = .keepAlways; add(attachment)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+
+    func testCollectedComposerFitsSmallPhone() async throws {
+        let previous = UserDefaults.standard.object(forKey: "chatReplyMode")
+        let palette = UserDefaults.standard.object(forKey: "vesperPalette")
+        URLProtocol.registerClass(DesktopContactProtocol.self)
+        defer {
+            URLProtocol.unregisterClass(DesktopContactProtocol.self)
+            UserDefaults.standard.set(previous, forKey: "chatReplyMode")
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+        }
+        let store = AppStore()
+        store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example/history"; store.token = UUID().uuidString
+        let chat = ChatSession()
+        chat.configure(store); chat.replyMode = .collected
+        defer { chat.disconnect(); try? ChatQueuedStore.save([], api: store.api, conversationID: chat.conversationID) }
+        _ = await chat.send("我还没说完，等一下")
+        _ = await chat.send("第二条补充在这里")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (paletteName, width) in [("white", 320.0), ("black", 393.0)] {
+            UserDefaults.standard.set(paletteName, forKey: "vesperPalette")
+            let page = NavigationStack {
+                ChatView(restoreLatest: false, native: true)
+            }.environmentObject(store).environmentObject(chat).environmentObject(chat.composer)
+            let host = UIHostingController(rootView: page)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: 852)
+            window.rootViewController = host; window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(600)); host.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "Collected-composer-" + paletteName; attachment.lifetime = .keepAlways; add(attachment)
+            XCTAssertEqual(chat.queuedMessages.count, 2)
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+
+    func testProjectDetailHasCompactTabsAndComposer() async throws {
+        let previous = UserDefaults.standard.object(forKey: "vesperPalette")
+        UserDefaults.standard.set("white", forKey: "vesperPalette")
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let project = ChatProject(name: "dd issue", icon: "pawprint")
+        let page = NavigationStack {
+            ChatProjectPage(project: project, tab: .constant("Chats"), draft: .constant(""), canSend: true, newChat: {}, send: {}) {
+                List {
+                    ForEach(["哥哥回应", "R", "一起读书"], id: \.self) { title in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(title).chatNavigationFont(15)
+                            Text("我们接着上次的话题聊。 ").chatNavigationFont(14, weight: .regular).foregroundStyle(VesperTheme.muted)
+                        }.padding(.vertical, 13).listRowSeparator(.hidden).listRowBackground(Color.clear)
+                    }
+                }.listStyle(.plain).scrollContentBackground(.hidden)
+            } sources: { Text("Project files") }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button {} label: { Image(systemName: "line.3.horizontal") } }
+                    ToolbarItem(placement: .topBarTrailing) { Button {} label: { Image(systemName: "ellipsis") } }
+                }
+        }.tint(VesperTheme.ink).preferredColorScheme(.light)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let host = UIHostingController(rootView: page)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(for: .milliseconds(500)); host.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: image); attachment.name = "Project-detail-compact"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    func testChatProjectsRenderOnSmallPhoneAndInDarkMode() async throws {
+        URLProtocol.registerClass(DesktopContactProtocol.self)
+        defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
+        let previous = UserDefaults.standard.object(forKey: "vesperPalette")
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: "vesperPalette") }
+            else { UserDefaults.standard.removeObject(forKey: "vesperPalette") }
+        }
+        let store = AppStore()
+        store.baseURL = "https://desktop-preview.example"; store.historyURL = "https://desktop-preview.example/history"
+        store.token = UUID().uuidString
+        let chat = ChatSession()
+        var organization = ChatOrganization()
+        let project = ChatProject(name: "一起学习", instructions: "Explain terms in Chinese and English.", icon: "pawprint")
+        organization.togglePin(project)
+        organization.projects = [project]
+        organization.move("reading", to: project.id); organization.pinned.insert("main")
+        try organization.save(store.api)
+        defer {
+            chat.disconnect()
+            if let key = ChatOrganization.key(store.api) { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for (width, palette) in [(320, "white"), (393, "black")] {
+            UserDefaults.standard.set(palette, forKey: "vesperPalette")
+            let content = TabView(selection: .constant(1)) {
+                Text("Home").tabItem { Label("Home", systemImage: "house") }.tag(0)
+                NativeChatHome(sideBySide: false).tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+            }.environmentObject(store).environmentObject(chat)
+                .foregroundStyle(VesperTheme.ink).tint(VesperTheme.ink)
+                .preferredColorScheme(palette == "black" ? .dark : .light)
+            let host = UIHostingController(rootView: content)
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: width, height: 852)
+            window.rootViewController = host; window.makeKeyAndVisible()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while chat.conversations.count < 2 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(50)) }
+            XCTAssertEqual(chat.conversations.count, 2)
+            try await Task.sleep(for: .milliseconds(500))
+            host.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Chat-projects-\(width)-\(palette)"; attachment.lifetime = .keepAlways; add(attachment)
             window.isHidden = true; window.rootViewController = nil
         }
     }
@@ -862,6 +1014,7 @@ private struct GlassOpacityFixture: View {
         defer { URLProtocol.unregisterClass(DesktopContactProtocol.self) }
         let store = AppStore()
         store.token = "synthetic-preview-token"
+        store.baseURL = "https://desktop-preview.example"
         store.historyURL = "https://desktop-preview.example/history"
         let chat = ChatSession()
         let host = UIHostingController(rootView: NativeChatHome().environmentObject(store).environmentObject(chat))
@@ -871,7 +1024,11 @@ private struct GlassOpacityFixture: View {
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; chat.disconnect() }
         host.view.frame = window.bounds
-        try await Task.sleep(for: .milliseconds(650))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while chat.conversations.count < 2 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try await Task.sleep(for: .milliseconds(300))
         host.view.layoutIfNeeded()
         XCTAssertEqual(chat.conversations.count, 2)
         XCTAssertNil(chat.error)
@@ -1043,7 +1200,13 @@ private struct GlassOpacityFixture: View {
         let catalog = NativeDeviceTools.addToCatalog(.object(["connections": .array([remote])]))
         XCTAssertEqual(catalog["connections"].array.first, remote)
         XCTAssertEqual(NativeDeviceTools.addToCatalog(catalog), catalog)
-        XCTAssertEqual(catalog["connections"].array.last?["tools"].array.count, 5)
+        let nativeNames = catalog["connections"].array.last?["tools"].array.map { $0["name"].string } ?? []
+        #if targetEnvironment(macCatalyst)
+        XCTAssertFalse(nativeNames.contains("read_native_context"))
+        #else
+        XCTAssertEqual(nativeNames.count, 8)
+        XCTAssertTrue(nativeNames.contains("read_native_context"))
+        #endif
         let args: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_calendar"), "arguments": .object([:])])
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: args), "read_native_calendar")
         var invalid = args; invalid["toolName"] = .string("delete_event")
@@ -1053,6 +1216,12 @@ private struct GlassOpacityFixture: View {
         invalid = args; invalid["connectionId"] = .string("remote")
         XCTAssertNil(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: invalid))
         XCTAssertEqual(try NativeDeviceTools.resolve(name: "read_native_health", arguments: .object([:])), "read_native_health")
+        #if !targetEnvironment(macCatalyst)
+        let context: JSONValue = .object(["connectionId": .string(NativeDeviceTools.connectionID), "toolName": .string("read_native_context"), "arguments": .object(["kind": .string("focus")])])
+        XCTAssertEqual(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: context), "read_native_context")
+        var badContext = context; badContext["arguments"] = .object(["kind": .string("location")])
+        XCTAssertThrowsError(try NativeDeviceTools.resolve(name: "call_configured_mcp_tool", arguments: badContext))
+        #endif
         XCTAssertEqual(try NativeToolCatalog.normalize([NativeDeviceTools.calendarTool, NativeDeviceTools.healthTool]).count, 2)
     }
     func testCurrentLocationKeepsCoordinatesAccuracyAndFreshness() throws {
@@ -1296,13 +1465,194 @@ private struct GlassOpacityFixture: View {
             XCTAssertEqual(timelineInvalidations, 1, "Attachments should still refresh the composer.")
         }
     }
-    func testNoteLayoutRoundTripDoesNotNeedOrChangeBody() {
-        let note: JSONValue = .object(["id": .string("one"), "text": .string("original body"), "kind": .string("agent")])
-        var placement = NotePlacement(note, index: 4)
-        XCTAssertEqual(placement.cardStyle, "letter")
-        placement.x = 460; placement.rotation = -7; placement.cardStyle = "grid"
-        var changed = note; changed["layout"] = placement.json
-        XCTAssertEqual(NotePlacement(changed, index: 0), placement)
-        XCTAssertEqual(changed["text"], note["text"])
+
+    func testLongBookPaginationCoversEveryCharacterWithoutStalling() {
+        let paragraph = "The reader keeps every line, even when a chapter spans many pages.\n"
+        let source = "# First\n" + String(repeating: paragraph, count: 1500)
+            + "# Second\n" + String(repeating: paragraph, count: 1500)
+        let started = Date()
+        let result = ReadingLayout.pages(in: source, width: 320, height: 560)
+        let original = source as NSString
+        XCTAssertGreaterThan(result.pages.count, 100)
+        XCTAssertEqual(result.pages.first?.range.location, 0)
+        XCTAssertEqual(result.pages.last.map { NSMaxRange($0.range) }, original.length)
+        for pair in zip(result.pages, result.pages.dropFirst()) {
+            XCTAssertEqual(NSMaxRange(pair.0.range), pair.1.range.location)
+        }
+        XCTAssertEqual(result.pages.map(\.text).joined(), source)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 15)
+    }
+
+    func testReadingPaginationRunsOffMainAndKeepsText() async {
+        let source = "# Chapter 1\n" + String(repeating: "正文和 emoji 🙂。\n", count: 500)
+        let result = await Task.detached {
+            let layout = ReadingLayout.pages(in: source, width: 320, height: 560)
+            return layout.pages.map(\.text).joined()
+        }.value
+        XCTAssertEqual(result, source)
+    }
+
+    func testReadingHighlightCanBecomeAnEditableNoteWithoutLosingItsRange() {
+        let span = NSRange(location: 124, length: 18)
+        let highlight = ReadingAnnotation.create(range: span, quote: "selected passage", text: "", page: 3)
+        XCTAssertTrue(ReadingAnnotation.isHighlight(highlight))
+        XCTAssertEqual(highlight["rangeStart"].number, 124)
+        XCTAssertEqual(highlight["rangeLength"].number, 18)
+        let edited = ReadingAnnotation.edited(highlight, text: " My thought ")
+        XCTAssertFalse(ReadingAnnotation.isHighlight(edited))
+        XCTAssertEqual(edited["text"].string, "My thought")
+        XCTAssertEqual(edited.id, highlight.id)
+        XCTAssertEqual(edited["rangeStart"], highlight["rangeStart"])
+        XCTAssertEqual(edited["quote"], highlight["quote"])
+        XCTAssertTrue(ReadingAnnotation.isHighlight(ReadingAnnotation.edited(edited, text: "")))
+    }
+
+    func testReadingNoteSheetFitsCompactPhone() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let store = AppStore(); store.token = ""
+        let range = NSRange(location: 12, length: 20)
+        let quote = "把喜欢的段落留下来，也可以写下当时的想法。"
+        let notes = [
+            ReadingAnnotation.create(range: range, quote: quote, text: "", page: 2),
+            ReadingAnnotation.create(range: range, quote: quote, text: "这句话让我想起了昨天。", page: 2)
+        ]
+        let sheet = ReadingNoteSheet(store: store, target: ReadingNoteTarget(range: range, quote: quote),
+                                     bookID: "preview", bookTitle: "Preview", notes: notes,
+                                     draft: .constant(""), saving: false, save: {}, highlight: {}, edit: { _, _ in true })
+        for size in [CGSize(width: 393, height: 852), CGSize(width: 320, height: 720)] {
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(origin: .zero, size: size)
+            window.rootViewController = UIHostingController(rootView: sheet)
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(350))
+            window.rootViewController?.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image {
+                _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Reading-note-\(Int(size.width))"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+    }
+
+    func testCompactChatBubblesFitPhoneScreen() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let store = AppStore(); store.token = ""
+        let chat = ChatSession()
+        func row(_ id: String, _ role: String, _ content: String) -> ChatMessageRow {
+            let message: JSONValue = .object(["id": .string(id), "role": .string(role), "content": .string(content),
+                                              "createdAt": .string("2026-10-27T01:00:00Z")])
+            return ChatMessageRow(message: message, mediaMessages: [], activities: [], liveEvents: [],
+                                  isLive: false, replyIsRunning: false, favorite: false, saving: false,
+                                  busy: false, highlighted: false, onFavorite: {}, onRemember: {}, onDelete: {},
+                                  store: store, chat: chat, conversationID: "preview")
+        }
+        let page = ZStack {
+            Background()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    row("1", "user", "今天怎么样？")
+                    row("2", "assistant", "挺好的，刚刚把书读完。")
+                    row("3", "user", "哪一本？")
+                    row("4", "assistant", "你上次提到的那本。我划了几句喜欢的话，晚点发给你。")
+                    row("5", "user", "好呀")
+                    row("6", "assistant", "嗯。窗外下雨了，读到最后一页的时候刚好停。")
+                    row("7", "user", "这句我喜欢。")
+                    row("8", "assistant", "那就替你留着。")
+                }.padding(.horizontal, 20).padding(.top, 62)
+            }
+        }.environmentObject(ChatActionMenu())
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = UIHostingController(rootView: page)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(for: .milliseconds(450))
+        window.rootViewController?.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image {
+            _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Compact-chat-bubbles"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testMemoryIndexTypographyOnPhone() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        func record(_ id: String, title: String = "", summary: String) -> JSONValue {
+            .object(["id": .string(id), "kind": .string("preference"), "active": .number(1),
+                     "details": .object(["title": .string(title), "summary": .string(summary)]),
+                     "body": .string(summary)])
+        }
+        let records = [
+            record("1", title: "不再让 Vera 独自维护关系", summary: "Ash 承担主动靠近与找回连续性的责任，不再让 Vera 教、修、追。"),
+            record("2", summary: "Vera 挑选每日引言时偏好虚无主义、存在主义、希腊神话和女性主义方向，较不喜欢昂扬的社会宣言式句子。"),
+            record("3", summary: "Vera 最爱吃肥牛，喜欢吃辣，尤其喜欢火锅；麻辣火锅里肥牛是她明确说最爱的食材。"),
+            record("4", title: "喜欢安静的雨夜", summary: "聊天时提到窗外下雨，想把这段时间留下来。")
+        ]
+        let page = ZStack {
+            Background()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(records.enumerated()), id: \.element.id) { index, row in
+                        LibraryPreviewCard(row: row, featured: index == 0)
+                    }
+                }.padding(.horizontal, 20).padding(.top, 8)
+            }.background(VesperTheme.surface.opacity(0.66))
+        }.foregroundStyle(VesperTheme.ink)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = UIHostingController(rootView: page)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(for: .milliseconds(400))
+        window.rootViewController?.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image {
+            _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Memory-index-typography"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testChatBubbleColorsInAppearancePreview() async throws {
+        XCTAssertNil(ChatBubbleAppearance.color("automatic"))
+        let blue = try XCTUnwrap(ChatBubbleAppearance.color("#6B9FC4"))
+        XCTAssertEqual(ChatBubbleAppearance.hex(blue), "#6B9FC4")
+        let suite = "bubble-colors-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("blue", forKey: "vesperPalette")
+        defaults.set("#6B9FC4", forKey: ChatBubbleAppearance.outgoingKey)
+        defaults.set("#E6A4BB", forKey: ChatBubbleAppearance.incomingKey)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = UIHostingController(rootView: NavigationStack {
+            AppearanceSettingsView()
+        }.defaultAppStorage(defaults))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(for: .milliseconds(500))
+        window.rootViewController?.view.layoutIfNeeded()
+        func verticalScroll(in view: UIView) -> UIScrollView? {
+            if let scroll = view as? UIScrollView, scroll.contentSize.height > scroll.bounds.height + 100 { return scroll }
+            return view.subviews.lazy.compactMap { verticalScroll(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(verticalScroll(in: window))
+        scroll.setContentOffset(CGPoint(x: 0, y: min(760, scroll.contentSize.height - scroll.bounds.height)), animated: false)
+        try await Task.sleep(for: .milliseconds(300))
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image {
+            _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Chat-bubble-colors-settings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

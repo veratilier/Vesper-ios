@@ -153,6 +153,7 @@ import EventKitUI
 }
 
 struct SystemPlannerView: View {
+    @EnvironmentObject private var store: AppStore
     var reminderOnly: Bool? = nil
     @Environment(\.scenePhase) private var phase
     @StateObject private var planner = SystemPlanner.shared
@@ -245,7 +246,7 @@ struct SystemPlannerView: View {
                 Spacer()
                 Text(PermissionLabels.calendar(entity)).font(.caption).foregroundStyle(VesperTheme.muted)
             }
-            Text(reminders ? "Rowan can create tasks in your default Apple Reminders list when you ask." : "Rowan can read the next seven days and create events in your default calendar when you ask.")
+            Text(reminders ? "\(store.agentDisplayName) can create tasks in your default Apple Reminders list when you ask." : "\(store.agentDisplayName) can read the next seven days and create events in your default calendar when you ask.")
                 .foregroundStyle(VesperTheme.muted)
             if status == .notDetermined || status == .writeOnly {
                 Button("Allow access") { Task { await planner.authorize(reminders: reminders) } }.buttonStyle(PermissionActionStyle())

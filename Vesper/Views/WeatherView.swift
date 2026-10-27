@@ -213,6 +213,7 @@ enum WeatherService {
 }
 
 struct WeatherPermissionsView: View {
+    @EnvironmentObject private var store: AppStore
     @ObservedObject private var weather = WeatherController.shared
     @Environment(\.scenePhase) private var phase
     var body: some View {
@@ -223,7 +224,7 @@ struct WeatherPermissionsView: View {
                     Spacer()
                     Text(accessStatus).font(.caption).foregroundStyle(VesperTheme.muted)
                 }
-                Text("Show local weather and let Rowan read a fresh location when you ask in chat.").foregroundStyle(VesperTheme.muted)
+                Text("Show local weather and let \(store.agentDisplayName) read a fresh location when you ask in chat.").foregroundStyle(VesperTheme.muted)
                 if weather.authorization == .notDetermined {
                     Button("Allow location") { weather.setEnabled(true) }.buttonStyle(PermissionActionStyle())
                 } else {

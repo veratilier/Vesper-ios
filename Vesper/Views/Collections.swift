@@ -21,42 +21,82 @@ private struct DatePhotoBackground: View {
 }
 
 struct CollectionView: View {
-    enum Kind: String { case notes = "Notes", reminders = "Reminders", dates = "Dates"
-        var key: String { self == .notes ? "notes" : self == .reminders ? "todos" : "anniversaries" }
+    enum Kind: String { case reminders = "Reminders", dates = "Dates"
+        var key: String { self == .reminders ? "todos" : "anniversaries" }
     }
     let kind: Kind
     @EnvironmentObject private var store: AppStore
     @State private var editing: JSONValue?
     @State private var pendingDelete: JSONValue?
+    @State private var showCompleted = true
     var body: some View {
         Group {
         if kind == .dates { DatesBoard() } else {
-        Page(title: kind.rawValue) {
-            Button { editing = .object(["id": .string(UUID().uuidString), "createdAt": .string(isoNow())]) } label: { Label("Add \(kind == .notes ? "note" : kind == .dates ? "date" : "reminder")", systemImage: "plus") }
-            if store.document(kind.key).array.isEmpty { EmptyCard(title: "Your space", message: "Add something you want to keep here.") }
-            ForEach(store.document(kind.key).array) { item in
-                CollectionCard(paper: kind == .notes) {
-                    HStack(alignment: .top, spacing: 12) {
-                        if kind == .reminders {
-                            Button { Task { var next = item; next["done"] = .bool(!item["done"].bool); _ = await store.upsert(kind.key, item: next) } } label: { Image(systemName: item["done"].bool ? "checkmark.circle.fill" : "circle") }.disabled(store.saving)
-                        }
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(item[kind == .notes ? "text" : "title"].string).font(.subheadline).textSelection(.enabled)
-                                .strikethrough(kind == .reminders && item["done"].bool)
-                            if kind == .dates { Text(dateCaption(item)).font(.title2); Text(item["date"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
-                            if kind == .reminders && !item["due"].string.isEmpty { Text(item["due"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
-                            if kind == .notes { Text(item["kind"].string == "agent" ? "Rowan" : "Vera").font(.caption).foregroundStyle(VesperTheme.muted) }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        Menu { Button("Edit") { editing = item }; Button("Delete", role: .destructive) { pendingDelete = item } } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Item actions")
-                    }
-                }
-            }
-        }
+        remindersBoard
         } }.refreshable { await store.refresh() }
         .sheet(item: $editing) { item in CollectionEditor(kind: kind, item: item) }
         .confirmationDialog("Delete this item?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible) {
             Button("Delete", role: .destructive) { if let item = pendingDelete { Task { _ = await store.remove(kind.key, id: item.id); pendingDelete = nil } } }
         }
+    }
+    private var remindersBoard: some View {
+        let items = store.document("todos").array
+        let pending = items.filter { !$0["done"].bool }
+        let completed = items.filter { $0["done"].bool }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Reminders").font(.system(size: 32, weight: .bold))
+                    Spacer()
+                    Text("\(pending.count)").font(.system(size: 28, weight: .bold)).foregroundStyle(VesperTheme.muted)
+                }
+                if items.isEmpty {
+                    EmptyCard(title: "No reminders", message: "Add a reminder to keep track of something.")
+                } else {
+                    if !pending.isEmpty { reminderSection(pending) }
+                    if !completed.isEmpty {
+                        Button { withAnimation { showCompleted.toggle() } } label: {
+                            HStack {
+                                Text("Completed · \(completed.count)").font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Image(systemName: showCompleted ? "chevron.up" : "chevron.down").font(.caption.weight(.semibold))
+                            }.foregroundStyle(VesperTheme.muted)
+                        }.buttonStyle(.plain)
+                        if showCompleted { reminderSection(completed) }
+                    }
+                }
+                Button { editing = .object(["id": .string(UUID().uuidString), "createdAt": .string(isoNow())]) } label: {
+                    Label("New Reminder", systemImage: "plus.circle.fill")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(VesperTheme.accent)
+                }.buttonStyle(.plain).padding(.vertical, 4)
+            }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 32)
+        }
+    }
+    private func reminderSection(_ items: [JSONValue]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                HStack(alignment: .top, spacing: 12) {
+                    Button {
+                        Task { var next = item; next["done"] = .bool(!item["done"].bool); _ = await store.upsert("todos", item: next) }
+                    } label: {
+                        Image(systemName: item["done"].bool ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 23)).foregroundStyle(item["done"].bool ? VesperTheme.muted : VesperTheme.accent)
+                            .frame(width: 32, height: 40)
+                    }.buttonStyle(.plain).disabled(store.saving).accessibilityLabel(item["done"].bool ? "Mark incomplete" : "Complete reminder")
+                    Button { editing = item } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item["title"].string).font(.body).strikethrough(item["done"].bool)
+                                .foregroundStyle(item["done"].bool ? VesperTheme.muted : VesperTheme.ink)
+                            if !item["due"].string.isEmpty { Text(item["due"].string).font(.caption).foregroundStyle(VesperTheme.muted) }
+                        }.frame(maxWidth: .infinity, minHeight: 40, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    Menu { Button("Edit") { editing = item }; Button("Delete", role: .destructive) { pendingDelete = item } } label: {
+                        Image(systemName: "ellipsis").frame(width: 32, height: 40)
+                    }.accessibilityLabel("Reminder actions")
+                }.padding(.horizontal, 12).padding(.vertical, 6)
+                if index < items.count - 1 { Divider().padding(.leading, 56) }
+            }
+        }.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
     private func dateCaption(_ item: JSONValue) -> String {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
@@ -82,60 +122,44 @@ struct CollectionEditor: View {
     @State private var validation = ""
     var body: some View {
         EditorSheet(title: kind.rawValue, busy: store.saving, save: save) {
-            FormField(label: kind == .notes ? "Note" : "Title", text: $text, multiline: kind == .notes)
+            FormField(label: "Title", text: $text)
             if kind == .dates { DatePicker("Date", selection: $date, displayedComponents: .date); Toggle("Repeat every year", isOn: $repeats) }
             if kind == .reminders { FormField(label: "Due date or time (optional)", text: $due) }
             if !validation.isEmpty { Text(validation).foregroundStyle(.red) }
         }.onAppear {
-            text = item[kind == .notes ? "text" : "title"].string; due = item["due"].string; repeats = item["repeats"].bool
+            text = item["title"].string; due = item["due"].string; repeats = item["repeats"].bool
             let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; date = f.date(from: item["date"].string) ?? .now
         }
     }
     private func save() {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { validation = "Please enter some text."; return }
         var next = item
-        next[kind == .notes ? "text" : "title"] = .string(text)
-        if kind == .notes { if next["kind"] == .null { next["kind"] = .string("user") }; if next["tone"] == .null { next["tone"] = .string("blue") } }
+        next["title"] = .string(text)
         if kind == .reminders { next["due"] = .string(due); if next["done"] == .null { next["done"] = .bool(false) }; if next["tag"] == .null { next["tag"] = .string("") } }
         if kind == .dates { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; next["date"] = .string(f.string(from: date)); next["repeats"] = .bool(repeats) }
         Task { if await store.upsert(kind.key, item: next) { dismiss() } else { validation = store.error ?? "Save failed" } }
     }
 }
 
-private struct CollectionCard<Content: View>: View {
-    var paper: Bool
-    @ViewBuilder var content: Content
-    var body: some View {
-        if paper {
-            content.padding(.horizontal, 20).padding(.top, 32).padding(.bottom, 24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    Rectangle().fill(LinearGradient(colors: [Color(red: 0.98, green: 0.97, blue: 0.91), Color(red: 0.94, green: 0.93, blue: 0.85)], startPoint: .top, endPoint: .bottom))
-                        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.30)).frame(height: 22) }
-                        .overlay { Canvas { context, size in
-                            for i in 0..<180 {
-                                let x = CGFloat((i * 53) % 997) / 997 * size.width
-                                let y = CGFloat((i * 97) % 991) / 991 * size.height
-                                context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.brown.opacity(0.07)))
-                            }
-                        }.allowsHitTesting(false) }
-                        .shadow(color: .black.opacity(0.12), radius: 4, x: 1, y: 5)
-                }
-        } else { GlassCard { content } }
-    }
-}
-
 /// Both the conversation calendar and journal use Beijing calendar days.
 enum JournalDates {
+    private static let formatterLock = NSLock()
+    private static var formatters: [String: DateFormatter] = [:]
     static var calendar: Calendar {
         var value = Calendar(identifier: .gregorian)
         value.timeZone = TimeZone(identifier: "Asia/Shanghai")!
         return value
     }
     static func label(_ date: Date, format: String = "yyyy-MM-dd") -> String {
-        let formatter = DateFormatter(); formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = format; return formatter.string(from: date)
+        formatterLock.lock(); defer { formatterLock.unlock() }
+        let formatter: DateFormatter
+        if let existing = formatters[format] { formatter = existing }
+        else {
+            formatter = DateFormatter(); formatter.calendar = calendar
+            formatter.locale = Locale(identifier: "en_US_POSIX" ); formatter.timeZone = calendar.timeZone
+            formatter.dateFormat = format; formatters[format] = formatter
+        }
+        return formatter.string(from: date)
     }
     static func firstDay(_ date: Date) -> Date { calendar.date(from: calendar.dateComponents([.year, .month], from: date))! }
     static func days(_ date: Date) -> [Date] {
@@ -147,6 +171,11 @@ enum JournalDates {
         let day = min(calendar.component(.day, from: date), calendar.range(of: .day, in: .month, for: month)!.count)
         return calendar.date(byAdding: .day, value: day - 1, to: month)!
     }
+    static func weekDays(_ date: Date) -> [Date] {
+        let offset = (calendar.component(.weekday, from: date) + 5) % 7
+        let monday = calendar.date(byAdding: .day, value: -offset, to: calendar.startOfDay(for: date))!
+        return (0..<7).map { calendar.date(byAdding: .day, value: $0, to: monday)! }
+    }
     static func heatLevel(_ count: Int) -> Int { count <= 0 ? 0 : count < 10 ? 1 : count < 30 ? 2 : count < 60 ? 3 : 4 }
 }
 
@@ -154,53 +183,94 @@ struct ChatActivityHeatmap: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("vesperPalette") private var palette = "blue"
     @Environment(\.scenePhase) private var phase
+    var compact = false
+    @State private var expanded = false
     var refreshID = 0
+    var client: APIClient? = nil
     @State private var month = Date()
     @State private var selected: String?
-    @State private var activity: JSONValue = .null
+    @State private var activities: [String: JSONValue] = [:]
+    @State private var loadedScope = ""
+    @State private var forward = true
     @State private var activityError = false
     private var monthKey: String { JournalDates.label(month, format: "yyyy-MM") }
-    private var ready: Bool { activity["month"].string == monthKey && !activityError }
+    private var weekMode: Bool { compact && !expanded }
+    private var visibleDays: [Date] { weekMode ? JournalDates.weekDays(month) : days }
+    private var visibleMonths: [String] { Array(Set(visibleDays.map { JournalDates.label($0, format: "yyyy-MM") })).sorted() }
+    private var pageKey: String { weekMode ? JournalDates.label(visibleDays[0]) : monthKey }
+    private var apiScope: String { [activityAPI.baseURL, activityAPI.historyURL, activityAPI.token].joined(separator: "\n") }
+    private var ready: Bool { visibleMonths.allSatisfy { monthReady($0) } }
+    private func monthReady(_ key: String) -> Bool { loadedScope == apiScope && activities[key]?["month"].string == key }
+    private func stats(_ key: String) -> JSONValue { activities[String(key.prefix(7))]?["days"][key] ?? .null }
     private var days: [Date] { JournalDates.days(month) }
     private var offset: Int { JournalDates.mondayOffset(month) }
-    private var refreshKey: String { [monthKey, store.historyURL, store.token, String(refreshID), String(phase == .active)].joined(separator: "\n") }
+    private var activityAPI: APIClient { client ?? store.api }
+    private var refreshKey: String { [visibleMonths.joined(separator: ","), apiScope, String(refreshID), String(phase == .active)].joined(separator: "\n") }
     private func heatColor(_ level: Int) -> Color {
         // Stable dark-mode cell surfaces keep custom wallpapers from washing out the numbers.
         if palette == "black" { return Color(white: [0.12, 0.25, 0.38, 0.68, 0.84][level]) }
         return VesperTheme.accent.opacity([0.05, 0.22, 0.40, 0.62, 0.85][level])
     }
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: compact ? 10 : 22) {
             #if targetEnvironment(macCatalyst)
             VStack(alignment: .leading, spacing: 8) {
-                Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
+                Text("Our days").font(VesperTheme.title(26))
                 activityMonthControls
             }
             #else
             HStack(spacing: 8) {
-                Text("Our days").font(.system(size: 23, weight: .semibold, design: .serif)).italic()
+                Text("Our days").font(VesperTheme.title(26))
                 Spacer(minLength: 4)
                 activityMonthControls
             }
             #endif
-            calendarGrid
-            if store.token.isEmpty {
+            ZStack {
+                Group {
+                    if weekMode { compactWeek }
+                    else { calendarGrid }
+                }
+                .id(pageKey + String(weekMode))
+                .transition(.asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                                        removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+            }
+            .clipped()
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
+                let x = value.translation.width, y = value.translation.height
+                guard abs(x) > abs(y) * 1.5,
+                      abs(x) > 44 || abs(value.predictedEndTranslation.width) > 100 else { return }
+                movePeriod(x < 0 ? 1 : -1)
+            })
+            .accessibilityAction(named: weekMode ? "Previous week" : "Previous month") { movePeriod(-1) }
+            .accessibilityAction(named: weekMode ? "Next week" : "Next month") { movePeriod(1) }
+            if compact {
+                Button { withAnimation { expanded.toggle() } } label: {
+                    HStack {
+                        Spacer()
+                        Text(expanded ? "收起月历" : "展开月历")
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    }.font(.system(size: 10)).frame(minHeight: 28)
+                }
+            }
+            if activityAPI.token.isEmpty {
                 Text("Connect Vesper to see your days together.").font(.caption).foregroundStyle(VesperTheme.muted)
             } else if activityError {
                 Button { Task { await loadActivity() } } label: { Label("Chat statistics unavailable · Retry", systemImage: "exclamationmark.circle") }.font(.caption)
             } else if !ready { ProgressView().controlSize(.small).accessibilityLabel("Loading chat statistics") }
-        }.buttonStyle(.plain).padding(.horizontal, 18).padding(.vertical, 24)
+        }.buttonStyle(.plain).padding(.horizontal, 18).padding(.vertical, compact ? 12 : 24)
             .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
             .accessibilityIdentifier("chat-activity-heatmap")
             .task(id: refreshKey) {
-                guard phase == .active, !store.token.isEmpty else { return }; await loadActivity()
+                guard phase == .active, !activityAPI.token.isEmpty else { return }; await loadActivity()
             }
             .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 14) {
-                        let stats = activity["days"][selected ?? ""]
+                        let stats = stats(selected ?? "")
+                        let ready = monthReady(String((selected ?? "").prefix(7)))
                         Text(ready ? "\(Int(stats["total"].number)) chat messages" : "Counts unavailable").font(.title3)
-                        Text(ready ? "Vera \(Int(stats["user"].number)) · Rowan \(Int(stats["agent"].number))" : "Vera — · Rowan —")
+                        Text(ready ? "Vera \(Int(stats["user"].number)) · \(store.agentDisplayName) \(Int(stats["agent"].number))" : "Vera — · \(store.agentDisplayName) —")
                         Text(ready ? "Autonomous notes: \(Int(stats["autonomous"].number))" : "Autonomous notes: —").foregroundStyle(VesperTheme.muted)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
                         .navigationTitle(selected ?? "Our days").navigationBarTitleDisplayMode(.inline)
@@ -208,11 +278,19 @@ struct ChatActivityHeatmap: View {
                 }.presentationDetents([.height(280)]).presentationDragIndicator(.visible)
             }
     }
+    private var compactWeek: some View {
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 6) {
+            ForEach(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], id: \.self) {
+                Text($0).font(.system(size: 8)).foregroundStyle(VesperTheme.muted)
+            }
+            ForEach(JournalDates.weekDays(month), id: \.self) { date in dayCell(date) }
+        }
+    }
     private var activityMonthControls: some View {
         HStack(spacing: 8) {
-            Button { moveMonth(-1) } label: { Image(systemName: "chevron.left").frame(width: 30, height: 36) }.accessibilityLabel("Previous activity month")
+            Button { movePeriod(-1) } label: { Image(systemName: "chevron.left").frame(width: 30, height: 36) }.accessibilityLabel(weekMode ? "Previous activity week" : "Previous activity month")
             Text(JournalDates.label(month, format: "MMMM yyyy")).font(.system(size: 15, design: .serif)).italic().lineLimit(1).minimumScaleFactor(0.8)
-            Button { moveMonth(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel("Next activity month")
+            Button { movePeriod(1) } label: { Image(systemName: "chevron.right").frame(width: 30, height: 36) }.accessibilityLabel(weekMode ? "Next activity week" : "Next activity month")
         }
     }
     private var cellCount: Int { ((offset + days.count + 6) / 7) * 7 }
@@ -230,12 +308,13 @@ struct ChatActivityHeatmap: View {
     }
     private func dayCell(_ date: Date) -> some View {
         let key = JournalDates.label(date)
-        let count = Int(activity["days"][key]["total"].number)
+        let count = Int(stats(key)["total"].number)
+        let ready = monthReady(JournalDates.label(date, format: "yyyy-MM"))
         let level = ready ? JournalDates.heatLevel(count) : 0
         let darkModeInk = level >= 3 ? Color(white: 0.10) : Color(white: 0.98)
         let future = key > JournalDates.label(.now)
         return Button { selected = key } label: {
-            RoundedRectangle(cornerRadius: 8).fill(heatColor(level))
+            RoundedRectangle(cornerRadius: compact ? 18 : 8).fill(heatColor(level))
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
                     VStack(spacing: 2) {
@@ -246,19 +325,37 @@ struct ChatActivityHeatmap: View {
                             .foregroundStyle(palette == "black" ? darkModeInk : VesperTheme.muted)
                     }
                 }
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(key == JournalDates.label(.now) ? VesperTheme.muted.opacity(0.7) : .white.opacity(0.25), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: compact ? 18 : 8).stroke(key == JournalDates.label(.now) ? VesperTheme.muted.opacity(0.7) : .white.opacity(0.25), lineWidth: 1))
         }.accessibilityLabel("\(key), \(ready ? String(count) : "unknown") chat messages")
     }
-    private func moveMonth(_ amount: Int) { selected = nil; month = JournalDates.moveMonth(month, by: amount); activity = .null; activityError = false }
+    private func movePeriod(_ amount: Int) {
+        selected = nil
+        forward = amount > 0
+        withAnimation(.easeInOut(duration: 0.22)) {
+            month = weekMode
+                ? JournalDates.calendar.date(byAdding: .day, value: amount * 7, to: month)!
+                : JournalDates.moveMonth(month, by: amount)
+        }
+        activityError = false
+    }
     private func loadActivity() async {
-        let requested = monthKey
+        let requested = visibleMonths
+        let scope = apiScope
+        let api = activityAPI
+        if loadedScope != scope { activities = [:]; loadedScope = scope }
+        activityError = false
         do {
-            let result = try await store.api.request("/activity?month=\(requested)", history: true)
-            try Task.checkCancellation()
-            guard result["month"].string == requested, case .object = result["days"] else { throw ServiceError(message: "Invalid activity response") }
-            guard requested == monthKey else { return }; activity = result; activityError = false
+            var results: [String: JSONValue] = [:]
+            for key in requested {
+                let result = try await api.request("/activity?month=\(key)", history: true)
+                try Task.checkCancellation()
+                guard result["month"].string == key, case .object = result["days"] else { throw ServiceError(message: "Invalid activity response") }
+                results[key] = result
+            }
+            guard requested == visibleMonths, scope == apiScope else { return }
+            activities = results; activityError = false
         } catch is CancellationError { }
-        catch { if requested == monthKey { activityError = true } }
+        catch { if requested == visibleMonths, scope == apiScope { activityError = true } }
     }
 }
 
@@ -420,7 +517,7 @@ private struct DatesBoard: View {
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             Text(DateCounter.count(item).map(String.init) ?? "—").font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1).frame(width: 78).frame(maxHeight: .infinity).background(DateCounter.color(item))
             Text("天").font(.subheadline).frame(width: 34).frame(maxHeight: .infinity).background(DateCounter.color(item).opacity(0.85))
-        }.foregroundStyle(VesperTheme.ink).frame(height: 60).background(VesperTheme.surface)
+        }.foregroundStyle(VesperTheme.ink).frame(height: 60).vesperGlass(in: RoundedRectangle(cornerRadius: 8))
             .clipShape(RoundedRectangle(cornerRadius: 8)).shadow(color: .black.opacity(0.05), radius: 2, y: 2)
     }
 }
@@ -562,100 +659,5 @@ private struct DateEditor: View {
             do { try await center.add(request) } catch { validation = "日期已保存，但提醒未安排：" + error.localizedDescription; return }
         } else { center.removePendingNotificationRequests(withIdentifiers: ["date-" + item.id]) }
         dismiss()
-    }
-}
-
-struct JottingsView: View {
-    @EnvironmentObject private var store: AppStore
-    @Environment(\.scenePhase) private var phase
-    @State private var entries: [JSONValue] = []
-    @State private var cursor = ""
-    @State private var loading = false
-    @State private var error = ""
-    @State private var adding = false
-    var body: some View {
-        Page(title: "Sketch", subtitle: "路过的念头，也可以停在这里。") {
-            Button { adding = true } label: { Label("写一点", systemImage: "plus") }
-            if entries.isEmpty && !loading && error.isEmpty { EmptyCard(title: "还没有 Sketch", message: "零散想法、短文、想象，不必是一篇日记，也不必写给谁。") }
-            ForEach(entries) { entry in
-                NavigationLink { JottingTextView(entry: entry) } label: {
-                    GlassCard { VStack(alignment: .leading, spacing: 12) {
-                        if !entry["title"].string.isEmpty { Text(entry["title"].string).font(.headline) }
-                        Text(entry["text"].string).font(.system(size: 17, design: .serif)).lineSpacing(5).lineLimit(6)
-                        HStack { Text(entry["author"].string); Spacer(); Text(AlbumPresentation.date(entry["createdAt"].string)?.formatted(date: .abbreviated, time: .shortened) ?? "") }.font(.caption).foregroundStyle(VesperTheme.muted)
-                    }.frame(maxWidth: .infinity, alignment: .leading) }
-                }.buttonStyle(.plain)
-            }
-            if loading { ProgressView() }
-            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red); Button("重试") { Task { await load(reset: true) } } }
-            if !cursor.isEmpty { Button("更早的 Sketch") { Task { await load(reset: false) } }.disabled(loading) }
-        }.task { await load(reset: true) }.refreshable { await load(reset: true) }
-        .onChange(of: phase) { _, value in if value == .active { Task { await load(reset: true) } } }
-        .sheet(isPresented: $adding, onDismiss: { Task { await load(reset: true) } }) { JottingEditor() }
-    }
-    private func load(reset: Bool) async {
-        guard !loading else { return }; loading = true; defer { loading = false }
-        do {
-            var query = URLComponents(); query.queryItems = [URLQueryItem(name: "limit", value: "30")]
-            if !reset && !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
-            let value = try await store.api.request("/api/jottings?" + (query.percentEncodedQuery ?? ""))
-            var seen = Set<String>(); entries = ((reset ? [] : entries) + value["jottings"].array).filter { seen.insert($0.id).inserted }
-            cursor = value["before"].string; error = ""
-        } catch { self.error = error.localizedDescription }
-    }
-}
-struct JottingTextView: View {
-    let entry: JSONValue
-    var body: some View {
-        Page(title: entry["title"].string.isEmpty ? "Sketch" : entry["title"].string) {
-            Text(entry["text"].string).font(.system(size: 19, design: .serif)).lineSpacing(8).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            Text(entry["author"].string + " · " + (AlbumPresentation.date(entry["createdAt"].string)?.formatted(date: .abbreviated, time: .shortened) ?? "")).font(.caption).foregroundStyle(VesperTheme.muted)
-            ShareLink(item: entry["text"].string)
-        }
-    }
-}
-struct JottingReceiptView: View {
-    let id: String
-    @EnvironmentObject private var store: AppStore
-    @State private var entry: JSONValue = .null
-    @State private var error = ""
-    var body: some View {
-        Group {
-            if entry != .null { JottingTextView(entry: entry) }
-            else if !error.isEmpty { Text(error).foregroundStyle(.secondary).padding() }
-            else { ProgressView() }
-        }.task {
-            do { entry = try await store.api.request("/api/jottings?id=" + id)["jotting"] }
-            catch { self.error = error.localizedDescription }
-        }
-    }
-}
-private struct JottingEditor: View {
-    @EnvironmentObject private var store: AppStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var title = ""
-    @State private var text = ""
-    @State private var busy = false
-    @State private var error = ""
-    @State private var id = UUID().uuidString
-    var body: some View {
-        EditorSheet(title: "Sketch", busy: busy, save: save) {
-            FormField(label: "标题（可留空）", text: $title)
-            FormField(label: "写一点", text: $text, multiline: true)
-            if !error.isEmpty { Text(error).foregroundStyle(.red) }
-        }
-    }
-    private func save() {
-        guard !busy else { return }
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = "先写一点文字吧。"; return }
-        busy = true
-        Task {
-            defer { busy = false }
-            do {
-                let value = try await store.api.request("/api/jottings", method: "POST", body: .object(["id": .string(id), "title": .string(title), "text": .string(text)]))
-                guard value["jotting"].id == id else { throw ServiceError(message: "保存尚未确认，请重试。") }
-                dismiss()
-            } catch { self.error = error.localizedDescription }
-        }
     }
 }

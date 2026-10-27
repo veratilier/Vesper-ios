@@ -3,45 +3,59 @@ import UserNotifications
 
 @main struct VesperApp: App {
     @UIApplicationDelegateAdaptor(VesperNotificationDelegate.self) private var notificationDelegate
-    @StateObject private var store = AppStore()
+    @StateObject private var store: AppStore
     @StateObject private var player = MusicPlayer()
-    @StateObject private var chat = ChatSession()
+    @StateObject private var chat: ChatSession
+    @StateObject private var chatWorkspace: ChatBackendWorkspace
     @AppStorage("vesperPalette") private var palette = "blue"
+    init() {
+        let store = AppStore(backend: .vps), chat = ChatSession()
+        _store = StateObject(wrappedValue: store)
+        _chat = StateObject(wrappedValue: chat)
+        // Register background intent handlers even when no window is opened.
+        let workspace = ChatBackendWorkspace(vpsStore: store, vpsChat: chat)
+        _chatWorkspace = StateObject(wrappedValue: workspace)
+        #if !targetEnvironment(macCatalyst)
+        VesperBackgroundRefresh.shared.workspace = workspace
+        _ = NativeArrivalMonitor.shared
+        #endif
+    }
     var body: some Scene {
         WindowGroup {
             RootView()
                 #if targetEnvironment(macCatalyst)
-                .frame(minWidth: 980, minHeight: 650)
+                .frame(minWidth: 700, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
                 #endif
                 .environmentObject(store).environmentObject(player).environmentObject(chat).environmentObject(chat.composer)
+                .environmentObject(chatWorkspace).environment(\.chatWorkspace, chatWorkspace)
                 .tint(VesperTheme.ink).foregroundStyle(VesperTheme.ink).preferredColorScheme(palette == "black" ? .dark : .light)
         }
         #if targetEnvironment(macCatalyst)
-        .defaultSize(width: 1220, height: 820)
+        .windowResizability(.contentMinSize)
         #endif
     }
 }
 enum Destination: String, CaseIterable, Identifiable {
-    case home = "Home", chat = "Chat", desire = "Desire", journal = "Journal", letters = "Letters", notes = "Notes"
-    case workflow = "Workflow", jottings = "Sketch", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
+    case home = "Home", chat = "Chat", studio = "Studio", desire = "Desire", journal = "Journal", letters = "Letters"
+    case workflow = "Workflow", alarms = "Alarms", reminders = "Reminders", dates = "Dates", music = "Music", album = "Album", memory = "Memory", dreams = "Dreams", readingRoom = "Library", bookmarks = "Bookmarks", movieRoom = "Cinema", weather = "Weather", settings = "Settings"
     var id: String { rawValue }
-    var title: String { self == .journal ? "Diary" : rawValue }
+    var title: String { self == .journal ? "Diary" : self == .bookmarks ? "Hitokoto" : rawValue }
     var icon: String {
         switch self {
         case .home: return "house"
         case .chat: return "bubble.left"
+        case .studio: return "books.vertical"
         case .desire: return "heart"
         case .journal: return "book.closed"
         case .letters: return "envelope"
-        case .notes: return "note.text"
         case .workflow: return "point.3.connected.trianglepath.dotted"
-        case .jottings: return "pencil.line"
         case .alarms: return "alarm"
         case .reminders: return "checklist"
         case .dates: return "calendar"
         case .music: return "music.note"
         case .album: return "photo.on.rectangle"
         case .memory: return "brain.head.profile"
+        case .dreams: return "moon.stars"
         case .readingRoom: return "book.pages"
         case .bookmarks: return "bookmark"
         case .movieRoom: return "film"
@@ -52,11 +66,11 @@ enum Destination: String, CaseIterable, Identifiable {
 }
 /// Discard obsolete/duplicate destinations and append newly added features.
 enum VesperGridOrder {
-    static let defaults: [Destination] = [.desire, .journal, .notes, .dates, .reminders, .music, .album, .memory, .readingRoom, .bookmarks, .movieRoom, .alarms, .jottings, .workflow, .weather]
+    static let defaults: [Destination] = [.desire, .journal, .letters, .dates, .reminders, .music, .album, .memory, .dreams, .readingRoom, .bookmarks, .movieRoom, .alarms, .weather]
     static func restore(_ saved: String) -> [Destination] {
         let names = (try? JSONDecoder().decode([String].self, from: Data(saved.utf8))) ?? []
         var seen = Set<String>()
-        return (names.compactMap { name -> Destination? in name == "随写" ? .jottings : Destination(rawValue: name) } + defaults).filter {
+        return (names.compactMap { Destination(rawValue: $0) } + defaults).filter {
             defaults.contains($0) && seen.insert($0.id).inserted
         }
     }
@@ -83,6 +97,7 @@ struct VesperAppGrid: View {
     let open: (Destination) -> Void
     @AppStorage("vesperAppGridOrder") private var savedOrder = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var letterInbox = LetterInbox.shared
     @State private var pages = VesperGridOrder.defaults
     @State private var frames: [Destination: CGRect] = [:]
     @State private var dragged: Destination?
@@ -160,6 +175,11 @@ struct VesperAppGrid: View {
             Text(page.title).font(.caption).lineLimit(2).minimumScaleFactor(0.85)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .top).contentShape(Rectangle())
+            .overlay(alignment: .topTrailing) {
+                if page == .letters && letterInbox.hasUpdates {
+                    Circle().fill(.red).frame(width: 8, height: 8).padding(.trailing, 10)
+                }
+            }
     }
 
     private func finishDrag() {
@@ -181,35 +201,60 @@ private struct FloatingCallSizeKey: PreferenceKey {
     }
 }
 struct RootView: View {
+    @EnvironmentObject private var chatWorkspace: ChatBackendWorkspace
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var chat: ChatSession
     @AppStorage("navigationStyle") private var navigationStyle = "vesper"
+    @AppStorage("vesperPalette") private var capturePalette = "blue"
+    @AppStorage("wallpaperShade") private var captureShade = 0.16
+    @AppStorage("glassStyle") private var captureGlassStyle = VesperGlassStyle.liquid.rawValue
+    @AppStorage("glassFrost") private var captureGlassFrost = 0.0
+    @AppStorage("glassTransparency") private var captureGlassTransparency = 0.0
+    @Environment(\.accessibilityReduceTransparency) private var captureReduceTransparency
+    @ObservedObject private var captureWallpaper = WallpaperStore.shared
     @ObservedObject private var letterInbox = LetterInbox.shared
     @ObservedObject private var chatInbox = ChatInbox.shared
     @State private var nativeTab = 0
     @State private var musicRootTabs: Set<Int> = []
     @State private var showingMusicPlayer = false
+    @State private var memoryCandidate: JSONValue?
+    @State private var deferredMemoryCandidateIDs: Set<String> = []
+    @State private var checkingMemoryCandidates = false
     @Namespace private var musicTransition
     @State private var libraryPath: [Destination] = []
     @State private var libraryEditing = false
     @State private var vesperPage: Destination = .desire
     @StateObject private var callPresentation = NativeCallPresentation.shared
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    @ObservedObject private var systemIncomingCall = SystemIncomingCall.shared
+    #endif
     @State private var floatingCallCenter: CGPoint?
-    @State private var floatingCallSize = CGSize(width: 220, height: 64)
-    @GestureState private var floatingCallDrag = CGSize.zero
+    @State private var floatingCallSize = CGSize(width: 88, height: 84)
+    @State private var floatingCallDragStart: CGPoint?
     @State private var opening = !VesperLayout.usesSidebar
     @Environment(\.scenePhase) private var phase
     @State private var destination: Destination = .home
     @State private var sidebar = false
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var captureAppearanceIdentity: String {
+        "\(store.baseURL)|\(store.token)|\(capturePalette)|\(captureShade)|\(captureWallpaper.selectedID ?? "")|\(captureGlassStyle)|\(captureGlassFrost)|\(captureGlassTransparency)|\(captureReduceTransparency)|\(phase == .active)"
+    }
+    private var showIncomingCallFallback: Bool {
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        chatWorkspace.incomingBackend == systemIncomingCall.fallbackBackend
+            && chatWorkspace.incomingBackend != nil
+        #else
+        chatWorkspace.incomingBackend != nil
+        #endif
+    }
     @ViewBuilder private var navigationSurface: some View {
         if VesperLayout.usesSidebar {
             MacNavigationView(selection: $destination, openMusic: { showingMusicPlayer = true }) { page in
                 if page == .chat {
                     GeometryReader { geometry in
-                        NativeChatHome(sideBySide: VesperLayout.isMac || geometry.size.width >= 760)
+                        NativeChatHome(sideBySide: geometry.size.width >= 940)
                     }
                 } else { shell(page) }
             }
@@ -221,9 +266,9 @@ struct RootView: View {
     private var nativeTabs: some View {
                 TabView(selection: $nativeTab) {
                     shell(.home).tabItem { Label("Home", systemImage: "house") }.tag(0)
-                    NativeChatHome(onOpenMusic: { showingMusicPlayer = true }, onRootVisibilityChange: { updateMusicRoot(1, visible: $0) }).tabItem { Label("Chat", systemImage: "bubble.left") }.badge(chatInbox.hasUpdates ? " " : nil as String?).tag(1)
-                    appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.tag(2)
-                    shell(.letters).tabItem { Label("Letters", systemImage: "envelope") }.badge(letterInbox.hasUpdates ? " " : nil as String?).tag(3)
+                    NativeChatHome(onOpenMusic: { showingMusicPlayer = true }, onRootVisibilityChange: { updateMusicRoot(1, visible: $0) }).tabItem { Label("Chat", systemImage: "bubble.left") }.tag(1)
+                    appLibrary.tabItem { Label("Collection", systemImage: "square.grid.2x2.fill") }.badge(letterInbox.hasUpdates ? " " : nil as String?).tag(2)
+                    shell(.studio).tabItem { Label("Studio", systemImage: "books.vertical") }.tag(3)
                     shell(.settings).tabItem { Label("Setting", systemImage: "gearshape") }.tag(4)
                 }.modifier(NativeMusicAccessory(visible: musicRootTabs.contains(nativeTab) && (nativeTab != 2 || libraryPath.isEmpty), openMusic: { showingMusicPlayer = true }, namespace: musicTransition))
                 .onChange(of: nativeTab) { _, tab in
@@ -231,7 +276,7 @@ struct RootView: View {
                     case 0: destination = .home
                     case 1: destination = .chat
                     case 2: destination = nativeVesperDestination
-                    case 3: destination = .letters
+                    case 3: destination = .studio
                     default: destination = .settings
                     }
                 }
@@ -247,7 +292,11 @@ struct RootView: View {
             }.safeAreaInset(edge: .bottom, spacing: 4) { if !NativeMusicAccessory.isSupported { musicDock } }
                 .onAppear { updateMusicRoot(2, visible: true) }.onDisappear { updateMusicRoot(2, visible: false) }
                 .transparentNavigationTop().navigationTitle("Collection")
-                .navigationDestination(for: Destination.self) { page in content(page).transparentNavigationTop().background { Background() }.navigationTitle(page.title).navigationBarTitleDisplayMode(.inline) }
+                .navigationDestination(for: Destination.self) { page in
+                    content(page).transparentNavigationTop().background { Background() }
+                        .navigationTitle([.memory, .dreams].contains(page) ? "" : page.title)
+                        .navigationBarTitleDisplayMode(.inline)
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         if libraryEditing { Button("Done") { libraryEditing = false }.fontWeight(.semibold) }
@@ -295,9 +344,14 @@ struct RootView: View {
         .onChange(of: navigationStyle) { _, _ in navigate(destination); sidebar = false }
         .onAppear { navigate(destination) }
         .overlay {
-            if chat.incomingCall {
+            if showIncomingCallFallback, let backend = chatWorkspace.incomingBackend {
                 Color.black.opacity(0.18).ignoresSafeArea()
-                CallInvitation(accept: { chat.incomingCall = false; navigate(.chat); callPresentation.open(initiator: "agent") }, decline: { chat.incomingCall = false })
+                CallInvitation(accept: {
+                    chatWorkspace.runtime(backend).chat.incomingCall = false
+                    try? chatWorkspace.select(backend, openChat: true)
+                    navigate(.chat); callPresentation.open(initiator: "agent")
+                }, decline: { chatWorkspace.runtime(backend).chat.resolveIncomingCall(.declined) })
+                    .environmentObject(chatWorkspace.runtime(backend).store)
                     .padding(28).transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
@@ -305,6 +359,8 @@ struct RootView: View {
             if callPresentation.presented {
                 GeometryReader { geometry in
                     NativeCallView(initiator: callPresentation.initiator)
+                        .environmentObject(chatWorkspace.runtime(chatWorkspace.selectedBackend).store)
+                        .environmentObject(chatWorkspace.runtime(chatWorkspace.selectedBackend).chat)
                         .fixedSize(horizontal: callPresentation.minimized, vertical: callPresentation.minimized)
                         .background {
                             if callPresentation.minimized {
@@ -322,17 +378,36 @@ struct RootView: View {
                         }
                         // A recognized drag must not also activate the compact call's open button.
                         .highPriorityGesture(DragGesture(minimumDistance: 10)
-                            .updating($floatingCallDrag) { drag, offset, _ in
-                                if callPresentation.minimized { offset = drag.translation }
+                            .onChanged { drag in
+                                guard callPresentation.minimized else { return }
+                                let start = floatingCallDragStart ?? floatingCallCenter
+                                    ?? defaultFloatingPosition(in: geometry.size)
+                                if floatingCallDragStart == nil { floatingCallDragStart = start }
+                                var transaction = Transaction(animation: nil)
+                                transaction.disablesAnimations = true
+                                withTransaction(transaction) {
+                                    floatingCallCenter = clampedFloatingPosition(
+                                        CGPoint(x: start.x + drag.translation.width,
+                                                y: start.y + drag.translation.height),
+                                        in: geometry.size)
+                                }
                             }
                             .onEnded { drag in
                                 guard callPresentation.minimized else { return }
-                                let center = clampedFloatingPosition(
-                                    floatingCallCenter ?? defaultFloatingPosition(in: geometry.size),
+                                let start = floatingCallDragStart ?? floatingCallCenter
+                                    ?? defaultFloatingPosition(in: geometry.size)
+                                let dropped = clampedFloatingPosition(
+                                    CGPoint(x: start.x + drag.translation.width,
+                                            y: start.y + drag.translation.height),
                                     in: geometry.size)
-                                floatingCallCenter = clampedFloatingPosition(
-                                    CGPoint(x: center.x + drag.translation.width, y: center.y + drag.translation.height),
-                                    in: geometry.size)
+                                floatingCallDragStart = nil
+                                floatingCallCenter = dropped
+                                let edgeX = dropped.x < geometry.size.width / 2
+                                    ? floatingCallSize.width / 2 + 12
+                                    : geometry.size.width - floatingCallSize.width / 2 - 12
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                                    floatingCallCenter = CGPoint(x: edgeX, y: dropped.y)
+                                }
                             }, including: callPresentation.minimized ? .all : .none)
                         .accessibilityHint(callPresentation.minimized ? "Drag to move the call window" : "")
                 }.zIndex(3)
@@ -345,8 +420,7 @@ struct RootView: View {
     }
     private func floatingPosition(in size: CGSize) -> CGPoint {
         let center = floatingCallCenter ?? defaultFloatingPosition(in: size)
-        return clampedFloatingPosition(
-            CGPoint(x: center.x + floatingCallDrag.width, y: center.y + floatingCallDrag.height), in: size)
+        return clampedFloatingPosition(center, in: size)
     }
     private func clampedFloatingPosition(_ point: CGPoint, in size: CGSize) -> CGPoint {
         let halfWidth = min(floatingCallSize.width / 2, (size.width - 24) / 2)
@@ -356,8 +430,24 @@ struct RootView: View {
     }
     private var lifecycle: some View {
         scene
+        .onReceive(NotificationCenter.default.publisher(for: .init("VesperSystemCallAnswered"))) { event in
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            guard let backend = event.object as? VesperBackend else { return }
+            chatWorkspace.runtime(backend).chat.incomingCall = false
+            try? chatWorkspace.select(backend, openChat: true)
+            navigate(.chat)
+            callPresentation.open(initiator: "agent")
+            #endif
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .init("VesperSystemCallDeclined"))) { event in
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            guard let backend = event.object as? VesperBackend else { return }
+            chatWorkspace.runtime(backend).chat.resolveIncomingCall(.declined)
+            #endif
+        }
         .onReceive(NotificationCenter.default.publisher(for: .init("VesperOpenConversation"))) { event in
             guard let id = event.userInfo?["conversationId"] as? String, !chat.busy, !chat.callActive else { return }
+            guard (try? chatWorkspace.select(.vps, openChat: true)) != nil else { return }
             navigate(.chat)
             Task {
                 chat.configure(store)
@@ -367,9 +457,27 @@ struct RootView: View {
             }
         }
         .task { if !callPresentation.presented { await CallLiveActivity.shared.endStale() } }
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        .task { await LegacyChatTaskActivityCleanup.endAll() }
+        .task { CompanionLiveActivity.shared.refreshAppearance() }
+        #endif
+        .task(id: captureAppearanceIdentity) {
+            guard phase == .active else { return }
+            #if os(iOS) && !targetEnvironment(macCatalyst)
+            WatchSyncBridge.shared.publishAppearance()
+            #endif
+            try? await ChatCaptureAppearanceSync.sync(
+                api: store.api, palette: capturePalette, shade: captureShade, wallpaper: captureWallpaper,
+                glassStyle: captureGlassStyle, glassFrost: captureGlassFrost,
+                glassTransparency: captureGlassTransparency, reduceTransparency: captureReduceTransparency)
+        }
         .task(id: store.baseURL + "\n" + store.token) {
             while !Task.isCancelled {
-                if phase == .active { await LetterNotifications.sync(store.api) }
+                if phase == .active {
+                    await LetterNotifications.sync(store.api)
+                    await DailyQuoteNotifications.refresh(api: store.api)
+                    await checkMemoryCandidates()
+                }
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
@@ -387,17 +495,19 @@ struct RootView: View {
         }
         .task(id: store.token) { await refreshUsage() }
         .onChange(of: store.token) { _, _ in WidgetSync.clear(); letterInbox.clear(); chatInbox.clear() }
-        .onChange(of: store.baseURL) { _, _ in letterInbox.clear() }
-        .onOpenURL { url in
-            guard url.scheme == "vesper" else { return }
-            switch url.host {
-            case "desire": navigate(.desire)
-            case "notes": navigate(.notes)
-            case "usage": sidebar = true; Task { await refreshUsage() }
-            case "call": navigate(.chat); if callPresentation.presented { callPresentation.minimized = false }
-            default: break
-            }
+        .onChange(of: store.baseURL) { _, _ in WidgetSync.clear(); letterInbox.clear() }
+        .task(id: store.baseURL + "\n" + store.token + "\n" + store.document("profile")["agentAvatar"].string + "\n" + store.agentDisplayName) {
+            guard !store.token.isEmpty else { return }
+            await WidgetSync.profile(name: store.agentDisplayName,
+                                     avatar: store.document("profile")["agentAvatar"].string,
+                                     baseURL: store.baseURL)
         }
+        .onChange(of: chat.messages) { _, messages in WidgetSync.message(messages, busy: chat.busy) }
+        .onChange(of: chat.busy) { _, busy in if !busy { WidgetSync.message(chat.messages, busy: false) } }
+        .onChange(of: player.track) { _, track in WidgetSync.music(track: track, playing: player.playing) }
+        .onChange(of: player.playing) { _, playing in WidgetSync.music(track: player.track, playing: playing) }
+        .task { WidgetSync.message(chat.messages, busy: chat.busy); WidgetSync.music(track: player.track, playing: player.playing) }
+        .onOpenURL(perform: handleDeepLink)
         .task(id: phase == .active && !opening) {
             guard phase == .active, !opening else { return }
             player.configure(store); player.synchronize()
@@ -422,8 +532,30 @@ struct RootView: View {
             }
         }
     }
-    var body: some View {
+    private var memoryReviewSurface: some View {
         lifecycle
+        .sheet(item: $memoryCandidate, onDismiss: {
+            Task { await checkMemoryCandidates() }
+        }) { candidate in
+            MemoryCandidateReviewSheet(candidate: candidate, onReviewed: {
+                deferredMemoryCandidateIDs.insert(candidate.id)
+            }, onLater: { id in
+                deferredMemoryCandidateIDs.insert(id)
+            })
+            .environmentObject(store)
+        }
+        .task(id: store.baseURL + "\n" + store.token + "\n" + String(phase == .active && !opening)) {
+            await checkMemoryCandidates()
+        }
+        .onChange(of: chat.busy) { old, new in
+            if old && !new { Task { await checkMemoryCandidates() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .init("VesperMemoryCandidateProposed"))) { _ in
+            Task { await checkMemoryCandidates() }
+        }
+    }
+    var body: some View {
+        memoryReviewSurface
         .sheet(isPresented: $showingMusicPlayer) {
             MusicPlayerSheet(namespace: musicTransition).environmentObject(store).environmentObject(player)
         }
@@ -438,28 +570,84 @@ struct RootView: View {
         .onChange(of: chat.busy) { old, new in if old && !new && sidebar { Task { await refreshUsage() } } }
         .onChange(of: sidebar) { _, open in if open { Task { await refreshUsage() } } }
         .onChange(of: phase) { _, phase in
-            if phase != .inactive { chat.sceneChanged(active: phase == .active) }
+            if phase != .inactive { chatWorkspace.sceneChanged(active: phase == .active) }
+            #if !targetEnvironment(macCatalyst)
+            if phase == .background { VesperBackgroundRefresh.shared.schedule() }
+            if phase == .active { NativeArrivalMonitor.shared.resume() }
+            #endif
             if phase == .active { Task { await refreshUsage(); await LetterNotifications.sync(store.api) } }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebar)
     }
     private var musicDock: some View { MiniMusicPlayer(openMusic: { showingMusicPlayer = true }, namespace: musicTransition) }
+    private func checkMemoryCandidates() async {
+        guard phase == .active, !opening, !showingMusicPlayer, !callPresentation.presented,
+              !store.token.isEmpty, memoryCandidate == nil, !checkingMemoryCandidates else { return }
+        checkingMemoryCandidates = true
+        defer { checkingMemoryCandidates = false }
+        let backendIdentity = store.baseURL + "\n" + store.token
+        guard let response = try? await store.api.request("/api/memory/candidates"),
+              phase == .active, !showingMusicPlayer, !callPresentation.presented,
+              backendIdentity == store.baseURL + "\n" + store.token,
+              memoryCandidate == nil else { return }
+        memoryCandidate = response["items"].array.first {
+            !$0.id.isEmpty && !deferredMemoryCandidateIDs.contains($0.id)
+        }
+    }
     private func updateMusicRoot(_ tab: Int, visible: Bool) {
         if visible { musicRootTabs.insert(tab) } else { musicRootTabs.remove(tab) }
     }
     private func updateMusicRoot(_ page: Destination, visible: Bool) {
-        let tabs: [Destination: Int] = [.home: 0, .letters: 3, .settings: 4]
+        let tabs: [Destination: Int] = [.home: 0, .studio: 3, .settings: 4]
         if let tab = tabs[page] { updateMusicRoot(tab, visible: visible) }
     }
     private var nativeVesperDestination: Destination { vesperPage }
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "vesper" else { return }
+        switch url.host {
+        case "desire": navigate(.desire)
+        case "notes": navigate(.home)
+        case "usage": sidebar = true; Task { await refreshUsage() }
+        case "music": navigate(.music)
+        case "bookmarks": navigate(.bookmarks)
+        case "chat":
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let backend = VesperBackend.vps
+            let runtime = chatWorkspace.runtime(backend)
+            let room = query.first { $0.name == "backend" }?.value == "mac"
+                ? "" : query.first { $0.name == "conversationId" }?.value ?? ""
+            if !room.isEmpty { ChatWindowMemory.remember(room, api: runtime.store.api) }
+            try? chatWorkspace.select(backend, openChat: true)
+            navigate(.chat)
+            if !room.isEmpty, !runtime.chat.busy {
+                Task {
+                    runtime.chat.configure(runtime.store)
+                    if await runtime.chat.open(.object(["id": .string(room)])) {
+                        NotificationCenter.default.post(name: .init("VesperConversationOpened"), object: nil)
+                    }
+                }
+            }
+        case "companion":
+            try? chatWorkspace.select(.vps, openChat: true)
+            navigate(.chat)
+            #if !targetEnvironment(macCatalyst)
+            let runtime = chatWorkspace.runtime(chatWorkspace.selectedBackend)
+            if !runtime.chat.busy, let target = CompanionPokeDelivery.target(runtime.store.api) {
+                Task { runtime.chat.configure(runtime.store); _ = await runtime.chat.open(.object(["id": .string(target.conversationID)])) }
+            }
+            #endif
+        case "call": navigate(.chat); if callPresentation.presented { callPresentation.minimized = false }
+        default: break
+        }
+    }
     private func navigate(_ page: Destination) {
         destination = page
-        if ![.home, .chat, .letters, .settings].contains(page) { libraryPath = [page] }
-        if [.desire, .journal, .notes, .dates, .music, .album].contains(page) { vesperPage = page }
+        if ![.home, .chat, .studio, .settings].contains(page) { libraryPath = [page] }
+        if [.desire, .journal, .dates, .music, .album].contains(page) { vesperPage = page }
         switch page {
         case .home: nativeTab = 0
         case .chat: nativeTab = 1
-        case .letters: nativeTab = 3
+        case .studio: nativeTab = 3
         case .settings: nativeTab = 4
         default: nativeTab = 2
         }
@@ -472,7 +660,7 @@ struct RootView: View {
                 else { content(page) }
             }
             .safeAreaInset(edge: .bottom, spacing: 4) {
-                if !VesperLayout.usesSidebar && navigationStyle == "native" && !NativeMusicAccessory.isSupported && [.home, .letters, .settings].contains(page) { musicDock }
+                if !VesperLayout.usesSidebar && navigationStyle == "native" && !NativeMusicAccessory.isSupported && [.home, .studio, .settings].contains(page) { musicDock }
             }
             .onAppear { updateMusicRoot(page, visible: true) }
             .onDisappear { updateMusicRoot(page, visible: false) }
@@ -485,7 +673,7 @@ struct RootView: View {
                         Button { withAnimation { sidebar = true } } label: { Image(systemName: "line.3.horizontal") }.accessibilityLabel("Open sidebar")
                     }
                 }
-                if page != .letters {
+                if ![.letters, .studio, .memory, .dreams].contains(page) {
                     ToolbarItem(placement: .principal) {
                         if page == .home { homeWordmark }
                         else { Text(page.title).font(.headline) }
@@ -500,23 +688,26 @@ struct RootView: View {
     }
     @ViewBuilder private func content(_ page: Destination) -> some View {
         switch page {
-        case .home: HomeView(navigate: { navigate($0) }, showsInlineMusic: !VesperLayout.usesSidebar && navigationStyle != "native")
+        case .home: HomeView(navigate: { navigate($0) }, showsInlineMusic: !VesperLayout.usesSidebar && navigationStyle != "native",
+                             isVisible: VesperLayout.usesSidebar ? destination == .home : (navigationStyle == "native" ? nativeTab == 0 : destination == .home))
         case .chat: ChatView(onMenu: { withAnimation { sidebar = true } }, native: navigationStyle == "native")
+        case .studio: StudioView()
         case .desire: DesireView()
         case .journal: JournalView()
         case .letters: LettersView()
-        case .notes: NotesBoard()
         case .workflow: WakeWorkflowView()
-        case .jottings: JottingsView()
         case .alarms: AlarmsView()
         case .reminders: CollectionView(kind: .reminders)
         case .dates: CollectionView(kind: .dates)
-        case .music: MusicView()
+        case .music: MusicView(openPlayer: { showingMusicPlayer = true })
         case .album: AlbumView()
         case .memory: MemoryView()
+        case .dreams: DreamsView()
         case .readingRoom: ReadingRoomView()
         case .bookmarks: BookmarksView()
-        case .movieRoom: MovieRoomView()
+        case .movieRoom:
+            let runtime = chatWorkspace.runtime(chatWorkspace.selectedBackend)
+            MovieRoomView().environmentObject(runtime.store).environmentObject(runtime.chat).environmentObject(runtime.chat.composer)
         case .weather: WeatherView()
         case .settings: SettingsView()
         }
@@ -576,7 +767,7 @@ struct OpeningView: View {
                         if !store.token.isEmpty {
                             Button("Retry connection") { Task { await store.connect() } }
                         }
-                        Button("Connection settings") { showingConnection = true }
+                        Button("Set device token") { showingConnection = true }
                     }
                 }.padding(.bottom, max(40, geometry.size.height * 0.09)).opacity(ready ? 1 : 0)
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: store.canEnter)
@@ -588,7 +779,9 @@ struct OpeningView: View {
         }
         .sheet(isPresented: $showingConnection) {
             NavigationStack {
-                ConnectionView()
+                Page(title: "Device token") {
+                    GlassCard { DeviceTokenEditor() }
+                }.background { Background() }.transparentNavigationTop()
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingConnection = false } } }
             }
         }
@@ -618,7 +811,7 @@ struct WeeklyUsageView: View {
                 Text("\(100 - remaining)% used · \(remaining)% remaining").font(.system(size: 11))
                 if let error = chat.usageError { Text("Refresh failed · " + error).font(.system(size: 10)) }
                 else if let updated = chat.usageUpdatedAt { Text("Updated " + updated.formatted(date: .omitted, time: .shortened)).font(.system(size: 10)) }
-            } else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError ?? "Connect in Settings")).font(.system(size: 11)) }
+            } else { Text(chat.loadingUsage ? "Loading…" : (chat.usageError ?? "Connect in Studio")).font(.system(size: 11)) }
         }.foregroundStyle(VesperTheme.muted)
     }
 }
@@ -626,6 +819,18 @@ struct WeeklyUsageView: View {
 final class VesperNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        #if !targetEnvironment(macCatalyst)
+        VesperBackgroundRefresh.shared.register()
+        // A Live Activity intent may wake the app before SwiftUI has built its
+        // workspace. Install a lazy handler at launch so the lock-screen button
+        // always has a route to the existing chat service.
+        if VesperCompanionPokeBridge.handle == nil {
+            VesperCompanionPokeBridge.handle = { key in
+                let workspace = ChatBackendWorkspace(vpsStore: AppStore(backend: .vps), vpsChat: ChatSession())
+                try await CompanionPokeDelivery.send(avatarKey: key, workspace: workspace)
+            }
+        }
+        #endif
         return true
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
@@ -638,6 +843,8 @@ final class VesperNotificationDelegate: NSObject, UIApplicationDelegate, UNUserN
                 let api = AppStore().api
                 guard info["letterScope"] as? String == LetterNotifications.scope(api) else { return }
                 LetterNotificationRoute.shared.letterID = id
+            } else if info["destination"] as? String == "bookmarks" {
+                NotificationCenter.default.post(name: .init("VesperOpenDailyQuote"), object: nil)
             } else { NotificationCenter.default.post(name: .init("VesperOpenConversation"), object: nil, userInfo: info) }
         }
         completionHandler()

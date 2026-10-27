@@ -1,6 +1,8 @@
 import SwiftUI
 import SafariServices
 import UniformTypeIdentifiers
+import LinkPresentation
+import QuickLookThumbnailing
 
 enum ChatWebURL {
     static func accepts(_ url: URL) -> Bool {
@@ -44,6 +46,7 @@ private struct ChatBrowser: UIViewControllerRepresentable {
 
 struct ChatFileCard: View {
     let attachment: JSONValue
+    @State private var thumbnail: UIImage?
     private var name: String { attachment["name"].string.isEmpty ? "Shared file" : attachment["name"].string }
     static func typeLabel(name: String, mime: String) -> String {
         let ext = (name as NSString).pathExtension
@@ -51,21 +54,195 @@ struct ChatFileCard: View {
         return UTType(mimeType: mime)?.localizedDescription ?? "File"
     }
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: attachment["type"].string == "application/pdf" ? "doc.richtext" : "doc.text")
-                .font(.title2).foregroundStyle(VesperTheme.accent)
-                .frame(width: 44, height: 52).background(VesperTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-            VStack(alignment: .leading, spacing: 6) {
-                Text(name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                Text(Self.typeLabel(name: name, mime: attachment["type"].string) + " · " +
-                     ByteCountFormatter.string(fromByteCount: Int64(max(0, attachment["size"].number)), countStyle: .file))
-                    .font(.caption).foregroundStyle(VesperTheme.muted)
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                VesperTheme.accent.opacity(0.08)
+                if let thumbnail {
+                    Image(uiImage: thumbnail).resizable().scaledToFit().padding(6)
+                } else {
+                    Image(systemName: "doc.text.image")
+                        .font(.system(size: 46, weight: .ultraLight))
+                        .foregroundStyle(VesperTheme.accent.opacity(0.7))
+                }
             }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(VesperTheme.muted)
-        }.padding(14).frame(maxWidth: 280, alignment: .leading)
+            .frame(width: 280, height: 158)
+            .clipped()
+            HStack(spacing: 10) {
+                Image(systemName: attachment["type"].string == "application/pdf" ? "doc.richtext" : "doc.text")
+                    .font(.title3).foregroundStyle(VesperTheme.accent)
+                    .frame(width: 36, height: 40)
+                    .background(VesperTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    Text(Self.typeLabel(name: name, mime: attachment["type"].string) + " · " +
+                         ByteCountFormatter.string(fromByteCount: Int64(max(0, attachment["size"].number)), countStyle: .file))
+                        .font(.caption).foregroundStyle(VesperTheme.muted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(VesperTheme.muted)
+            }.padding(12)
+        }
+            .frame(width: 280)
             .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
             .accessibilityElement(children: .combine).accessibilityHint("Preview file")
+            .task(id: attachment["url"].string) {
+                thumbnail = await ChatFileThumbnail.image(for: attachment)
+            }
+    }
+}
+
+@MainActor private enum ChatFileThumbnail {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 80
+        cache.totalCostLimit = 32_000_000
+        return cache
+    }()
+
+    static func image(for attachment: JSONValue) async -> UIImage? {
+        let key = attachment["url"].string as NSString
+        if let image = cache.object(forKey: key) { return image }
+        let embedded = attachment["thumbnail"].string
+        if !embedded.isEmpty, let image = await ChatImageProcessing.avatarPreview(embedded, maxPixels: 640) {
+            cache.setObject(image, forKey: key)
+            return image
+        }
+        let reportedSize = attachment["size"].number
+        guard reportedSize <= 8_000_000,
+              let url = URL(string: attachment["url"].string), url.scheme == "https" else { return nil }
+        let extensionName = (attachment["name"].string as NSString).pathExtension.lowercased()
+        guard ["pdf", "html", "htm", "epub", "txt", "md", "rtf", "doc", "docx", "ppt", "pptx", "key", "pages"].contains(extensionName) else { return nil }
+        do {
+            let (download, response) = try await URLSession.shared.download(from: url)
+            defer { try? FileManager.default.removeItem(at: download) }
+            guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
+                  (try download.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 8_000_000 else { return nil }
+            try Task.checkCancellation()
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + extensionName)
+            try FileManager.default.moveItem(at: download, to: file)
+            defer { try? FileManager.default.removeItem(at: file) }
+            let request = QLThumbnailGenerator.Request(fileAt: file, size: CGSize(width: 560, height: 316),
+                                                       scale: 1, representationTypes: .thumbnail)
+            let image = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request).uiImage
+            cache.setObject(image, forKey: key, cost: Int(image.size.width * image.size.height * 4))
+            return image
+        } catch { return nil }
+    }
+}
+
+enum ChatLinkPreviews {
+    static func isStandaloneLink(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return urls(in: trimmed).contains { $0.absoluteString == trimmed }
+    }
+
+    static func urls(in text: String) -> [URL] {
+        var seen = Set<String>()
+        return Array(ChatMarkdownText.render(text).runs.compactMap(\.link).filter { url in
+            guard ChatWebURL.accepts(url), let host = url.host?.lowercased(), host != "music.apple.com",
+                  host != "localhost", !host.hasSuffix(".local"),
+                  !host.hasPrefix("127."), host != "0.0.0.0", !host.contains(":"),
+                  seen.insert(url.absoluteString).inserted else { return false }
+            return true
+        }.prefix(2))
+    }
+}
+
+struct ChatLinkPreviewCard: View {
+    let url: URL
+    @Environment(\.openURL) private var openURL
+    @State private var preview: ChatLinkPreview?
+    private var host: String { url.host?.replacingOccurrences(of: "www.", with: "") ?? url.absoluteString }
+
+    var body: some View {
+        Button { openURL(url) } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack {
+                    VesperTheme.accent.opacity(0.08)
+                    if let image = preview?.image {
+                        Image(uiImage: image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "link")
+                            .font(.system(size: 42, weight: .ultraLight))
+                            .foregroundStyle(VesperTheme.accent.opacity(0.7))
+                    }
+                }.frame(width: 280, height: 148).clipped()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(preview?.title ?? host).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    Text(host).font(.caption).foregroundStyle(VesperTheme.muted).lineLimit(1)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
+            .frame(width: 280)
+            .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .foregroundStyle(VesperTheme.ink)
+        }
+        .buttonStyle(.plain)
+        .modifier(ChatInAppLinks())
+        .accessibilityLabel("Open link preview: \(preview?.title ?? host)")
+        .task(id: url) { preview = await ChatLinkPreview.load(url) }
+    }
+}
+
+@MainActor private final class ChatLinkPreview: NSObject {
+    private final class Failure: NSObject {
+        let retryAfter = Date().addingTimeInterval(300)
+    }
+    let title: String
+    let image: UIImage?
+    init(title: String, image: UIImage?) { self.title = title; self.image = image }
+    private static let cache: NSCache<NSURL, ChatLinkPreview> = {
+        let cache = NSCache<NSURL, ChatLinkPreview>()
+        cache.countLimit = 120
+        return cache
+    }()
+    private static let failed = NSCache<NSURL, Failure>()
+
+    static func load(_ url: URL) async -> ChatLinkPreview? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        if let failure = failed.object(forKey: url as NSURL), Date() < failure.retryAfter { return nil }
+        do {
+            let provider = LPMetadataProvider()
+            provider.timeout = 8
+            let metadata = try await provider.startFetchingMetadata(for: url)
+            let image = await image(from: metadata.imageProvider ?? metadata.iconProvider)
+            let title = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let result = ChatLinkPreview(title: title.flatMap { $0.isEmpty ? nil : $0 } ?? url.host ?? url.absoluteString, image: image)
+            cache.setObject(result, forKey: url as NSURL)
+            return result
+        } catch {
+            failed.setObject(Failure(), forKey: url as NSURL)
+            return nil
+        }
+    }
+
+    private static func image(from provider: NSItemProvider?) async -> UIImage? {
+        guard let provider, provider.canLoadObject(ofClass: UIImage.self) else { return nil }
+        return await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: UIImage.self) { object, _ in
+                continuation.resume(returning: object as? UIImage)
+            }
+        }
+    }
+}
+
+struct ChatVideoCard: View {
+    let attachment: JSONValue
+    @State private var thumbnail: UIImage?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack {
+                Color.black.opacity(0.12)
+                if let thumbnail { Image(uiImage: thumbnail).resizable().scaledToFit() }
+                Image(systemName: "play.circle.fill").font(.system(size: 42)).foregroundStyle(.white, .black.opacity(0.5))
+                VStack { Spacer(); HStack { Spacer(); Text(String(format: "0:%02d", Int(attachment["duration"].number.rounded()))).font(.caption.monospacedDigit()).padding(5).background(.black.opacity(0.5), in: Capsule()).foregroundStyle(.white) }.padding(8) }
+            }.frame(width: 240, height: 150).clipShape(RoundedRectangle(cornerRadius: 14))
+            Text(attachment["name"].string).font(.caption).lineLimit(1)
+        }.frame(width: 240).accessibilityLabel("视频，点按播放")
+            .task(id: attachment["thumbnail"].string) {
+                thumbnail = await ChatImageProcessing.avatarPreview(attachment["thumbnail"].string, maxPixels: 480)
+            }
     }
 }
 
@@ -73,6 +250,8 @@ struct ChatMessageAction: Identifiable {
     let title: String
     let icon: String
     let run: () -> Void
+    var emoji: String? = nil
+    var selected = false
     var id: String { title }
 }
 
@@ -151,17 +330,34 @@ struct ChatActionOverlay: View {
     var body: some View {
         GeometryReader { geometry in
             if let selection = menu.selection {
+                let reactions = selection.actions.filter { $0.emoji != nil }
+                let actions = selection.actions.filter { $0.emoji == nil }
                 let origin = geometry.frame(in: .global).origin
-                let width = min(CGFloat(selection.actions.count) * 70, geometry.size.width - 24)
+                let width = min(max(CGFloat(actions.count) * 64, reactions.isEmpty ? 0 : 300), geometry.size.width - 24)
+                let height: CGFloat = reactions.isEmpty ? 62 : 118
                 let x = min(max(selection.frame.midX - origin.x, width / 2 + 12), geometry.size.width - width / 2 - 12)
-                let above = selection.frame.minY - origin.y - 42
-                let y = above >= 36 ? above : min(selection.frame.maxY - origin.y + 42, geometry.size.height - 40)
+                let above = selection.frame.minY - origin.y - height / 2 - 12
+                let y = above >= height / 2 + 12 ? above : min(selection.frame.maxY - origin.y + height / 2 + 12, geometry.size.height - height / 2 - 12)
                 Color.black.opacity(0.025).contentShape(Rectangle())
                     .onTapGesture { menu.selection = nil }
                     .accessibilityLabel("关闭消息菜单").accessibilityAddTraits(.isButton)
                     .transition(.opacity)
-                HStack(spacing: 0) {
-                    ForEach(selection.actions) { action in
+                VStack(spacing: 0) {
+                    if !reactions.isEmpty {
+                        HStack(spacing: 0) {
+                            ForEach(reactions) { action in
+                                Button {
+                                    menu.selection = nil; action.run()
+                                } label: {
+                                    Text(action.emoji ?? "").font(.system(size: 27))
+                                        .frame(maxWidth: .infinity).frame(height: 48)
+                                        .background(action.selected ? VesperTheme.muted.opacity(0.18) : .clear, in: Circle())
+                                }.buttonStyle(.plain).accessibilityLabel(action.title)
+                            }
+                        }.padding(.horizontal, 5).padding(.top, 6)
+                    }
+                    HStack(spacing: 0) {
+                    ForEach(actions) { action in
                         Button {
                             menu.selection = nil
                             action.run()
@@ -172,11 +368,11 @@ struct ChatActionOverlay: View {
                             }.frame(maxWidth: .infinity).frame(height: 62).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
+                    }
                 }
                 .foregroundStyle(VesperTheme.ink)
                 .frame(width: width)
                 .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.65)))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .position(x: x, y: y)
                 .accessibilityIdentifier("chat-message-actions")
@@ -187,7 +383,57 @@ struct ChatActionOverlay: View {
     }
 }
 
+struct ChatReactionBadge: ViewModifier {
+    var editable = true
+    let emoji: String
+    let edit: () -> Void
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .topTrailing) {
+            if !emoji.isEmpty {
+                Button(action: edit) {
+                    Text(emoji).font(.system(size: 19)).padding(.horizontal, 8).frame(height: 30)
+                        .vesperMaterial(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(VesperTheme.muted.opacity(0.22), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.10), radius: 3, y: 1)
+                }.buttonStyle(.plain).offset(x: 3, y: -14)
+                    .disabled(!editable)
+                    .accessibilityLabel(editable ? "表情回应 \(emoji)，点按更换或取消" : "对方回应了 \(emoji)")
+            }
+        }.padding(.top, emoji.isEmpty ? 0 : 13)
+    }
+}
+
+struct ChatReactionPicker: View {
+    let selected: String
+    let choose: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var custom = ""
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 48))], spacing: 12) {
+                        ForEach(ChatReactions.choices, id: \.self) { emoji in
+                            Button { choose(emoji == selected ? "" : emoji); dismiss() } label: {
+                                Text(emoji).font(.system(size: 30)).frame(width: 48, height: 48)
+                                    .background(emoji == selected ? VesperTheme.muted.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                            }.buttonStyle(.plain).accessibilityLabel(emoji == selected ? "取消 \(emoji)" : emoji)
+                        }
+                    }
+                    HStack {
+                        TextField("输入一个 emoji", text: $custom).textFieldStyle(.roundedBorder)
+                        Button("添加") { choose(custom); dismiss() }.disabled(!ChatReactions.valid(custom))
+                    }
+                    if !selected.isEmpty { Button("移除回应") { choose(""); dismiss() } }
+                }.padding(20)
+            }.navigationTitle("表情回应").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }.presentationDetents([.medium, .large])
+    }
+}
+
 struct ChatQuotePreview: View {
+    @EnvironmentObject private var store: AppStore
     let quote: JSONValue
     var onOpen: (() -> Void)? = nil
     var body: some View {
@@ -195,7 +441,7 @@ struct ChatQuotePreview: View {
             HStack(spacing: 9) {
                 RoundedRectangle(cornerRadius: 2).fill(VesperTheme.muted.opacity(0.6)).frame(width: 3)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(ChatPresentation.isUser(quote) ? "Vera" : "Rowan").font(.caption.weight(.semibold))
+                    Text(ChatPresentation.isUser(quote) ? "Vera" : "\(store.agentDisplayName)").font(.caption.weight(.semibold))
                     Text(quote["text"].string).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.fixedSize(horizontal: false, vertical: true).padding(10)
@@ -207,12 +453,367 @@ struct ChatQuotePreview: View {
 
 struct ChatBubbleSurface: ViewModifier {
     let user: Bool
+    @AppStorage(ChatBubbleAppearance.outgoingKey) private var outgoingColor = ChatBubbleAppearance.automatic
+    @AppStorage(ChatBubbleAppearance.incomingKey) private var incomingColor = ChatBubbleAppearance.automatic
+    @AppStorage("vesperPalette") private var palette = "blue"
     func body(content: Content) -> some View {
         let shape = UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: user ? 20 : 5,
                                            bottomTrailingRadius: user ? 5 : 20, topTrailingRadius: 20)
-        content.padding(.horizontal, 14).padding(.vertical, 11)
-            .background(user ? VesperTheme.accent.opacity(0.10) : Color.clear, in: shape)
-            .vesperMaterial(.thinMaterial, in: shape)
-            .overlay(shape.stroke(.white.opacity(0.45), lineWidth: 0.7))
+        let selection = user ? outgoingColor : incomingColor
+        content.padding(.horizontal, 14).padding(.vertical, 7)
+            .background(ChatBubbleAppearance.tint(selection, user: user, palette: VesperPalette(rawValue: palette) ?? .blue), in: shape)
+            .vesperGlass(in: shape)
     }
+}
+
+// Space indexes attachment metadata only. Opening chat and sending messages never run this scan.
+struct ChatSpaceItem: Codable, Identifiable, Equatable {
+    let id: String
+    let conversationID: String
+    let conversationTitle: String
+    let messageID: String
+    let date: String
+    let fromVera: Bool
+    let attachment: JSONValue
+    var name: String { attachment["name"].string.isEmpty ? "Shared file" : attachment["name"].string }
+    var kind: String {
+        let mime = attachment["type"].string.lowercased()
+        let ext = (name as NSString).pathExtension.lowercased()
+        if mime.hasPrefix("image/") || ["jpg", "jpeg", "png", "webp", "gif", "heic"].contains(ext) { return "Images" }
+        if mime.hasPrefix("audio/") || ["mp3", "m4a", "wav", "aac", "ogg"].contains(ext) { return "Audio" }
+        if mime.hasPrefix("video/") || ["mp4", "mov", "webm"].contains(ext) { return "Videos" }
+        return "Files"
+    }
+    var symbol: String { kind == "Images" ? "photo" : kind == "Audio" ? "waveform" : kind == "Videos" ? "film" : "doc.text" }
+    var url: URL? {
+        guard let value = URL(string: attachment["url"].string), value.scheme == "https", ChatWebURL.accepts(value) else { return nil }
+        return value
+    }
+    static func extract(messages: [JSONValue], room: JSONValue, tombstones: [JSONValue]) -> [Self] {
+        messages.filter { !ChatTranscript.isDeleted($0, tombstones: tombstones) }.flatMap { message in
+            message["metadata"]["attachments"].array.enumerated().compactMap { index, attachment in
+                let item = Self(id: room.id + ":" + message.id + ":" + String(index), conversationID: room.id,
+                                conversationTitle: room["title"].string, messageID: message.id,
+                                date: ChatTranscript.timestamp(message), fromVera: ChatPresentation.isUser(message), attachment: attachment)
+                return item.url == nil ? nil : item
+            }
+        }
+    }
+}
+
+@MainActor final class ChatSpaceIndex: ObservableObject {
+    struct Room: Codable { var revision: String; var items: [ChatSpaceItem] }
+    @Published private(set) var items: [ChatSpaceItem] = []
+    @Published private(set) var loading = false
+    @Published private(set) var progress = ""
+    @Published private(set) var error: String?
+    private var rooms: [String: Room] = [:]
+    private let api: APIClient
+    private let file: URL?
+    private let request: (String) async throws -> JSONValue
+    init(api: APIClient, cacheURL: URL? = nil, request: ((String) async throws -> JSONValue)? = nil) {
+        self.api = api
+        file = cacheURL ?? ChatRecentCache.directory(api: api)?.appendingPathComponent("space-index.json")
+        self.request = request ?? { try await api.request($0, history: true) }
+        if let file, let data = try? Data(contentsOf: file), data.count <= 30_000_000,
+           let cached = try? JSONDecoder().decode([String: Room].self, from: data) { rooms = cached }
+        publish()
+    }
+    private func publish(extra: [ChatSpaceItem] = [], replacing: String? = nil) {
+        let all = rooms.filter { $0.key != replacing }.values.flatMap(\.items) + extra
+        items = Array(Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }).values)
+            .sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+    }
+    private func persist() {
+        guard let file else { return }
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(rooms).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch { self.error = "Files loaded, but the local index could not be saved." }
+    }
+    func refresh(force: Bool = false, conversationIDs: Set<String>? = nil) async {
+        guard !loading, !api.token.isEmpty else { return }
+        loading = true; error = nil; progress = "Looking for shared files…"
+        defer { loading = false; progress = ""; publish() }
+        do {
+            let listing = try await request("/conversations")
+            guard case .array(let conversations) = listing["conversations"] else { throw ServiceError(message: "Conversation list unavailable.") }
+            try Task.checkCancellation()
+            let ids = Set(conversations.map(\.id))
+            rooms = rooms.filter { ids.contains($0.key) }; publish(); persist()
+            var failed = 0
+            var firstFailure = ""
+            let targets = conversations.filter { conversationIDs?.contains($0.id) ?? true }
+            for (index, room) in targets.enumerated() {
+                try Task.checkCancellation()
+                let revision = room["updatedAt"].string
+                if !force, !revision.isEmpty, rooms[room.id]?.revision == revision { continue }
+                progress = "整理附件 · \(index + 1)/\(targets.count) 个对话"
+                do {
+                    var cursor = "", seen: Set<String> = [], collected: [ChatSpaceItem] = []
+                    while true {
+                        try Task.checkCancellation()
+                        var query = URLComponents()
+                        query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "200")]
+                        if !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
+                        let escaped = room.id.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")) ?? ""
+                        let page = try await request("/conversations/" + escaped + "?" + (query.percentEncodedQuery ?? ""))
+                        try Task.checkCancellation()
+                        try ChatSession.validateHistoryRecord(page, expectedID: room.id)
+                        guard case .array(let messages) = page["messages"] else { throw ServiceError(message: "Message page unavailable.") }
+                        collected += ChatSpaceItem.extract(messages: messages, room: room, tombstones: page["tombstones"].array)
+                        publish(extra: collected, replacing: room.id)
+                        if !page["hasMore"].bool { break }
+                        cursor = page["before"].string
+                        guard !cursor.isEmpty, seen.insert(cursor).inserted else { throw ServiceError(message: "History pagination stopped before all files were indexed.") }
+                    }
+                    rooms[room.id] = Room(revision: revision, items: collected); publish(); persist()
+                } catch is CancellationError { throw CancellationError() }
+                catch let failure as ServiceError where failure.conversationDeleted {
+                    rooms.removeValue(forKey: room.id); publish(); persist()
+                } catch {
+                    failed += 1
+                    if firstFailure.isEmpty { firstFailure = error.localizedDescription }
+                    publish()
+                }
+            }
+            if failed > 0 { error = "\(failed) 个对话的附件未更新，已保留可用内容。可下拉重试。\n" + firstFailure }
+        } catch is CancellationError { }
+        catch { self.error = "附件索引暂未更新：" + error.localizedDescription }
+    }
+}
+
+struct ChatSpaceView: View {
+    @EnvironmentObject private var store: AppStore
+    @StateObject private var index: ChatSpaceIndex
+    @State private var filter = "All"
+    @State private var sender = "Everyone"
+    @State private var query = ""
+    @State private var preview: ChatSpaceItem?
+    let conversationIDs: Set<String>?
+    let embedded: Bool
+    let showMessage: (ChatSpaceItem) -> Void
+    init(api: APIClient, conversationIDs: Set<String>? = nil, embedded: Bool = false, showMessage: @escaping (ChatSpaceItem) -> Void) {
+        _index = StateObject(wrappedValue: ChatSpaceIndex(api: api)); self.showMessage = showMessage
+        self.conversationIDs = conversationIDs; self.embedded = embedded
+    }
+    private var visible: [ChatSpaceItem] {
+        index.items.filter {
+            (conversationIDs?.contains($0.conversationID) ?? true) &&
+            (filter == "All" || $0.kind == filter) &&
+            (sender == "Everyone" || (sender == "Vera" ? $0.fromVera : !$0.fromVera)) &&
+            (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.conversationTitle.localizedCaseInsensitiveContains(query))
+        }
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(["All", "Images", "Files", "Audio", "Videos"], id: \.self) { category in
+                        Button { filter = category } label: {
+                            Text(category).chatNavigationFont().padding(.horizontal, 12).frame(minHeight: 40)
+                                .background(filter == category ? VesperTheme.ink.opacity(0.12) : .clear, in: Capsule())
+                        }.buttonStyle(.plain).accessibilityAddTraits(filter == category ? .isSelected : [])
+                    }
+                }.padding(.horizontal, 16)
+            }.padding(.vertical, 8)
+            List {
+                if index.loading { HStack { ProgressView(); Text(index.progress).font(.caption) }.listRowBackground(Color.clear) }
+                if let error = index.error { Text(error).font(.caption).foregroundStyle(VesperTheme.muted).listRowBackground(Color.clear) }
+                ForEach(visible) { item in
+                    Button { preview = item } label: {
+                        HStack(spacing: 14) {
+                            Group {
+                                if item.kind == "Images", let url = item.url {
+                                    AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { Image(systemName: "photo") }
+                                } else { Image(systemName: item.symbol).font(.title2).foregroundStyle(VesperTheme.accent) }
+                            }.frame(width: 40, height: 40).clipped()
+                                .vesperGlass(in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.name).chatNavigationFont(14, weight: .medium).lineLimit(2)
+                                Text((item.fromVera ? "Vera" : "\(store.agentDisplayName)") + " · " + ChatPresentation.time(item.date))
+                                    .chatNavigationFont(12, weight: .regular).foregroundStyle(VesperTheme.muted)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).contentShape(Rectangle())
+                    }.buttonStyle(.plain).listRowBackground(Color.clear).listRowSeparator(.hidden)
+                        .contextMenu { Button { showMessage(item) } label: { Label("Show in chat", systemImage: "bubble.left") } }
+                }
+                if visible.isEmpty && !index.loading {
+                    ContentUnavailableView(query.isEmpty ? "No shared files" : "No matches", systemImage: "tray",
+                                           description: Text(index.items.isEmpty ? "你和 \(store.agentDisplayName) 在这个联系人的聊天中发过的文件会出现在这里。" : "Try another type, sender, or search."))
+                        .listRowBackground(Color.clear)
+                }
+            }.listStyle(.plain).scrollContentBackground(.hidden).refreshable { await index.refresh(force: true, conversationIDs: conversationIDs) }
+        }.foregroundStyle(VesperTheme.ink).background { Background() }
+            .modifier(SpaceNavigationTitle(embedded: embedded))
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                    TextField("Search files", text: $query).chatNavigationFont(14, weight: .regular).accessibilityIdentifier("space-search")
+                    Menu {
+                        Picker("Sent by", selection: $sender) {
+                            ForEach(["Everyone", "Vera", "Rowan"], id: \.self) { Text(store.personDisplayName($0)).tag($0) }
+                        }
+                    } label: { Image(systemName: sender == "Everyone" ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill").frame(width: 40, height: 40) }
+                        .accessibilityLabel("Filter by sender").accessibilityValue(store.personDisplayName(sender))
+                }.padding(.horizontal, 16).padding(.vertical, 6).vesperGlass(in: Capsule()).padding(16)
+            }
+            .sheet(item: $preview) { item in
+                if let url = item.url { ChatAttachmentPreview(url: url, name: item.name) }
+            }
+            .task(id: conversationIDs) { await index.refresh(conversationIDs: conversationIDs) }
+    }
+}
+
+private struct ChatNavigationFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    let weight: Font.Weight
+    init(size: CGFloat, weight: Font.Weight) { _size = ScaledMetric(wrappedValue: size, relativeTo: .subheadline); self.weight = weight }
+    func body(content: Content) -> some View { content.font(.system(size: size, weight: weight)) }
+}
+extension View {
+    func chatNavigationFont(_ size: CGFloat = 14, weight: Font.Weight = .medium) -> some View {
+        modifier(ChatNavigationFont(size: size, weight: weight))
+    }
+}
+
+struct ChatProjectPage<Chats: View, Sources: View>: View {
+    let project: ChatProject
+    @Binding var tab: String
+    @Binding var draft: String
+    let canSend: Bool
+    let newChat: () -> Void
+    let send: () -> Void
+    @ViewBuilder var chats: () -> Chats
+    @ViewBuilder var sources: () -> Sources
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                ForEach(["Chats", "Sources"], id: \.self) { value in
+                    Button { tab = value } label: {
+                        Text(value).chatNavigationFont(14, weight: .medium)
+                            .foregroundStyle(tab == value ? VesperTheme.ink : VesperTheme.muted)
+                            .padding(.horizontal, 16).frame(minHeight: 40)
+                            .background(tab == value ? VesperTheme.ink.opacity(0.08) : .clear, in: Capsule())
+                    }.buttonStyle(.plain).accessibilityAddTraits(tab == value ? .isSelected : [])
+                }
+                Spacer()
+            }.padding(.horizontal, 16).padding(.top, 8)
+            if tab == "Chats" { chats() } else { sources() }
+        }.background { Background() }.foregroundStyle(VesperTheme.ink)
+            .navigationTitle(project.name).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: project.symbol)
+                        Text(project.name).lineLimit(1)
+                    }.chatNavigationFont(16, weight: .semibold)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if tab == "Chats" {
+                    HStack(spacing: 10) {
+                        Button(action: newChat) { Image(systemName: "plus").font(.system(size: 20)).frame(width: 36, height: 44) }
+                            .accessibilityLabel("New chat in " + project.name).disabled(!canSend)
+                        TextField("Message " + project.name, text: $draft, axis: .vertical)
+                            .chatNavigationFont(14, weight: .regular).lineLimit(1...4)
+                            .submitLabel(.send).onSubmit { if canSend { send() } }
+                        Button(action: send) {
+                            Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(VesperTheme.palette == .black ? Color.black : Color.white).frame(width: 34, height: 34)
+                                .background(VesperTheme.ink, in: Circle())
+                        }.accessibilityLabel("Send in new project chat")
+                            .disabled(!canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .opacity(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.35 : 1)
+                    }.buttonStyle(.plain).padding(.horizontal, 10).padding(.vertical, 5)
+                        .vesperGlass(in: RoundedRectangle(cornerRadius: 28), interactive: true)
+                        .padding(.horizontal, 20).padding(.vertical, 10)
+                }
+            }
+    }
+}
+
+private struct SpaceNavigationTitle: ViewModifier {
+    let embedded: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if embedded { content }
+        else { content.navigationTitle("Space").navigationBarTitleDisplayMode(.inline) }
+    }
+}
+
+/// Shared download state lets message menus present the system save picker.
+@MainActor
+final class ChatAttachmentDownloader: ObservableObject {
+    @Published var downloading = false
+    @Published var exportURLs: [URL] = []
+    @Published var showingExporter = false
+    @Published var failure: String?
+    private var folder: URL?
+
+    func download(_ attachments: [JSONValue]) async {
+        guard !downloading, !showingExporter, !attachments.isEmpty else { return }
+        downloading = true
+        defer { downloading = false }
+        do {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VesperDownload-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            folder = directory
+            var urls: [URL] = []
+            for (index, attachment) in attachments.enumerated() {
+                guard let url = URL(string: attachment["url"].string), ChatWebURL.accepts(url) else { throw URLError(.badURL) }
+                let (temporary, response) = try await URLSession.shared.download(from: url)
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+                try Task.checkCancellation()
+                // Separate directories preserve original filenames even when an album repeats them.
+                let itemDirectory = directory.appendingPathComponent(String(index), isDirectory: true)
+                try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
+                let destination = itemDirectory.appendingPathComponent(ChatAttachmentDownload.filename(attachment, response: response))
+                try FileManager.default.moveItem(at: temporary, to: destination)
+                urls.append(destination)
+            }
+            exportURLs = urls
+            showingExporter = true
+        } catch {
+            cleanup()
+            failure = "附件暂时无法下载，请稍后重试。\n" + error.localizedDescription
+        }
+    }
+    func cleanup() {
+        if let folder { try? FileManager.default.removeItem(at: folder) }
+        folder = nil; exportURLs = []
+    }
+}
+
+struct ChatAttachmentDownloadPresenter: ViewModifier {
+    @ObservedObject var downloader: ChatAttachmentDownloader
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $downloader.showingExporter, onDismiss: downloader.cleanup) {
+                ChatAttachmentExporter(urls: downloader.exportURLs)
+            }
+            .alert("下载失败", isPresented: Binding(get: { downloader.failure != nil }, set: { if !$0 { downloader.failure = nil } })) {
+                Button("好", role: .cancel) { downloader.failure = nil }
+            } message: { Text(downloader.failure ?? "") }
+    }
+}
+
+enum ChatAttachmentDownload {
+    static func filename(_ attachment: JSONValue, response: URLResponse) -> String {
+        let supplied = attachment["name"].string
+        var name = ((supplied.isEmpty ? response.suggestedFilename ?? "attachment" : supplied) as NSString).lastPathComponent
+        if name.isEmpty || name == "." || name == ".." || name == "/" { name = "attachment" }
+        if (name as NSString).pathExtension.isEmpty,
+           let type = UTType(mimeType: attachment["type"].string.isEmpty ? response.mimeType ?? "" : attachment["type"].string),
+           let ext = type.preferredFilenameExtension { name += "." + ext }
+        return name
+    }
+}
+
+private struct ChatAttachmentExporter: UIViewControllerRepresentable {
+    let urls: [URL]
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        UIDocumentPickerViewController(forExporting: urls, asCopy: true)
+    }
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
 }

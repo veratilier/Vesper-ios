@@ -30,7 +30,7 @@ func authorizedParent() -> Bool {
 struct Request: Decodable { let operation: String; let account: String; let value: String? }
 struct Response: Encodable { let status: OSStatus; var value: String? = nil }
 func perform(_ request: Request) -> Response {
-    let accounts = ["device-token", "netease-music-u", "call-voice-configuration", "vesper-mcp-owner", "usage-elevenlabs-api-key", "persistence-self-test"]
+    let accounts = ["device-token", "mac-backend-device-token", "netease-music-u", "call-voice-configuration", "vesper-mcp-owner", "usage-elevenlabs-api-key", "persistence-self-test"]
     guard accounts.contains(request.account) else { return Response(status: errSecParam) }
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: "com.vera.vesper.mac.credentials",

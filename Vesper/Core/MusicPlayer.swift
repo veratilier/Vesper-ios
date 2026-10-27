@@ -152,7 +152,11 @@ import SwiftUI
     func remove(_ id: String) { setQueue(tracks.filter { $0.id != id }) }
     func cycleMode() {
         let modes = ["order", "repeat", "single", "random"]
-        mode = modes[((modes.firstIndex(of: mode) ?? 0) + 1) % modes.count]
+        setMode(modes[((modes.firstIndex(of: mode) ?? 0) + 1) % modes.count])
+    }
+    func setMode(_ newMode: String) {
+        guard ["order", "repeat", "single", "random"].contains(newMode) else { return }
+        mode = newMode
         applyPlaybackMode()
         savePlaybackState()
     }
@@ -399,12 +403,13 @@ import SwiftUI
         // An unprepared system player reports zero (or a stale previous song).
         // Neither may overwrite a restored position or an in-flight selection.
         guard !resolving, !loadedTrackID.isEmpty, !loadedQueue.isEmpty else {
-            playing = false
+            if playing { playing = false }
             savePlaybackState(force: false)
             syncPlayback()
             return
         }
-        playing = native.playbackState == .playing
+        let isPlaying = native.playbackState == .playing
+        if playing != isPlaying { playing = isPlaying }
         let index = native.indexOfNowPlayingItem
         if loadedQueue.indices.contains(index) {
             let value = loadedQueue[index]
@@ -414,10 +419,14 @@ import SwiftUI
                 loadLyrics(for: value)
             }
             let length = native.nowPlayingItem?.playbackDuration ?? 0
-            duration = length > 0 ? length : value["duration"].number
+            let nextDuration = length > 0 ? length : value["duration"].number
+            if duration != nextDuration { duration = nextDuration }
         }
         let elapsed = native.currentPlaybackTime
-        if elapsed.isFinite { position = Self.resumePosition(elapsed, duration: duration) }
+        if elapsed.isFinite {
+            let nextPosition = Self.resumePosition(elapsed, duration: duration)
+            if position != nextPosition { position = nextPosition }
+        }
         savePlaybackState(force: false)
         syncPlayback()
     }
@@ -576,6 +585,7 @@ private extension String {
 @MainActor final class MusicCatalog: ObservableObject {
     @Published var playlists: [JSONValue] = []
     @Published var songs: [JSONValue] = []
+    @Published var recentSongs: [JSONValue] = []
     @Published var collection: JSONValue = .null
     @Published var busy = false
     @Published var message = ""
@@ -636,9 +646,11 @@ private extension String {
         do {
             var songsRequest = MusicLibraryRequest<Song>()
             songsRequest.limit = 100
+            songsRequest.sort(by: \.libraryAddedDate, ascending: false)
             let songs = try await songsRequest.response().items
             player.register(Array(songs))
             self.songs = songs.map(Self.metadata)
+            recentSongs = self.songs
             var playlistRequest = MusicLibraryRequest<Playlist>()
             playlistRequest.limit = 100
             let items = try await playlistRequest.response().items
@@ -650,7 +662,7 @@ private extension String {
                                             "cover": .string($0.artwork?.url(width: 200, height: 200)?.absoluteString ?? "")]) }
         } catch { message = error.localizedDescription }
     }
-    func mySongs(player: MusicPlayer) async {
+    func loadAllSongs(player: MusicPlayer) async {
         guard !busy, connected else { return }
         busy = true; message = ""
         defer { busy = false }
@@ -665,8 +677,14 @@ private extension String {
             }
             player.register(allSongs)
             songs = allSongs.map(Self.metadata)
-            collection = .object(["title": .string("My songs"), "tracks": .array(songs)])
         } catch { message = error.localizedDescription }
+    }
+    func mySongs(player: MusicPlayer) async {
+        guard !busy, connected else { return }
+        await loadAllSongs(player: player)
+        if message.isEmpty {
+            collection = .object(["title": .string("My songs"), "tracks": .array(songs)])
+        }
     }
     func playlist(_ id: String, player: MusicPlayer) async {
         guard !busy, let playlist = playlistItems[id] else { return }

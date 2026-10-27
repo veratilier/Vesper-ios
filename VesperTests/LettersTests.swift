@@ -208,6 +208,20 @@ private struct ChatBadgeFixture: View {
             frames: [cover.messageId: CGRect(x: 20, y: 450, width: 350, height: 80)], viewport: viewport))
         XCTAssertFalse(inbox.hasUpdates)
     }
+    func testVisibleReplyAlsoAcknowledgesItsAttachedToolRecord() throws {
+        let suite = "chat-tool-read-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let inbox = ChatInbox(preferences: preferences)
+        let reply: JSONValue = .object(["id": .string("reply"), "role": .string("agent")])
+        let tool: JSONValue = .object(["id": .string("tool-record"), "role": .string("tool"),
+            "metadata": .object(["itemId": .string("tool-item")])])
+        let row = ChatPresentation.Row(id: reply.id, activity: false, messages: [reply], activities: [tool])
+        inbox.update([ChatInboxCover(conversationId: "room", messageId: tool.id, itemId: "tool-item")], scope: "fixture")
+        XCTAssertTrue(inbox.hasUpdates)
+        inbox.markDisplayed(conversation: "room", messageIDs: ChatReadVisibility.receiptIDs(for: row))
+        XCTAssertFalse(inbox.hasUpdates, "A visible reply must clear a cover for its attached tool record")
+    }
     func testMountedInactiveChatKeepsWakeBadgeUntilVisibleAndRendersRedDot() async throws {
         let suite = "chat-tab-" + UUID().uuidString
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { preferences.removePersistentDomain(forName: suite) }

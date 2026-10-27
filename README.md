@@ -8,13 +8,32 @@ Capacitor, React runtime or bundled website. Minimum iOS 17; iPhone and iPad.
 Use the **VesperMac** scheme for the desktop app. See [MAC.md](MAC.md) for installation,
 first connection, desktop controls and platform support.
 
+## Shared glass appearance
+
+On iOS/iPadOS 26 and Mac Catalyst 26 or later, native cards, chat bubbles,
+composer, voice bars, custom controls and sidebar surfaces use Apple's
+`glassEffect(.regular)` through one shared modifier. Older systems retain their
+system Material fallback. The glass transparency preference adjusts the tint;
+it never fades the whole optical effect or foreground text. Reduce Transparency
+still uses an opaque, theme-matched surface. Photographs, paper content and data
+colors retain their own appearance. Effects stay local to each surface so nested
+cards and controls preserve their foreground content and layering.
+
+## Chat contacts and windows
+
+The triangle beside Chat opens the VPS/MAC contact picker. Each contact has its
+own conversation card stack: swipe up for the next window, down for the previous,
+then tap the front card to open it. Window selection stays separate per backend;
+switching contacts preserves both live sessions and never opens Connection settings.
+Touch and hold a card (right-click on Mac) to rename or delete a conversation.
+
 ## Build the iPhone app on your Mac
 
 1. Clone this repository and open **Vesper.xcodeproj** in Xcode 16 or later.
 2. Select the **Vesper** scheme, select your iPhone, and choose your own development
    team under Signing & Capabilities. The bundle identifier is
    `com.vera.vesper.native`, separate from the existing web-shell app.
-3. Build and run. In Settings → Connection enter your existing Vesper device token.
+3. Build and run. Enter your existing Vesper device token on the opening screen, or in Studio → Device token.
    It is stored in the iOS Keychain; never put it in Git, an issue or build logs.
 4. The default API, history and WebSocket addresses point to the existing Vesper
    services. No backend deployment or database migration is performed by this repo.
@@ -23,13 +42,14 @@ The new app does not automatically inherit Safari/Capacitor local storage. Cloud
 records are reused; local-only settings must be entered again. Keep the existing
 app installed until the native version has passed your device checks.
 
+The standalone Notes and Sketch features have been retired. Their UI is removed; existing stored records are preserved. Journals and book annotations remain available.
+
 ## Implemented screens
 
 | Screen | Native implementation |
 | --- | --- |
-| Home | Ice-blue image background, glass cards, scrollable note preview, reminder completion, compact player, sidebar and floating navigation |
+| Home | Ice-blue image background, glass cards, reminder completion, compact player, sidebar and floating navigation |
 | Chat | Native multiline input, WebSocket JSON-RPC, streaming text, history list, model selection, stop, dynamic tool dispatch, explicit command/file approval |
-| Notes | Read, add, edit, delete with confirmation |
 | Reminders | Read, add, edit, complete, delete with confirmation |
 | Dates | Add/edit dates, yearly repeat, countdown |
 | Journal | Textured paper, Beijing date strip and date picker, Vera/Rowan reading, user entry editing |
@@ -37,10 +57,12 @@ app installed until the native version has passed your device checks.
 | Desire | Independent Vesper state, six-value flower, history |
 | Album | Existing photos, category filter, full-size viewer and sharing |
 | Memory | Native shared Memory library: existing-device authentication, list/search, type filters, source text, save and versioned corrections; legacy Vesper records remain accessible |
+| Dreams | Separate glass archive in Collection and the desktop/iPad sidebar; original dream records, Beijing dates, search and full text, without copying or deleting their stored contents |
 | Pandora / Reading Room | Bookshelf, book creation, page navigation, quoted margin notes |
-| Settings | Device pairing, local agent instructions, existing MCP connection list, document export |
+| Settings | Appearance, device permissions and document export |
+| Studio | Agent instructions, Heartbeat, MCP, usage, device token and service status |
 | Usage & balances | GPT weekly used/remaining/reset time, ElevenLabs subscription usage and overage, MiniMax official billing links |
-| Autonomous Wake | Existing VPS switch, interval, prompt editor and activity history, gated by server config version |
+| Heartbeat | Existing VPS switch, interval and activity history; Wake prompt separates editable owner preferences from Rowan's saved self prompt with full text and last update time, gated by server config version |
 
 ## Current boundaries
 
@@ -73,7 +95,7 @@ Apple simulator; its result is separate from live-service verification.
 
 ## Account usage
 
-Open **Settings → Usage & balances**, or tap **Usage** on Home. Pull to refresh
+Open **Studio → Usage**, or tap **Usage** on Home. Pull to refresh
 both providers, or retry either card independently. GPT quota uses a short-lived,
 read-only connection to the existing Vesper Codex server; it does not start or
 resume a conversation. The weekly window is selected by its reported duration,
@@ -105,9 +127,11 @@ one of three bundled Vesper scenes and edit a short caption the same way. Both
 work without a Vesper account or network connection; the picture choices are
 bundled artwork, not personal photos selected from your photo library.
 
-The existing Desire, Usage and Notes widgets still use the App Group snapshot
-shared with the app. The Broadcast extension separately requires shared App
-Group and Keychain entitlements. CI builds for an iOS simulator with signing
+The existing Desire and Usage widgets still use the App Group snapshot
+shared with the app. The Broadcast extension shares its connection configuration
+and latest observation through a separate Keychain service in the host app's
+access group; it does not require the widget App Group entitlement.
+CI builds for an iOS simulator with signing
 disabled; this does not prove that your Apple team can sign all three targets
 for a physical iPhone. If Xcode fails while installing, inspect the first
 Signing & Capabilities error for **Vesper**, **VesperWidgets** or
@@ -137,3 +161,145 @@ dismissal, expired credentials, connection interruption, and wake config version
 ## Shared Memory library
 
 Memory uses the existing Vesper device connection via `/api/shared-memory`; no separate Memory login or password is required. Deploy the Vesper-web shared-memory endpoint and its SHARED_MEMORY_DB binding first (see that repository's docs/shared-memory.md). The backend accesses the same memory-db used by the independent Memory page/MCP. Nothing is packaged as a stale data snapshot. Existing Vesper records remain under the legacy entry, with no automatic import or deletion. Chat-side automatic memory retrieval is unchanged. Real-account and physical-device verification is separate from CI.
+
+Dreams now appear in **Collection → Dreams**, separate from Memory's categories,
+search results and recent-memory previews. They read the existing `kind=dream`
+records through that same authenticated service. IDs, original text, versions,
+sleep-generated dream writes and the database remain intact; no data migration,
+withdrawal or duplicate copy is performed. Dream searches explicitly include
+non-factual records and remain limited to dreams. The Sleep time help points to
+the new entry. General Memory creation no longer offers a dream category.
+
+## Native chat sending and synchronization
+
+Chat uses a compact sidebar under the selected VPS or Mac contact. Fixed entries
+are **Schedule**, **Space**, and **Project**, followed by **Pinned** and **Recents**.
+The redundant contact avatar row is removed. Both projects and chats can be pinned;
+project settings offer 16 icons, a name, and an instruction. Conversation menus
+retain rename, pin/unpin, move to project, and confirmed deletion. Removing a
+project preserves its conversations and their pins. Recents includes unpinned
+conversations inside projects too. New chat and the settings menu stay at the bottom.
+
+Schedule opens the existing VPS autonomous wake settings. Space indexes files,
+images, audio, and videos sent by either participant in the selected backend's
+conversations. Type chips, sender filters, and filename/conversation search narrow
+the list; preview supports save/share and a context menu returns to the message.
+Attachment metadata is cached by backend/account. History pagination runs only
+while Space is open, skips unchanged conversations, and preserves cached entries
+if a refresh fails. Deleted conversations/messages are excluded. A first visit
+may take time to index long histories; pull to refresh rescans them. The index is
+local and contains metadata, not downloaded file bodies or full chat text.
+
+On iPhone, the chat header menu or a rightward swipe from the left edge opens the
+sidebar. Selecting a conversation closes it; tapping the exposed chat pane or
+swiping left also closes it. Mac/iPad use a collapsible column beside the content.
+The top search button opens message search; the bottom settings menu includes
+Instruction, favorite messages, and Our days. Sidebar and file-list typography use a
+shared compact font with Dynamic Type support; pinned chat and project titles use
+the same size and weight. The drawer uses a neutral frosted surface, a left-aligned
+contact selector, 46-point rows, and long-press context menus. While open on iPhone,
+the tab bar and music accessory are hidden; closing the drawer restores navigation.
+The exposed content pane or a leftward swipe closes the drawer, with an accessible
+Close sidebar option in its settings menu. Project detail uses an inline icon/name title, Chats and
+Sources tabs, and a bottom new-conversation composer. Chats show one preview line;
+Sources filters the attachment index to member conversations and exposes project
+Instruction. Sending from the project composer persists membership before the
+first turn; unaccepted input stays as a draft, while accepted sends use the existing
+outbox recovery. Project settings
+remain in the top ellipsis menu.
+
+**Instruction** opens **Contact instruction**, initialized from
+Vera's previously saved Chat prompt (or her supplied wording). Each backend/account
+can now save its own override, including an explicitly empty value. Project
+instructions add to that contact's instructions only for member conversations;
+moving out removes that addition on the next send. Existing thread IDs are
+preserved, active replies are not interrupted, and unchanged settings reuse the
+installed session configuration.
+
+Projects, membership, pins, and instructions are device-local, keyed by a hash of
+API origin, history origin, and account credential. They do not yet sync between
+devices; conversation history and rename still use the existing history backend.
+These settings do not change base instructions, autonomous wake prompts, or make
+separate conversations share context or memories.
+
+Daily replies request brief spoken Chinese, usually one utterance or idea per
+bubble, separated by blank lines. Detailed explanations and documents remain
+available when requested. Native plain-text replies also display complete
+sentences as separate bubbles; quotation contents, Markdown structures, user
+messages and explicit tool-delivered bubbles remain intact. This changes
+presentation only: original saved text stays unchanged, and older quotation
+links resolve their excerpt against the current layout.
+
+### Cinema chat continuity
+
+Chat Album and File accept one short video per turn, up to 60 seconds. The device
+exports a 720p MP4 capped at 32 MiB, extracts up to 24 ordered 960px frames, and
+passes timestamped images to the existing model turn. Available Apple speech
+recognition supplies dialogue text; missing recognition and non-speech audio are
+explicitly identified. This is sampled visual understanding, not native video or
+continuous audio input. The chat attachment keeps a playable MP4 and thumbnail;
+long-press download and synchronized message deletion use the existing controls.
+Video selection works from disk and processing runs off the UI thread.
+
+Cinema Bilibili files are temporary playback imports. Closing Cinema, replacing
+the video, or changing backends releases the import through authenticated DELETE
+`/watch/:id`. The server removes expired files at startup and every minute, so
+lost close requests cannot leave an indefinite archive. Chat video attachments
+remain normal message attachments and are separate from Cinema's temporary files.
+
+Cinema's local video scene sharing and in-app screen sharing use the selected
+VPS or Mac contact's existing `ChatSession`, conversation and composer. Opening
+Cinema keeps the current chat and any reply in progress. After a fresh launch,
+it restores that backend's selected conversation (or main room) before sharing;
+a failed restore never sends a frame into a new movie conversation. The Cinema
+Chat sheet and regular Chat show the same messages. Existing movie conversations
+remain in history; the legacy `native-movie-conversation` pointer is no longer used.
+The ReplayKit broadcast extension snapshots the selected VPS chat and contact instructions before the user starts broadcasting. Its server-owned observer uses that chat's recent history, can remain silent, and saves completed comments into the same Chat for Bark delivery. The observer never interrupts the interactive Codex thread. The next native chat turn receives the latest shared-screen reply and sampled scene as quoted history.
+
+### VPS monitor
+
+In a VPS chat, open the top-right menu and tap the display icon. **桌面** shows
+the VPS's actual full X11 desktop, visible windows and taskbar; **终端** shows the
+existing current-chat commands, outputs and terminal controls. Pinch to zoom the
+desktop frame. Idle, login maintenance, capture failure and disconnected states
+are shown explicitly. A retained disconnected image is labelled as the last frame.
+
+The screen reads the exact HTTPS `/desktop/display` route on the paired history
+origin, using the existing device bearer token. Redirects are rejected. Frame
+polling runs only while the screen tab is visible and the app is active. Viewing
+does not submit a model turn or browse on Rowan's behalf. The desktop remains
+visible when no browser page is open. Owner browser login suppresses capture.
+The Mac chat retains its own terminal entry.
+
+Verification: three iOS simulator tests passed for paired origin/authentication,
+invalid/live/idle frame handling and preserved zoom when frames update. Server
+verification and deployment instructions are in Vesper-web's
+`vps/BROWSER_DISPLAY.md`.
+
+Regular chat sends save the outgoing message to an account-scoped local outbox
+before submitting the model turn. Confirmed messages and their memory evidence
+sync to the existing services asynchronously. Failed uploads remain on disk and
+retry while the app can run, including after relaunch or reconnection. The outbox
+never replays model turns; uncertain sends require an actual server receipt.
+Message deletion waits for outstanding uploads so a late write cannot restore a
+deleted row. Existing IDs make history retries idempotent.
+
+Regular chat no longer calls memory recall before sending. Rowan can use
+`recall_native_memory` during a reply when past experiences or preferences are
+relevant. Its results remain untrusted historical context. Ordinary messages use
+the existing model conversation; this does not shorten that conversation or
+change its model/reasoning setting. Native voice-call recall is unchanged.
+Attachments still upload before submission, and disconnected sessions still need
+to reconnect. First-use tool preparation can also require a network request.
+
+### Receive and reconnect latency
+
+- Automatic legacy phase repair is limited to the visible recent-message window
+  and two history pages in total. Sending or starting a turn cancels that work;
+  cancelled/background page requests cannot time out and disconnect the chat.
+- The production connection installs the cached tool catalog and stable session
+  instructions when resuming, avoiding a second resume on the first send.
+  A background catalog refresh retains the previous valid account-scoped value.
+- Incoming reply, terminal and completion records enter the durable history queue
+  immediately. Network history/memory writes do not block the socket reader or
+  turn completion. Explicit tool delivery keeps its existing save confirmation.

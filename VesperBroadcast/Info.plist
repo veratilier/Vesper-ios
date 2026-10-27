@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>BroadcastKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)com.vera.vesper.native.broadcast</string>
+	<string>$(AppIdentifierPrefix)com.vera.vesper.native</string>
 	<key>CFBundleDisplayName</key>
 	<string>Vesper Screen Share</string>
 	<key>CFBundleExecutable</key>

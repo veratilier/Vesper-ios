@@ -3,22 +3,6 @@ import MusicKit
 
 /// Select genuine shared content for the desktop; placeholder copy never becomes saved data.
 enum HomeDesktopContent {
-    static func timestamp(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-    }
-    static func latestRowanNote(_ notes: [JSONValue]) -> JSONValue? {
-        notes.enumerated().filter {
-            $0.element["kind"].string == "agent" && !$0.element["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.max { left, right in
-            func date(_ note: JSONValue) -> Date {
-                timestamp(note["createdAt"].string) ?? timestamp(note["updatedAt"].string) ?? .distantPast
-            }
-            let lhs = date(left.element), rhs = date(right.element)
-            return lhs == rhs ? left.offset > right.offset : lhs < rhs
-        }?.element
-    }
     static func nextDate(_ items: [JSONValue], now: Date = .now) -> JSONValue? {
         let valid = items.compactMap { item -> (JSONValue, Int)? in
             guard let days = DateCounter.days(item, now: now) else { return nil }
@@ -36,39 +20,38 @@ struct HomeView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var chat: ChatSession
+    @EnvironmentObject private var workspace: ChatBackendWorkspace
     @Environment(\.scenePhase) private var phase
     @Environment(\.dynamicTypeSize) private var typeSize
     @AppStorage("vesperPalette") private var paletteName = "blue"
     @State private var refreshingUsage = false
+    @State private var desireState: JSONValue = .null
+    @State private var homePhoto = ""
     @ObservedObject private var weather = WeatherController.shared
     let navigate: (Destination) -> Void
     var showsInlineMusic = true
+    var isVisible = true
     private var palette: VesperPalette { VesperPalette(rawValue: paletteName) ?? .blue }
 
     var body: some View {
         GeometryReader { geometry in
             let width = max(240, min(geometry.size.width, 600) - 36)
-            let photoHeight = min(265, max(214, (width - 14) * 0.55 + 22))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        header
-                        usageLine
-                    }
-                    rowanLetter
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack { dateLabel; Spacer(minLength: 8); weatherRow }
+                    usageLine
+                    homeWelcome
+                    rowanCard
                     if typeSize.isAccessibilitySize || geometry.size.width < 350 {
-                        desireCard(height: photoHeight)
-                        dateLeaf
-                        remindersSlip
+                        desireCard(height: 164)
+                        readingCard
                     } else {
-                        HStack(alignment: .top, spacing: 14) {
-                            desireCard(height: photoHeight).frame(width: (width - 14) * 0.60)
-                            VStack(spacing: 12) {
-                                dateLeaf.frame(maxHeight: .infinity)
-                                remindersSlip.frame(maxHeight: .infinity)
-                            }.frame(maxWidth: .infinity).frame(height: photoHeight)
+                        HStack(alignment: .top, spacing: 12) {
+                            desireCard(height: 174).frame(width: (width - 12) / 2)
+                            readingCard.frame(maxWidth: .infinity)
                         }
                     }
+                    ChatActivityHeatmap(compact: true)
                     if showsInlineMusic { musicRow }
                     if !store.connected && !store.hasLocalData {
                         Button("Connect Vesper in Settings") { navigate(.settings) }
@@ -78,7 +61,7 @@ struct HomeView: View {
                 .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 24)
                 .frame(maxWidth: 600).frame(maxWidth: .infinity)
             }
-            .refreshable { await store.refresh(); await loadUsage(); weather.refresh(force: true) }
+            .refreshable { await store.refresh(); await loadUsage(); await loadDesire(); weather.refresh(force: true) }
         }
         .foregroundStyle(palette.ink)
         .buttonStyle(.plain)
@@ -94,8 +77,108 @@ struct HomeView: View {
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
         }
+        .task(id: [store.api.baseURL, store.token, String(describing: phase)]) {
+            desireState = DesireEmotion.cached(store.api)
+            guard phase == .active, !store.token.isEmpty else { return }
+            while !Task.isCancelled {
+                await loadDesire()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+        .task(id: [store.api.baseURL, store.token]) { await pickAlbumPhoto() }
         .onChange(of: store.document("music")) { _, tracks in player.updateLibrary(tracks.array) }
         .onChange(of: store.token) { _, _ in Task { await loadUsage() } }
+    }
+
+    @AppStorage("vesperLastReadBook") private var lastReadBook = ""
+    private var currentBook: JSONValue? {
+        let books = store.document("readingRoom").array
+        return books.first { $0.id == lastReadBook }
+            ?? books.first { $0["location"].number > 0 }
+            ?? books.first
+    }
+    private var homeWelcome: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(greeting + ", " + userName).font(VesperTheme.title(27)).lineLimit(1).minimumScaleFactor(0.65)
+                Text("A little space for today.").font(.system(size: 12, design: .serif)).foregroundStyle(palette.muted)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            ZStack {
+                Circle().fill(AngularGradient(colors: [palette.muted.opacity(0.5), .white.opacity(0.4), palette.accent.opacity(0.4), palette.muted.opacity(0.5)], center: .center))
+                    .frame(width: 76, height: 76).offset(x: 15)
+                HomeProfileImage(source: homePhoto, baseURL: store.baseURL)
+                    .frame(width: 62, height: 76).clipped().padding(4)
+                    .background(palette.ink.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                    .rotationEffect(.degrees(7)).offset(x: -9)
+            }.frame(width: 92, height: 88).accessibilityHidden(true)
+        }.padding(.horizontal, 16).padding(.vertical, 10)
+    }
+    private func pickAlbumPhoto() async {
+        homePhoto = ""
+        let api = store.api
+        guard !api.token.isEmpty else { return }
+        var offset = 0
+        var count = 0
+        var chosen = ""
+        do {
+            repeat {
+                let response = try await api.request("/api/photos?limit=60&offset=\(offset)")
+                try Task.checkCancellation()
+                for photo in response["photos"].array {
+                    let source = photo["url"].string
+                    guard !source.isEmpty else { continue }
+                    count += 1
+                    if Int.random(in: 0..<count) == 0 { chosen = source }
+                }
+                guard response["nextOffset"] != .null else { break }
+                let next = Int(response["nextOffset"].number)
+                guard next > offset else { break }
+                offset = next
+            } while !Task.isCancelled
+            try Task.checkCancellation()
+            guard api.baseURL == store.api.baseURL, api.token == store.token else { return }
+            homePhoto = chosen
+        } catch { /* Keep the decorative placeholder when the album is unavailable. */ }
+    }
+    private var rowanCard: some View {
+        HomeChatEntry(store: workspace.runtime(workspace.selectedBackend).store, palette: palette) { navigate(.chat) }
+    }
+    private var readingCard: some View {
+        Group {
+            if let book = currentBook {
+                NavigationLink { ReaderView(bookID: book.id) } label: { readingSummary(book) }
+            } else {
+                Button { navigate(.readingRoom) } label: { readingSummary(nil) }
+            }
+        }.accessibilityIdentifier("home-reading-progress")
+    }
+    private func readingSummary(_ book: JSONValue?) -> some View {
+        let length = book?["text"].string.utf16.count ?? 0
+        let location = book?["location"].number ?? 0
+        let progress = length > 0 ? min(1, max(0, location / Double(length))) : 0
+        return VStack(alignment: .leading, spacing: 9) {
+            Text("Reading").font(VesperTheme.title(25)).lineLimit(1).minimumScaleFactor(0.7)
+            if let book {
+                HStack(spacing: 9) {
+                    ReadingBookCover(title: book["title"].string, cover: book["cover"].string)
+                        .frame(width: 35, height: 48).clipped()
+                    Text(book["title"].string).font(.system(size: 12)).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                HStack {
+                    Text("共读进度")
+                    Spacer(minLength: 2)
+                    Text(book["location"] == .null ? "—" : "\(Int(progress * 100))%")
+                }.font(.system(size: 11)).foregroundStyle(palette.muted)
+                ProgressView(value: progress).tint(palette.accent)
+            } else {
+                Spacer(minLength: 0)
+                Image(systemName: "book.closed").font(.title2)
+                Text("选一本书，一起读。").font(.caption).foregroundStyle(palette.muted)
+                Spacer(minLength: 0)
+            }
+        }.padding(13).frame(maxWidth: .infinity, alignment: .leading).frame(height: 174)
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 22), interactive: true)
     }
 
     private var header: some View {
@@ -138,58 +221,32 @@ struct HomeView: View {
         .accessibilityValue(remainingUsage.map { "\($0) percent remaining" } ?? "Unavailable")
         .accessibilityIdentifier("home-weekly-usage")
     }
-    private var latestNote: JSONValue? { HomeDesktopContent.latestRowanNote(store.document("notes").array) }
-    private var rowanLetter: some View {
-        Button { navigate(.notes) } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("from Rowan").font(VesperTheme.title(21)).foregroundStyle(palette.muted)
-                    .frame(height: typeSize.isAccessibilitySize ? nil : 24, alignment: .leading)
-                Text("哥哥留下的")
-                    .font(.system(.subheadline, design: .default).weight(.light))
-                    .foregroundStyle(palette.ink.opacity(0.78))
-                Text(latestNote?["text"].string ?? "这里留给哥哥下一张小纸条。")
-                    .font(.system(.subheadline, design: .default).weight(.light)).lineSpacing(4)
-                    .foregroundStyle(palette.ink.opacity(0.78))
-                    .lineLimit(typeSize.isAccessibilitySize ? 8 : 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let note = latestNote,
-                   let date = HomeDesktopContent.timestamp(note["createdAt"].string)
-                    ?? HomeDesktopContent.timestamp(note["updatedAt"].string) {
-                    Text(date.formatted(.dateTime.month(.abbreviated).day()))
-                        .font(.system(.caption2, design: .serif)).italic()
-                        .foregroundStyle(palette.muted).frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-            .padding(.horizontal, 20).padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .vesperGlass(in: PaperEdge(seed: 9))
-        }
-        .accessibilityHint("Open Notes to read the full letter")
-        .accessibilityIdentifier("home-rowan-letter")
-    }
     private func desireCard(height: CGFloat) -> some View {
         Button { navigate(.desire) } label: {
-            GeometryReader { geometry in
-                Image(palette == .black ? "DesireDarkCoast" : "DesireCoast").resizable().scaledToFill()
-                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                    .saturation(0.65).contrast(0.85)
-                    .opacity(palette == .black ? 0.48 : 0.66)
-                    .overlay(alignment: .top) {
-                        LinearGradient(colors: [palette == .black ? .black.opacity(0.18) : .white.opacity(0.22), .clear], startPoint: .top, endPoint: .bottom)
-                            .frame(height: 88)
-                    }
-                    .overlay(alignment: .topLeading) {
-                        HStack {
-                            Text("Desire").font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1)
-                            Spacer(minLength: 1)
-                            Image(systemName: "chevron.right").font(.system(size: 10))
-                        }.foregroundStyle(palette.ink).padding(12)
-                    }
+            DesireTide(values: DesireEmotion.fields.map { key, _ in
+                if case .number(let value) = desireState["values"][key] { return value }
+                return nil
+            }, compact: true, glass: true, active: isVisible)
+            .overlay(alignment: .topLeading) {
+                HStack {
+                    Text("Desire").font(VesperTheme.title(23)).minimumScaleFactor(0.6).lineLimit(1)
+                    Spacer(minLength: 1)
+                    Image(systemName: "chevron.right").font(.system(size: 10))
+                }
+                .foregroundStyle(palette.ink)
+                .padding(12)
             }
             .frame(height: height)
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .vesperGlass(in: RoundedRectangle(cornerRadius: 22))
-        }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-print")
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 22), interactive: true)
+        }.accessibilityLabel("Desire").accessibilityIdentifier("home-desire-tide")
+    }
+    private func loadDesire() async {
+        let api = store.api
+        guard !api.token.isEmpty else { return }
+        guard let state = try? await DesireEmotion.refresh(api), !Task.isCancelled,
+              api.baseURL == store.api.baseURL, api.token == store.token else { return }
+        desireState = state
     }
     private var upcomingDate: JSONValue? { HomeDesktopContent.nextDate(store.document("anniversaries").array) }
     private var dateLeaf: some View {
@@ -213,7 +270,7 @@ struct HomeView: View {
             }
             .foregroundStyle(palette.muted).padding(.horizontal, 8).padding(.vertical, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 13))
         }
         .accessibilityLabel(upcomingDate.map { $0["title"].string + ", " + (DateCounter.days($0).map(HomeDesktopContent.countdown) ?? "") } ?? "Dates, add a date")
         .accessibilityIdentifier("home-date-leaf")
@@ -253,7 +310,7 @@ struct HomeView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(palette.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 13))
+        .vesperGlass(in: RoundedRectangle(cornerRadius: 13))
         .accessibilityIdentifier("home-reminders-slip")
     }
     private var musicRow: some View {
@@ -317,6 +374,24 @@ struct HomeView: View {
 
 }
 
+private struct HomeProfileImage: View {
+    let source: String
+    let baseURL: String
+    var body: some View {
+        Group {
+            if source.hasPrefix("data:image/"), let comma = source.firstIndex(of: ","),
+               let data = Data(base64Encoded: String(source[source.index(after: comma)...])), let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if !source.isEmpty, let url = URL(string: source, relativeTo: URL(string: baseURL)) {
+                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { placeholder }
+            } else { placeholder }
+        }
+    }
+    private var placeholder: some View {
+        ZStack { VesperTheme.accent.opacity(0.15); Image(systemName: "heart").foregroundStyle(VesperTheme.muted) }
+    }
+}
+
 private struct PaperEdge: Shape {
     let seed: Int
     var rounded = false
@@ -348,99 +423,152 @@ private struct PaperEdge: Shape {
 struct DesireTide: View {
     let values: [Double?]
     var compact = false
+    var glass = false
+    var active = true
+    @AppStorage("vesperPalette") private var paletteName = "blue"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
     @State private var previous: [Double] = []
     @State private var target: [Double] = []
     @State private var changedAt = Date.timeIntervalSinceReferenceDate
-    private let labels = ["想念", "温柔", "玩心", "浓度", "依恋", "占有"]
+    private var dark: Bool { paletteName == "black" }
+    private var labels: [String] { DesireEmotion.fields.map(\.1) }
+    private var ink: Color { dark ? Color(red: 0.89, green: 0.94, blue: 0.96) : Color(red: 0.16, green: 0.29, blue: 0.34) }
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            Canvas { context, size in
-                draw(context: context, size: size, time: time)
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || phase != .active || !active)) { timeline in
+            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            GeometryReader { geometry in
+                ZStack {
+                    if glass {
+                        let water = waterShape(size: geometry.size, time: time)
+                        water.fill(.clear).vesperGlass(in: water)
+                    }
+                    Canvas { context, size in draw(context: context, size: size, time: time) }
+                }
             }
         }
         .onAppear { previous = normalized; target = normalized }
         .onChange(of: values) { _, _ in
             let now = Date.timeIntervalSinceReferenceDate
-            previous = (0..<6).map { value($0, time: now) }; target = normalized; changedAt = now
+            previous = (0..<8).map { value($0, time: now) }; target = normalized; changedAt = now
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("此刻的潮汐")
-        .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "未加载" : "未加载") }.joined(separator: "，"))
+        .accessibilityElement(children: .ignore).accessibilityLabel("八种情绪的潮汐")
+        .accessibilityValue(labels.enumerated().map { i, label in label + " " + (values.indices.contains(i) ? values[i].map { String(Int($0)) } ?? "待评估" : "待评估") }.joined(separator: "，"))
     }
-    private var normalized: [Double] { (0..<6).map { values.indices.contains($0) ? min(100, max(0, values[$0] ?? 0)) : 0 } }
+    private var normalized: [Double] { (0..<8).map { values.indices.contains($0) ? min(100, max(0, values[$0] ?? 0)) : 0 } }
     private func value(_ i: Int, time: Double) -> Double {
-        guard previous.count == 6, target.count == 6 else { return normalized[i] }
-        let t = reduceMotion ? 1 : min(1, max(0, (time - changedAt) / 1.2))
-        let eased = t * t * (3 - 2 * t)
-        return previous[i] + (target[i] - previous[i]) * eased
+        guard previous.count == 8, target.count == 8 else { return normalized[i] }
+        let t = reduceMotion ? 1 : min(1, max(0, (time - changedAt) / 1.5))
+        return previous[i] + (target[i] - previous[i]) * t * t * (3 - 2 * t)
     }
     private func shore(_ x: CGFloat, size: CGSize, time: Double) -> CGFloat {
-        let u = min(5, max(0, Double(x / max(1, size.width)) * 6 - 0.5))
-        let index = min(4, Int(u)), t = u - Double(index)
-        let p0 = value(max(0, index - 1), time: time), p1 = value(index, time: time)
-        let p2 = value(index + 1, time: time), p3 = value(min(5, index + 2), time: time)
-        let v = min(100, max(0, 0.5 * ((2 * p1) + (-p0 + p2) * t + (2*p0 - 5*p1 + 4*p2 - p3)*t*t + (-p0 + 3*p1 - 3*p2 + p3)*t*t*t)))
-        let base = size.height * (0.65 - v * 0.0043)
-        let time = reduceMotion ? 0 : time
-        let wave = sin(Double(x) * 0.018 + time * 0.48) * 4.5
-        let ripple = sin(Double(x) * 0.037 - time * 0.65) * 2 + sin(Double(x) * 0.079 + time * 0.43) * 0.8
-        return base + CGFloat(wave + ripple)
+        let u = min(7, max(0, Double(x / max(1, size.width)) * 8 - 0.5))
+        let index = min(6, Int(u)), t = u - Double(index)
+        let smooth = t * t * (3 - 2 * t)
+        let v = value(index, time: time) * (1 - smooth) + value(index + 1, time: time) * smooth
+        let cycle = time.truncatingRemainder(dividingBy: 9) / 9
+        // Incoming water advances slowly, then drains naturally down the beach.
+        let runup = reduceMotion ? 0 : sin(.pi * (cycle < 0.65 ? cycle / 0.65 * 0.5 : 0.5 + (cycle - 0.65) / 0.35 * 0.5)) * 13
+        return size.height * (0.62 - v * 0.0038) - runup + CGFloat(sin(Double(x) * 0.027) * 2.8)
     }
     private func line(size: CGSize, time: Double, offset: CGFloat = 0) -> Path {
-        var path = Path()
-        for x in stride(from: CGFloat(0), through: size.width, by: 2) {
-            let point = CGPoint(x: x, y: shore(x, size: size, time: time) + offset)
-            if x == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        var p = Path()
+        for x in stride(from: CGFloat(0), through: size.width + 2, by: 2) {
+            let point = CGPoint(x: min(x, size.width), y: shore(min(x, size.width), size: size, time: time) + offset)
+            if x == 0 { p.move(to: point) } else { p.addLine(to: point) }
         }
-        path.addLine(to: CGPoint(x: size.width, y: shore(size.width, size: size, time: time) + offset))
+        return p
+    }
+    private func waterShape(size: CGSize, time: Double) -> Path {
+        var water = glass ? gentleLine(size: size, time: time, layer: 0) : line(size: size, time: time)
+        water.addLine(to: CGPoint(x: size.width, y: size.height))
+        water.addLine(to: CGPoint(x: 0, y: size.height))
+        water.closeSubpath()
+        return water
+    }
+    // Broad, blended emotion regions form the tide; each layer drifts independently.
+    // Coordinates match the approved preview, so resizing never changes its rhythm.
+    private func gentleEmotion(_ x: Double, time: Double) -> Double {
+        var total = 0.0, weight = 0.0
+        for i in 0..<8 {
+            let distance = (x - (Double(i) + 0.5) / 8) / 0.075
+            let influence = exp(-distance * distance * 0.5)
+            total += value(i, time: time) / 100 * influence
+            weight += influence
+        }
+        return total / max(weight, 0.0001)
+    }
+    private func gentleNoise(_ x: Double, _ y: Double) -> Double {
+        func hash(_ a: Double, _ b: Double) -> Double {
+            let n = sin(a * 127.1 + b * 311.7) * 43758.5453
+            return n - floor(n)
+        }
+        let ix = floor(x), iy = floor(y), fx = x - ix, fy = y - iy
+        let sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy)
+        let a = hash(ix, iy) * (1 - sx) + hash(ix + 1, iy) * sx
+        let b = hash(ix, iy + 1) * (1 - sx) + hash(ix + 1, iy + 1) * sx
+        return a * (1 - sy) + b * sy
+    }
+    private func gentleLine(size: CGSize, time: Double, layer: Int) -> Path {
+        let t = reduceMotion ? 15 : time * 0.7
+        let phase = Double(layer) * 2.41
+        var path = Path()
+        for step in 0...120 {
+            let x = Double(step) / 120
+            let emotion = gentleEmotion(x, time: time)
+            let motion = sin(x * 5.1 - t * 0.42 + phase) * 0.58
+                + sin(x * 8.7 + t * 0.27 + phase * 1.7) * 0.27
+                + (gentleNoise(x * 4.7 - t * 0.1, t * 0.13 + phase) - 0.5) * 1.2
+            let level = 0.54 - Double(layer) * 0.055 + (emotion - 0.5) * 0.35
+            let height = level + (0.016 + emotion * 0.028) * motion
+            let point = CGPoint(x: x * size.width, y: (1 - height) * size.height)
+            if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
         return path
     }
+    private func drawGentle(context: GraphicsContext, size: CGSize, time: Double) {
+        let tint = dark ? Color(red: 0.15, green: 0.37, blue: 0.46)
+            : Color(red: 0.40, green: 0.64, blue: 0.70)
+        for layer in 0..<3 {
+            let surface = gentleLine(size: size, time: time, layer: layer)
+            var water = surface
+            water.addLine(to: CGPoint(x: size.width, y: size.height))
+            water.addLine(to: CGPoint(x: 0, y: size.height))
+            water.closeSubpath()
+            context.fill(water, with: .color(tint.opacity((0.22 + Double(layer) * 0.035) * (0.37 + Double(layer) * 0.07))))
+            context.stroke(surface, with: .color(.white.opacity(0.28 - Double(layer) * 0.06)), lineWidth: 0.8)
+        }
+    }
     private func draw(context: GraphicsContext, size: CGSize, time: Double) {
-        let bottom = size.height - (compact ? 0 : 40)
-        let rect = CGRect(origin: .zero, size: size)
-        context.fill(Path(rect), with: .linearGradient(Gradient(colors: [Color(red: 0.96, green: 0.96, blue: 0.94), Color(red: 0.88, green: 0.92, blue: 0.94)]), startPoint: .zero, endPoint: CGPoint(x: size.width, y: size.height)))
-        // Deterministic mineral grains, not per-frame random noise.
-        for i in 0..<550 {
-            let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width
-            let y = CGFloat((i * 211 + 43) % 991) / 991 * size.height
-            context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(0.45)))
+        if glass {
+            drawGentle(context: context, size: size, time: time)
+            return
         }
-        var water = line(size: size, time: time)
-        water.addLine(to: CGPoint(x: size.width, y: bottom)); water.addLine(to: CGPoint(x: 0, y: bottom)); water.closeSubpath()
-        context.fill(water, with: .linearGradient(Gradient(colors: [Color(red: 0.72, green: 0.85, blue: 0.88), Color(red: 0.42, green: 0.66, blue: 0.77), Color(red: 0.24, green: 0.45, blue: 0.61)]), startPoint: CGPoint(x: 0, y: size.height * 0.22), endPoint: CGPoint(x: 0, y: bottom)))
-        var sea = context; sea.clip(to: water)
-        // Fine crossing caustics give the water depth without an opaque image.
-        for row in 0..<36 {
-            var caustic = Path()
-            for column in 0...60 {
-                let x = CGFloat(column) / 60 * size.width
-                let y = CGFloat(row) / 36 * bottom + CGFloat(sin(Double(column) * 0.42 + Double(row) * 1.7 + time * 0.12) * 4 + cos(Double(column) * 0.19 - Double(row)) * 3)
-                if column == 0 { caustic.move(to: CGPoint(x: x, y: y)) } else { caustic.addLine(to: CGPoint(x: x, y: y)) }
+        let rect = CGRect(origin: .zero, size: size), bottom = size.height
+        if !glass {
+            let sand = dark ? [Color(red: 0.10, green: 0.17, blue: 0.23), Color(red: 0.15, green: 0.22, blue: 0.27)] : [Color(red: 0.95, green: 0.95, blue: 0.91), Color(red: 0.83, green: 0.88, blue: 0.86)]
+            context.fill(Path(rect), with: .linearGradient(Gradient(colors: sand), startPoint: .zero, endPoint: CGPoint(x: size.width, y: bottom)))
+            for i in 0..<300 {
+                let x = CGFloat((i * 137 + 19) % 997) / 997 * size.width, y = CGFloat((i * 211 + 43) % 991) / 991 * bottom
+                context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.white.opacity(dark ? 0.08 : 0.3)))
             }
-            sea.stroke(caustic, with: .color(.white.opacity(0.12)), lineWidth: 0.7)
         }
-        for offset in [CGFloat(0), 8, 18] {
-            context.stroke(line(size: size, time: time, offset: offset), with: .color(.white.opacity(offset == 0 ? 0.75 : 0.4)), lineWidth: offset == 0 ? 3 : 0.8)
+        let water = waterShape(size: size, time: time)
+        let colors = dark ? [Color(red: 0.21, green: 0.40, blue: 0.46), Color(red: 0.08, green: 0.22, blue: 0.33), Color(red: 0.04, green: 0.10, blue: 0.19)] : [Color(red: 0.66, green: 0.82, blue: 0.81), Color(red: 0.35, green: 0.62, blue: 0.68), Color(red: 0.15, green: 0.37, blue: 0.49)]
+        context.fill(water, with: .linearGradient(Gradient(colors: glass ? colors.enumerated().map { $0.element.opacity(0.10 + Double($0.offset) * 0.06) } : colors), startPoint: CGPoint(x: 0, y: bottom * 0.25), endPoint: CGPoint(x: 0, y: bottom)))
+        var sea = context; sea.clip(to: water)
+        for i in 0..<4 {
+            let progress = (time / 9 + Double(i) / 4).truncatingRemainder(dividingBy: 1)
+            let offset = CGFloat(1 - progress) * bottom * 0.85
+            sea.stroke(line(size: size, time: time, offset: offset), with: .color(.white.opacity(0.05 + progress * 0.14)), lineWidth: 1 + progress)
         }
-        for i in 0..<360 {
-            let x = CGFloat(i) / 359 * size.width
-            let d = CGFloat(sin(Double(i) * 4.7) * 3)
-            let y = shore(x, size: size, time: time) + d
-            sea.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.8, height: 1.2)), with: .color(.white.opacity(0.6)))
-        }
+        context.stroke(line(size: size, time: time), with: .color(.white.opacity(dark ? 0.6 : 0.85)), lineWidth: 2)
         if !compact {
-            for i in 0..<6 {
-                let x = size.width * (CGFloat(i) + 0.5) / 6
-                let y = shore(x, size: size, time: time) - 22
-                var guide = Path(); guide.move(to: CGPoint(x: x, y: y)); guide.addLine(to: CGPoint(x: x, y: y + 19))
-                context.stroke(guide, with: .color(Color(red: 0.33, green: 0.43, blue: 0.5).opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
-                context.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)), with: .color(Color(red: 0.33, green: 0.43, blue: 0.5)))
+            for i in 0..<8 {
+                let x = size.width * (CGFloat(i) + 0.5) / 8, y = shore(x, size: size, time: time) - 22
                 let number = values.indices.contains(i) ? values[i].map { String(Int(min(100, max(0, $0)))) } ?? "—" : "—"
-                context.draw(Text(number).font(.system(size: 19, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: y - 17))
-                context.draw(Text(labels[i]).font(.system(size: 13, design: .serif)).foregroundColor(Color(red: 0.12, green: 0.23, blue: 0.3)), at: CGPoint(x: x, y: size.height - 14))
+                context.draw(Text(number).font(.system(size: 17, design: .serif)).foregroundColor(ink), at: CGPoint(x: x, y: y))
+                context.draw(Text(labels[i]).font(.system(size: 12, design: .serif)).foregroundColor(.white.opacity(0.9)), at: CGPoint(x: x, y: bottom - 22))
             }
         }
     }
@@ -555,17 +683,32 @@ private struct MusicPlayerTransition: ViewModifier {
 
 struct MusicPlayerSheet: View {
     var namespace: Namespace.ID? = nil
-    @Environment(\.dismiss) private var dismiss
     var body: some View {
-        NavigationStack {
-            MusicView().background { Background() }
-                .navigationTitle("Music").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }
-                        .accessibilityLabel("Minimize player")
-                } }
-        }.presentationDetents([.large]).presentationDragIndicator(.visible)
+        MusicNowPlayingView()
+            .presentationDetents([.large]).presentationDragIndicator(.visible)
             .presentationCornerRadius(32)
             .modifier(MusicPlayerTransition(namespace: namespace, source: false))
+    }
+}
+
+private struct HomeChatEntry: View {
+    @ObservedObject var store: AppStore
+    let palette: VesperPalette
+    let open: () -> Void
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 12) {
+                HomeProfileImage(source: store.document("profile")["agentAvatar"].string, baseURL: store.baseURL)
+                    .frame(width: 40, height: 40).clipShape(Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(store.agentDisplayName)
+                        .font(.system(size: 21, design: .serif))
+                    Text("Come tell me about your day.").font(.system(size: 11)).foregroundStyle(palette.muted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption)
+            }.padding(.horizontal, 15).padding(.vertical, 11)
+                .vesperGlass(in: RoundedRectangle(cornerRadius: 20), interactive: true)
+        }.accessibilityIdentifier("home-rowan")
     }
 }

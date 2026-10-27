@@ -232,7 +232,7 @@ struct JournalView: View {
                         ForEach(JournalMood.allCases) { mood in moodButton(mood, compact: true) }
                     }.padding(.horizontal, 20).padding(.vertical, 12)
                 }.background { Background() }
-                    .navigationTitle("情绪词库 · " + author.rawValue).navigationBarTitleDisplayMode(.inline)
+                    .navigationTitle("情绪词库 · " + store.personDisplayName(author.rawValue)).navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingMoods = false } } }
             }.presentationDetents([.medium, .large])
         }
@@ -271,8 +271,8 @@ struct JournalView: View {
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                         .accessibilityLabel("Switch diary author")
-                        .accessibilityValue(author.rawValue)
-                        .accessibilityHint("Switch to " + (author == .vera ? "Rowan" : "Vera"))
+                        .accessibilityValue(store.personDisplayName(author.rawValue))
+                        .accessibilityHint("Switch to " + (author == .vera ? store.agentDisplayName : "Vera"))
                 }
             }.foregroundStyle(palette.ink).padding(.horizontal, 24)
             ScrollViewReader { proxy in
@@ -313,7 +313,7 @@ struct JournalView: View {
     private var moodSelector: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                Text(author.rawValue + " · 此刻心情").font(.system(size: captionSize, weight: .regular))
+                Text(store.personDisplayName(author.rawValue) + " · 此刻心情").font(.system(size: captionSize, weight: .regular))
                     .tracking(2).foregroundStyle(palette.muted)
                 if savingMood { ProgressView().controlSize(.mini).accessibilityLabel("Saving mood") }
                 Spacer()
@@ -333,7 +333,7 @@ struct JournalView: View {
         .padding(.bottom, 3)
         .vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.ink.opacity(0.08), lineWidth: 0.6))
-        .accessibilityElement(children: .contain).accessibilityLabel(author.rawValue + " mood tags")
+        .accessibilityElement(children: .contain).accessibilityLabel(store.personDisplayName(author.rawValue) + " mood tags")
     }
 
     private func moodButton(_ mood: JournalMood, compact: Bool = false) -> some View {
@@ -362,7 +362,7 @@ struct JournalView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text(JournalDay.label(selectedDate, format: "MMMM d, yyyy"))
                 .font(.system(size: captionSize + 1, weight: .regular, design: .serif)).foregroundStyle(paperInk.opacity(0.68))
-            Text(entryDisplay.title ?? (author.rawValue + "’s day")).font(.system(size: titleSize, weight: .regular, design: .serif))
+            Text(entryDisplay.title ?? (store.personDisplayName(author.rawValue) + "’s day")).font(.system(size: titleSize, weight: .regular, design: .serif))
                 .accessibilityAddTraits(.isHeader)
             Rectangle().fill(paperInk.opacity(0.28)).frame(width: 36, height: 0.5).accessibilityHidden(true)
             ScrollView {
@@ -386,7 +386,7 @@ struct JournalView: View {
             .refreshable { await store.refresh() }
             .accessibilityIdentifier("journal-entry-body")
             HStack {
-                Text(author.rawValue).font(.system(size: captionSize + 1, weight: .regular, design: .serif).italic())
+                Text(store.personDisplayName(author.rawValue)).font(.system(size: captionSize + 1, weight: .regular, design: .serif).italic())
                     .foregroundStyle(paperInk.opacity(0.72))
                 Spacer()
                 if author == .vera {

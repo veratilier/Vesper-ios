@@ -257,6 +257,12 @@ struct LetterInboxCover: Decodable, Equatable {
             let feed = try JSONDecoder().decode(LetterReminderFeed.self, from: JSONEncoder().encode(value))
             guard let server = LetterDates.parse(feed.serverTime) else { return }
             LetterInbox.shared.update(feed.inbox, scope: account, serverTime: server)
+            if UserDefaults.standard.object(forKey: "vesperNotifyLetters") as? Bool == false {
+                center.removePendingNotificationRequests(withIdentifiers: pending.filter {
+                    $0.identifier.hasPrefix("letter-" + account + "-")
+                }.map(\.identifier))
+                return
+            }
             let allowed = Set(feed.reminders.map { "letter-" + account + "-" + $0.id })
             center.removePendingNotificationRequests(withIdentifiers: pending.filter {
                 $0.identifier.hasPrefix("letter-" + account + "-") && !allowed.contains($0.identifier)

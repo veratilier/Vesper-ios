@@ -21,6 +21,7 @@ struct LetterPocket: Shape {
     }
 }
 struct LetterEnvelope: View {
+    @EnvironmentObject private var store: AppStore
     let colors: LetterColors
     var title = ""
     var author = "Vera"
@@ -39,10 +40,10 @@ struct LetterEnvelope: View {
                 if showTitle {
                     VStack(spacing: 6) {
                         Text(title).font(.custom("Georgia-Italic", size: 14)).lineLimit(2)
-                        if let recipient { Text("To " + recipient).font(.custom("Georgia-Italic", size: 12)).opacity(0.8) }
+                        if let recipient { Text("To " + store.personDisplayName(recipient)).font(.custom("Georgia-Italic", size: 12)).opacity(0.8) }
                     }.multilineTextAlignment(.center).padding(.horizontal, 15).padding(.top, showSeal ? 15 : g.size.height * 0.26).foregroundStyle(colors.ink)
                 }
-                if showSeal { Text(String(author.prefix(1))).font(.system(size: g.size.width < 100 ? 13 : 24, design: .serif)).italic()
+                if showSeal { Text(String(store.personDisplayName(author).prefix(1))).font(.system(size: g.size.width < 100 ? 13 : 24, design: .serif)).italic()
                     .foregroundStyle(colors.ink.opacity(0.7)).frame(width: g.size.width < 100 ? 20 : 36, height: g.size.width < 100 ? 20 : 36)
                     .background(LinearGradient(colors: colors.metal, startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
                     .overlay(Circle().stroke(colors.line, lineWidth: 2)).overlay(Circle().inset(by: 4).stroke(colors.line.opacity(0.5), lineWidth: 0.5))
@@ -55,6 +56,7 @@ struct LetterEnvelope: View {
     }
 }
 struct LetterStack: View {
+    @EnvironmentObject private var store: AppStore
     let letters: [VesperLetter]
     @Binding var hoverID: String?
     @Binding var selectedID: String?
@@ -99,7 +101,7 @@ struct LetterStack: View {
                 }
                 .overlay(alignment: .bottomLeading) {
                     HStack(spacing: 6) {
-                        Text(letter.readLabel)
+                        Text(store.personLabel(letter.readLabel))
                         if letter.isKept { Image(systemName: "bookmark.fill") }
                     }.font(.custom("Georgia", size: 10)).foregroundStyle(colors.ink)
                         .padding(.horizontal, 8).padding(.vertical, 5)
@@ -110,7 +112,7 @@ struct LetterStack: View {
             .rotationEffect(.degrees(front ? -3 : restingAngle), anchor: .bottom)
             .offset(x: (width - cardWidth) / 2 + (slot.isMultiple(of: 2) ? -2 : 2), y: base - lift)
             .zIndex(front ? 100 : Double(90 - slot)).animation(motion, value: front).animation(motion, value: selectedID)
-            .accessibilityLabel(([letter.displayTitle, letter.author, letter.readLabel] + letter.keepLabels).joined(separator: ", ")).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
+            .accessibilityLabel(([letter.displayTitle, store.personDisplayName(letter.author), store.personLabel(letter.readLabel)] + letter.keepLabels.map { store.personLabel($0) }).joined(separator: ", ")).accessibilityAddTraits(selectedID == letter.id ? .isSelected : [])
     }
     private func sweep(_ point: CGPoint) {
         guard !visible.isEmpty else { return }

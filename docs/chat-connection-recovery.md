@@ -67,3 +67,21 @@ The two original stall reproductions failed before the fix. After the fix, all
 The build type-checks/compiles the native app with Xcode 27 beta. This validation
 uses injected transport failures and does not require a live token or mutate
 production history. Existing lost-receipt/no-resend tests remain passing.
+
+## Cached-history recovery (2026-10-14)
+
+A cached preview now retries its validated history read when the device returns
+to the foreground or an available network path returns. The callbacks coalesce
+for 350 ms and permit only one pending recovery read. The cached-history issue
+also offers Retry; it validates the selected room before resuming its transport.
+Failures preserve cached messages and the unsent draft. Recovery never creates a
+replacement conversation or weakens TLS verification.
+
+For the reported TLS -1200 incident, direct certificate verification from the Mac
+and VPS succeeded on October 14. The certificate expires November 15, 2026. This
+does not establish the failing iPhone network route; device network/VPN evidence
+is still needed to identify that handshake failure.
+
+Five targeted simulator checks passed: foreground/network coalescing, repeated
+Retry coalescing, leaving before the read starts, TLS failure preserving cached
+messages and draft followed by a successful Retry, and validated cache replacement.

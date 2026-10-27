@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LettersView: View {
     @EnvironmentObject private var app: AppStore
@@ -19,7 +20,7 @@ struct LettersView: View {
     @State private var delivered = false
     @State private var archiveVisible = false
     private var colors: LetterColors { LetterColors(palette: VesperPalette(rawValue: palette) ?? .white) }
-    private var title: String { screen == "compose" ? "Write a letter" : screen == "read" ? "From " + (opened?.author ?? "Rowan") : mailbox + "’s mailbox" }
+    private var title: String { screen == "compose" ? "Write a letter" : app.personDisplayName(mailbox) + "’s mailbox" }
     private var filed: [VesperLetter] {
         model.letters.filter { !model.upcoming($0) && $0.matchesMailbox(mailbox, filter: filter) }
     }
@@ -38,7 +39,7 @@ struct LettersView: View {
                     else {
                         Menu {
                             Button("Vera’s mailbox") { mailbox = "Vera" }
-                            Button("Rowan’s mailbox") { mailbox = "Rowan" }
+                            Button(app.agentDisplayName + "’s mailbox") { mailbox = "Rowan" }
                         } label: {
                             Image(systemName: "tray.2").frame(width: 44, height: 44).vesperMaterial(.thinMaterial, in: Circle())
                         }.accessibilityLabel("Switch mailbox").accessibilityIdentifier("switch-letter-mailbox")
@@ -57,7 +58,11 @@ struct LettersView: View {
             }.padding(.horizontal, 22).padding(.bottom, 24).foregroundStyle(colors.ink)
         }.refreshable { await model.load() }
             .safeAreaInset(edge: .bottom, spacing: 0) { selectionBar }
-            .toolbar { ToolbarItem(placement: .principal) { Text(title).font(.custom("Georgia", size: 24)) } }
+            .toolbar {
+                if screen != "read" {
+                    ToolbarItem(placement: .principal) { Text(title).font(.custom("Georgia", size: 24)) }
+                }
+            }
     }
     private var observedContent: some View {
         pageContent
@@ -104,7 +109,7 @@ struct LettersView: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(selected.displayTitle).font(.custom("Georgia", size: 16)).lineLimit(1)
-                    Text(selected.author + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
+                    Text(app.personDisplayName(selected.author) + " · " + LetterDates.display(selected.createdAt)).font(.custom("Georgia", size: 11)).opacity(0.65).lineLimit(1)
                     letterStatus(selected)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Button { open(selected) } label: {
@@ -170,10 +175,10 @@ struct LettersView: View {
     }
     private var compose: some View {
         VStack(spacing: 18) {
-            Text("To  Rowan").font(.system(size: 16, design: .serif)).frame(maxWidth: .infinity, alignment: .leading)
+            Text("To  " + app.agentDisplayName).font(.system(size: 16, design: .serif)).frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 20) {
                 TextField("A title, if you like", text: $model.draft.title).font(.system(size: 20, design: .serif))
-                Text("Dear Rowan,").font(.system(size: 20, design: .serif))
+                Text("Dear " + app.agentDisplayName + ",").font(.system(size: 20, design: .serif))
                 TextEditor(text: $model.draft.text).scrollContentBackground(.hidden).frame(minHeight: 230).font(.system(size: 17, design: .serif)).background(.clear).accessibilityLabel("Letter body")
                 Text("Vera").font(VesperTheme.title(40)).frame(maxWidth: .infinity, alignment: .trailing)
             }.padding(24).background(colors.paper).overlay(Rectangle().stroke(colors.line.opacity(0.3))).shadow(color: .black.opacity(0.1), radius: 5, y: 4).disabled(model.draft.deliveryAttempted)
@@ -201,29 +206,28 @@ struct LettersView: View {
     private var reading: some View {
         VStack(spacing: 20) {
             if let letter = opened {
-                VStack(alignment: .leading, spacing: 22) {
-                    Text(letter.displayTitle).font(.system(size: 23, design: .serif)).frame(maxWidth: .infinity).multilineTextAlignment(.center)
-                    Text(LetterDates.display(letter.createdAt)).font(.system(size: 12, design: .serif)).opacity(0.65).frame(maxWidth: .infinity)
-                    letterStatus(letter).frame(maxWidth: .infinity, alignment: .center)
-                    Divider(); Text("Dear " + (letter.recipient ?? (letter.author == "Vera" ? "Rowan" : "Vera")) + ",").font(.system(size: 17, design: .serif))
-                    Text(letter.text ?? "").font(.system(size: 17, design: .serif)).lineSpacing(8).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    Text(letter.author).font(VesperTheme.title(40)).frame(maxWidth: .infinity, alignment: .trailing)
-                }.padding(25).frame(minHeight: 420).background(colors.paper).overlay(Rectangle().stroke(colors.line.opacity(0.3))).shadow(color: .black.opacity(0.1), radius: 5, y: 4)
+                LetterReadingPage(
+                    letter: letter,
+                    sender: app.personDisplayName(letter.author),
+                    recipient: app.personDisplayName(letter.readerName),
+                    colors: colors
+                )
+                letterStatus(letter).frame(maxWidth: 660, alignment: .leading)
                 HStack(spacing: 12) {
                     if letter.readerName == "Vera" {
                         action("Reply") { if model.reply(to: letter) { screen = "compose" } }
                         Button(letter.kept == true ? "Kept" : "Keep") { Task { if let updated = await model.keep(letter) { opened = updated } } }.frame(maxWidth: .infinity).padding(14).overlay(Capsule().stroke(colors.line)).disabled(model.saving)
                     } else {
-                        Text("Your copy · Rowan’s read and kept status updates separately").font(.footnote).foregroundStyle(colors.ink.opacity(0.65))
+                        Text("Your copy · \(app.agentDisplayName)’s read and kept status updates separately").font(.footnote).foregroundStyle(colors.ink.opacity(0.65))
                     }
-                }
+                }.frame(maxWidth: 660)
             }
         }
     }
     private func letterStatus(_ letter: VesperLetter) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label(letter.readLabel, systemImage: letter.readerRead == true ? "envelope.open" : "envelope")
-            if !letter.keepLabels.isEmpty { Label(letter.keepLabels.joined(separator: " · "), systemImage: "bookmark.fill") }
+            Label(app.personLabel(letter.readLabel), systemImage: letter.readerRead == true ? "envelope.open" : "envelope")
+            if !letter.keepLabels.isEmpty { Label(app.personLabel(letter.keepLabels.joined(separator: " · ")), systemImage: "bookmark.fill") }
         }.font(.custom("Georgia", size: 12)).foregroundStyle(colors.ink.opacity(0.75))
     }
     private func action(_ title: String, perform: @escaping () -> Void) -> some View {
@@ -241,5 +245,230 @@ struct LettersView: View {
     }
     private func open(_ letter: VesperLetter) {
         Task { if let result = await model.open(letter) { opened = result; screen = "read" } }
+    }
+}
+
+private struct LetterReadingPage: View {
+    let letter: VesperLetter
+    let sender: String
+    let recipient: String
+    let colors: LetterColors
+    private var paper: Color {
+        colors.palette == .black ? colors.paper : Color(red: 0.998, green: 0.991, blue: 0.971)
+    }
+    private var ink: Color {
+        colors.palette == .black ? colors.ink : Color(red: 0.29, green: 0.28, blue: 0.27)
+    }
+    private var rule: Color {
+        colors.palette == .black ? .white.opacity(0.19) : Color(red: 0.78, green: 0.74, blue: 0.71).opacity(0.7)
+    }
+    private var parts: LetterReadingParts {
+        LetterReadingParts(text: letter.text ?? "", sender: sender, author: letter.author)
+    }
+    private var date: String {
+        guard let parsed = LetterDates.parse(letter.createdAt) else { return LetterDates.display(letter.createdAt) }
+        return parsed.formatted(date: .long, time: .omitted)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(spacing: 10) {
+                Text("VESPER LETTERS")
+                    .font(.custom("Georgia", size: 10, relativeTo: .caption2))
+                    .tracking(3.5).opacity(0.55)
+                Text(letter.displayTitle)
+                    .font(.system(size: 27, weight: .regular, design: .serif))
+                    .multilineTextAlignment(.center)
+                Text("To \(recipient)")
+                    .font(.custom("Georgia", size: 13, relativeTo: .caption))
+                    .opacity(0.65)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 34)
+
+            if !parts.body.isEmpty {
+                RuledLetterText(text: parts.body, ink: ink, rule: rule)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("letter-reading-body")
+            }
+
+            VStack(alignment: .trailing, spacing: 7) {
+                Text(parts.signature ?? sender)
+                    .font(.system(size: 18, weight: .regular, design: .serif))
+                Text(date)
+                    .font(.system(size: 13, weight: .regular, design: .serif))
+                    .opacity(0.66)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.top, 43)
+
+            if let postscript = parts.postscript {
+                GeometryReader { size in
+                    Path { path in
+                        path.move(to: .zero)
+                        path.addLine(to: CGPoint(x: size.size.width, y: 0))
+                    }.stroke(rule, style: StrokeStyle(lineWidth: 1, dash: [4, 5]))
+                }
+                .frame(height: 1)
+                .padding(.top, 35)
+                Text(postscript)
+                    .font(.system(size: 15, weight: .regular))
+                    .lineSpacing(7)
+                    .opacity(0.78)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 23)
+            }
+        }
+        .foregroundStyle(ink)
+        .padding(.horizontal, 28).padding(.top, 42).padding(.bottom, 42)
+        .frame(maxWidth: 660, minHeight: 510, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(paper)
+                .overlay {
+                    if colors.palette != .black {
+                        Image("LetterPaper").resizable().scaledToFill().opacity(0.08).clipped()
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+        }
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(colors.line.opacity(0.43), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("letter-reading-page")
+    }
+}
+
+private struct LetterReadingParts {
+    let body: String
+    let signature: String?
+    let postscript: String?
+
+    init(text: String, sender: String, author: String) {
+        var remaining = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var note: String?
+        if let split = remaining.range(of: "\n\n", options: .backwards) {
+            let finalParagraph = String(remaining[split.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefix = finalParagraph.lowercased()
+            if ["ps:", "ps：", "p.s.:", "p.s.：", "附言:", "附言："].contains(where: { prefix.hasPrefix($0) }) {
+                note = finalParagraph
+                remaining = String(remaining[..<split.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        var sign: String?
+        if let lastBreak = remaining.lastIndex(of: "\n") {
+            let lastLine = String(remaining[remaining.index(after: lastBreak)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if [sender, author].contains(where: { name in
+                lastLine.count <= name.count + 16 && lastLine.lowercased().hasSuffix(name.lowercased())
+            }) {
+                sign = lastLine
+                remaining = String(remaining[..<lastBreak]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        body = remaining
+        signature = sign
+        postscript = note
+    }
+}
+
+private struct RuledLetterText: UIViewRepresentable {
+    let text: String
+    let ink: Color
+    let rule: Color
+
+    final class Coordinator {
+        var currentText = ""
+        var currentInk: UIColor?
+        var currentSizeCategory: UIContentSizeCategory?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> RuledLetterContainer {
+        RuledLetterContainer(frame: .zero)
+    }
+
+    func updateUIView(_ view: RuledLetterContainer, context: Context) {
+        let inkColor = UIColor(ink)
+        let category = view.traitCollection.preferredContentSizeCategory
+        view.ruleColor = UIColor(rule)
+        if context.coordinator.currentText != text || context.coordinator.currentInk?.isEqual(inkColor) != true || context.coordinator.currentSizeCategory != category {
+            context.coordinator.currentText = text
+            context.coordinator.currentInk = inkColor
+            context.coordinator.currentSizeCategory = category
+            let font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 16), compatibleWith: view.traitCollection)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.firstLineHeadIndent = 25
+            paragraph.lineSpacing = 15
+            let styled = NSMutableAttributedString(string: text, attributes: [
+                .font: font, .foregroundColor: inkColor, .paragraphStyle: paragraph
+            ])
+            let firstLine = text.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if firstLine.count <= 24 && (firstLine.hasSuffix("：") || firstLine.hasSuffix(":")) {
+                let greeting = paragraph.mutableCopy() as! NSMutableParagraphStyle
+                greeting.firstLineHeadIndent = 0
+                styled.addAttribute(.paragraphStyle, value: greeting,
+                    range: NSRange(location: 0, length: min((text as NSString).length, (firstLine as NSString).length + 1)))
+            }
+            view.textView.attributedText = styled
+            view.invalidateIntrinsicContentSize()
+        }
+        view.setNeedsLayout()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: RuledLetterContainer, context: Context) -> CGSize? {
+        guard let width = proposal.width else { return nil }
+        let measured = uiView.textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(measured.height))
+    }
+}
+
+private final class RuledLetterContainer: UIView {
+    let textView = UITextView(frame: .zero, textContainer: nil)
+    private let rules = CAShapeLayer()
+    var ruleColor: UIColor = .clear {
+        didSet { rules.strokeColor = ruleColor.cgColor; setNeedsLayout() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        rules.fillColor = nil
+        rules.lineWidth = 0.7
+        layer.addSublayer(rules)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.contentInsetAdjustmentBehavior = .never
+        textView.contentInset = .zero
+        textView.isOpaque = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.textContainer.widthTracksTextView = true
+        textView.dataDetectorTypes = []
+        addSubview(textView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if textView.frame != bounds { textView.frame = bounds }
+        textView.layoutIfNeeded()
+        rules.frame = bounds
+        let manager = textView.layoutManager
+        manager.ensureLayout(for: textView.textContainer)
+        let font = textView.attributedText.length > 0
+            ? textView.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont : nil
+        let baselineShift = font?.lineHeight ?? 20
+        let path = UIBezierPath()
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { line, used, _, _, _ in
+            let y = self.textView.textContainerInset.top - self.textView.contentOffset.y + max(used.maxY + 3, line.maxY - 5) + baselineShift
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: self.bounds.width, y: y))
+        }
+        rules.path = path.cgPath
     }
 }

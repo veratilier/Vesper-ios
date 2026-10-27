@@ -7,6 +7,7 @@ import UIKit
 struct ChatPhotoStack: View {
     let photos: [JSONValue]
     var alignment: HorizontalAlignment = .leading
+    @StateObject private var downloader = ChatAttachmentDownloader()
     @State private var front = 0
     @State private var showingPhoto = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -31,16 +32,23 @@ struct ChatPhotoStack: View {
             NavigationStack {
                 TabView(selection: $front) {
                     ForEach(Array(photos.enumerated()), id: \.offset) { index, photo in
-                        AsyncImage(url: URL(string: photo["url"].string)) { image in image.resizable().scaledToFit() }
-                            placeholder: { ProgressView().tint(.white) }
+                        ChatPhotoPreview(url: photo["url"].string)
+                            .contextMenu {
+                                Button { Task { await downloader.download([photo]) } } label: {
+                                    Label("下载", systemImage: "arrow.down.to.line")
+                                }.disabled(downloader.downloading)
+                            }
                             .tag(index).accessibilityLabel("Photo \(index + 1) of \(photos.count)")
                     }
                 }.tabViewStyle(.page(indexDisplayMode: .automatic))
                     .background(.black).ignoresSafeArea(edges: .bottom)
                     .navigationTitle("\(front + 1) / \(photos.count)").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { Button("Done") { showingPhoto = false } }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Done") { showingPhoto = false } }
+                    }
                     .preferredColorScheme(.dark)
             }
+            .modifier(ChatAttachmentDownloadPresenter(downloader: downloader))
         }
     }
 }
@@ -68,17 +76,58 @@ private struct ChatSinglePhoto: View {
             image = nil
             guard let source = URL(string: url), ["https", "http"].contains(source.scheme?.lowercased() ?? "") else { return }
             do {
-                let (data, response) = try await URLSession.shared.data(from: source)
+                let decoded = try await ChatImageProcessing.remotePreview(source, maxPixels: 960)
                 try Task.checkCancellation()
-                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { return }
-                image = UIImage(data: data)
+                image = decoded
             } catch { }
         }
+        .onDisappear { image = nil }
     }
     static func fittedSize(_ original: CGSize?, width: CGFloat) -> CGSize {
         guard let original, original.width > 0, original.height > 0 else { return CGSize(width: min(width, 240), height: 200) }
         let scale = min(min(width, 276) / original.width, 320 / original.height)
         return CGSize(width: original.width * scale, height: original.height * scale)
+    }
+}
+
+struct ChatDraftPhoto: View {
+    let data: Data
+    let size: CGFloat
+    @State private var image: UIImage?
+    var body: some View {
+        Group {
+            if let image { Image(uiImage: image).resizable().scaledToFill() }
+            else { Color.gray.opacity(0.15) }
+        }
+        .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 10))
+        .task(id: data) {
+            let decoded = await ChatImageProcessing.preview(data, maxPixels: 240)
+            guard !Task.isCancelled else { return }
+            image = decoded
+        }
+        .onDisappear { image = nil }
+    }
+}
+
+private struct ChatPhotoPreview: View {
+    let url: String
+    @State private var image: UIImage?
+    @State private var failed = false
+    var body: some View {
+        Group {
+            if let image { Image(uiImage: image).resizable().scaledToFit() }
+            else if failed { Image(systemName: "photo").foregroundStyle(.secondary) }
+            else { ProgressView().tint(.white) }
+        }.task(id: url) {
+            image = nil; failed = false
+            guard let source = URL(string: url), ["http", "https"].contains(source.scheme?.lowercased() ?? "") else { failed = true; return }
+            do {
+                let decoded = try await ChatImageProcessing.remotePreview(source, maxPixels: 2560)
+                try Task.checkCancellation()
+                image = decoded; failed = decoded == nil
+            } catch { if !Task.isCancelled { failed = true } }
+        }
+        .onDisappear { image = nil }
     }
 }
 

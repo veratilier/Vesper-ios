@@ -4,8 +4,12 @@ import PDFKit
 import UniformTypeIdentifiers
 
 private func readingCoverData(from item: PhotosPickerItem?) async -> String? {
-    guard let data = try? await item?.loadTransferable(type: Data.self),
-          let image = UIImage(data: data), image.size.width > 0, image.size.height > 0 else { return nil }
+    guard let data = try? await item?.loadTransferable(type: Data.self) else { return nil }
+    return readingCoverData(from: data)
+}
+
+private func readingCoverData(from data: Data) -> String? {
+    guard let image = UIImage(data: data), image.size.width > 0, image.size.height > 0 else { return nil }
     let size = CGSize(width: 300, height: 420)
     let scaled = UIGraphicsImageRenderer(size: size).jpegData(withCompressionQuality: 0.72) { _ in
         let scale = max(size.width / image.size.width, size.height / image.size.height)
@@ -26,6 +30,8 @@ struct ReadingRoomView: View {
     @State private var text = ""
     @State private var cover = ""
     @State private var coverItem: PhotosPickerItem?
+    @State private var editingBook: JSONValue?
+    @State private var deletingBook: JSONValue?
 
     var body: some View {
         ScrollView {
@@ -42,7 +48,7 @@ struct ReadingRoomView: View {
                     }.accessibilityLabel("Add a book")
                 }
                 let books = store.document("readingRoom").array
-                if books.isEmpty { EmptyCard(title: "书架还是空的", message: "导入 TXT、Markdown 或可复制文字的 PDF。") }
+                if books.isEmpty { EmptyCard(title: "书架还是空的", message: "导入 EPUB、TXT、Markdown 或可复制文字的 PDF。") }
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 24) {
                     ForEach(books) { book in
                         NavigationLink { ReaderView(bookID: book.id) } label: {
@@ -55,24 +61,9 @@ struct ReadingRoomView: View {
                                     .font(.caption2).foregroundStyle(VesperTheme.muted)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain)
-                        .overlay(alignment: .topTrailing) {
-                            PhotosPicker(selection: Binding<PhotosPickerItem?>(get: { nil }, set: { item in
-                                Task {
-                                    guard let cover = await readingCoverData(from: item) else { return }
-                                    _ = await store.mutate("readingRoom") { current in
-                                        .array(current.array.map { row in
-                                            guard row.id == book.id else { return row }
-                                            var changed = row; changed["cover"] = .string(cover); return changed
-                                        })
-                                    }
-                                }
-                            }), matching: .images) {
-                                Image(systemName: "photo.badge.plus")
-                                    .font(.caption.weight(.semibold)).frame(width: 34, height: 34)
-                                    .vesperMaterial(.regularMaterial, in: Circle())
-                            }
-                            .buttonStyle(.plain).padding(6)
-                            .accessibilityLabel("Change cover for \(book["title"].string)")
+                        .contextMenu {
+                            Button { editingBook = book } label: { Label("Edit book", systemImage: "pencil") }
+                            Button(role: .destructive) { deletingBook = book } label: { Label("Delete book", systemImage: "trash") }
                         }
                     }
                 }
@@ -101,7 +92,7 @@ struct ReadingRoomView: View {
                     }
                 }
                 Button { importing = true } label: { Label("Import book file", systemImage: "doc.badge.plus").frame(minHeight: 44) }
-                Text("TXT, Markdown or text-based PDF").font(.caption).foregroundStyle(VesperTheme.muted)
+                Text("EPUB, TXT, Markdown or text-based PDF").font(.caption).foregroundStyle(VesperTheme.muted)
                 if !fileName.isEmpty { Text(fileName).font(.subheadline); Text("\(text.count) characters ready to import").font(.caption) }
                 if !importStatus.isEmpty { Text(importStatus).font(.caption).foregroundStyle(.red) }
                 FormField(label: "Title", text: $title)
@@ -112,7 +103,7 @@ struct ReadingRoomView: View {
                     if let selected = await readingCoverData(from: item) { cover = selected }
                 }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .pdf, UTType(filenameExtension: "md") ?? .plainText]) { result in
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .pdf, UTType(filenameExtension: "md") ?? .plainText, UTType(filenameExtension: "epub") ?? .data]) { result in
                 do {
                     let url = try result.get()
                     let access = url.startAccessingSecurityScopedResource()
@@ -120,7 +111,12 @@ struct ReadingRoomView: View {
                     let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                     guard size <= 20 * 1024 * 1024 else { throw ServiceError(message: "Choose a file under 20 MB.") }
                     let imported: String
-                    if url.pathExtension.lowercased() == "pdf" {
+                    if url.pathExtension.lowercased() == "epub" {
+                        let book = try EPUBImporter.load(url)
+                        imported = book.text
+                        title = book.title
+                        if let coverData = book.cover, let importedCover = readingCoverData(from: coverData) { cover = importedCover }
+                    } else if url.pathExtension.lowercased() == "pdf" {
                         guard let pdf = PDFDocument(url: url), !pdf.isLocked, let value = pdf.string,
                               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             throw ServiceError(message: "This PDF has no readable text. Scanned or locked PDFs need a text version.")
@@ -135,15 +131,87 @@ struct ReadingRoomView: View {
                     }
                     guard !imported.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                           imported.count <= 500000 else { throw ServiceError(message: "Import a nonempty book under 500,000 characters; split larger books into volumes.") }
-                    text = imported; title = url.deletingPathExtension().lastPathComponent
+                    text = imported
+                    if url.pathExtension.lowercased() != "epub" { title = url.deletingPathExtension().lastPathComponent }
                     fileName = url.lastPathComponent; importStatus = ""
                 } catch { importStatus = error.localizedDescription }
+            }
+        }
+        .sheet(item: $editingBook) { book in
+            ReadingBookDetailsSheet(book: book).environmentObject(store)
+        }
+        .confirmationDialog("Delete this book?", isPresented: Binding(
+            get: { deletingBook != nil }, set: { if !$0 { deletingBook = nil } }
+        ), presenting: deletingBook) { book in
+            Button("Delete book", role: .destructive) {
+                Task {
+                    _ = await store.mutate("readingRoom") { current in
+                        .array(current.array.filter { $0.id != book.id })
+                    }
+                    deletingBook = nil
+                }
+            }
+        } message: { _ in
+            Text("The book, reading progress and its notes will be removed from your Library.")
+        }
+    }
+
+}
+
+private struct ReadingBookDetailsSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let book: JSONValue
+    @State private var title: String
+    @State private var cover: String
+    @State private var coverItem: PhotosPickerItem?
+    @State private var loadingCover = false
+
+    init(book: JSONValue) {
+        self.book = book
+        _title = State(initialValue: book["title"].string)
+        _cover = State(initialValue: book["cover"].string)
+    }
+
+    var body: some View {
+        EditorSheet(title: "Edit book", busy: store.saving || loadingCover, save: {
+            let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { store.error = "Enter a book title."; return }
+            Task {
+                let saved = await store.mutate("readingRoom") { current in
+                    .array(current.array.map { row in
+                        guard row.id == book.id else { return row }
+                        var changed = row
+                        changed["title"] = .string(cleaned)
+                        changed["cover"] = .string(cover)
+                        return changed
+                    })
+                }
+                if saved { dismiss() }
+            }
+        }) {
+            ReadingBookCover(title: title.isEmpty ? "Book" : title, cover: cover)
+                .frame(width: 112, height: 156)
+            PhotosPicker(selection: $coverItem, matching: .images) {
+                Label("Change cover", systemImage: "photo").frame(minHeight: 44)
+            }
+            if !cover.isEmpty {
+                Button("Remove cover") { cover = "" }
+                    .foregroundStyle(VesperTheme.muted)
+            }
+            FormField(label: "Book title", text: $title)
+        }
+        .onChange(of: coverItem) { _, item in
+            loadingCover = true
+            Task {
+                if let selected = await readingCoverData(from: item) { cover = selected }
+                loadingCover = false
             }
         }
     }
 }
 
-private struct ReadingBookCover: View {
+struct ReadingBookCover: View {
     let title: String
     let cover: String
     private var palette: [Color] {
@@ -218,40 +286,27 @@ enum ReadingLayout {
         let ns = source as NSString
         var pages: [ReadingPage] = []
         for (chapterIndex, chapter) in chapters.enumerated() {
+            if Task.isCancelled { return ([], []) }
             let storage = NSTextStorage(string: ns.substring(with: chapter.range), attributes: attributes(fontSize: fontSize))
             let manager = NSLayoutManager()
             storage.addLayoutManager(manager)
-            let container = NSTextContainer(size: CGSize(width: max(1, width), height: max(1, height)))
-            container.lineFragmentPadding = 0
-            manager.addTextContainer(container)
-            let measurement = UITextView(usingTextLayoutManager: false)
-            measurement.textContainerInset = .zero
-            measurement.textContainer.lineFragmentPadding = 0
-            measurement.frame = CGRect(x: 0, y: 0, width: width, height: height)
             var offset = 0
-            while storage.length > 0 {
-                // Each page is rendered by its own text view, so lay out a fresh first line too.
+            while offset < storage.length {
+                if Task.isCancelled { return ([], []) }
+                // Lay out the chapter once across successive containers. Removing
+                // text from the front and remeasuring every page made long books
+                // block the main thread for minutes on iPhone.
+                // UITextView can add the final paragraph's spacing when it lays out
+                // a page independently. Reserve that space to avoid clipping.
+                let container = NSTextContainer(size: CGSize(width: max(1, width), height: max(1, height - 8)))
+                container.lineFragmentPadding = 0
+                manager.addTextContainer(container)
                 let glyphs = manager.glyphRange(for: container)
                 let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-                var length = min(storage.length, max(1, NSMaxRange(characters)))
-                // A standalone page can wrap differently at its final line. Verify with the renderer.
-                while length > 1 {
-                    measurement.attributedText = NSAttributedString(string: (storage.string as NSString).substring(to: length),
-                                                                   attributes: attributes(fontSize: fontSize))
-                    let layout = measurement.layoutManager
-                    layout.ensureLayout(for: measurement.textContainer)
-                    if layout.usedRect(for: measurement.textContainer).maxY <= height { break }
-                    var fittingEnd = 0
-                    layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { rect, _, _, glyphs, stop in
-                        if rect.maxY > height { stop.pointee = true; return }
-                        fittingEnd = NSMaxRange(layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
-                    }
-                    length = max(1, min(length - 1, fittingEnd))
-                }
+                let length = max(1, min(storage.length - offset, NSMaxRange(characters) - offset))
                 let range = NSRange(location: chapter.range.location + offset, length: length)
                 pages.append(ReadingPage(id: pages.count, chapter: chapterIndex,
                                          range: range, text: ns.substring(with: range)))
-                storage.deleteCharacters(in: NSRange(location: 0, length: length))
                 offset += length
             }
         }
@@ -259,14 +314,43 @@ enum ReadingLayout {
     }
 }
 
-private struct ReadingNoteTarget: Identifiable {
+struct ReadingNoteTarget: Identifiable {
     let id = UUID()
     let range: NSRange?
     let quote: String
 }
 
+enum ReadingAnnotation {
+    static func create(range: NSRange?, quote: String, text: String, page: Int) -> JSONValue {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var fields: [String: JSONValue] = [
+            "id": .string(UUID().uuidString), "page": .number(Double(page)),
+            "quote": .string(quote), "text": .string(value), "kind": .string(value.isEmpty ? "highlight" : "note"),
+            "author": .string("Vera"), "date": .string(isoNow())
+        ]
+        if let range {
+            fields["rangeStart"] = .number(Double(range.location))
+            fields["rangeLength"] = .number(Double(range.length))
+        }
+        return .object(fields)
+    }
+    static func isHighlight(_ entry: JSONValue) -> Bool {
+        entry["kind"].string == "highlight" ||
+        (entry["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && entry["rangeStart"] != .null)
+    }
+    static func edited(_ entry: JSONValue, text: String) -> JSONValue {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var updated = entry
+        updated["text"] = .string(value)
+        updated["kind"] = .string(value.isEmpty ? "highlight" : "note")
+        updated["editedAt"] = .string(isoNow())
+        return updated
+    }
+}
+
 struct ReaderView: View {
     let bookID: String
+    @AppStorage("vesperLastReadBook") private var lastReadBook = ""
     @EnvironmentObject private var store: AppStore
     @State private var chapters: [ReadingChapter] = []
     @State private var pages: [ReadingPage] = []
@@ -280,7 +364,10 @@ struct ReaderView: View {
     private var chapterIndex: Int { pages.indices.contains(pageIndex) ? pages[pageIndex].chapter : 0 }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let currentBook = book
+        let sourceText = currentBook["text"].string
+        let currentNotes = currentBook["notes"].array
+        return VStack(spacing: 0) {
             GeometryReader { viewport in
                 // Pagination and rendering share the exact same text rectangle.
                 let textWidth = floor(max(1, min(viewport.size.width, 720) - 48))
@@ -290,9 +377,12 @@ struct ReaderView: View {
                     else {
                         TabView(selection: $pageIndex) {
                             ForEach(pages) { page in
-                                ReadingTextPage(page: page, source: book["text"].string, notes: book["notes"].array, fontSize: fontSize) { range, quote in
-                                    draft = ""; target = ReadingNoteTarget(range: range, quote: quote)
-                                }
+                                ReadingTextPage(page: page, source: sourceText, notes: currentNotes, fontSize: fontSize,
+                                                openNote: { range, quote in
+                                                    draft = ""; target = ReadingNoteTarget(range: range, quote: quote)
+                                                }, highlight: { range, quote in
+                                                    Task { await saveNote(for: ReadingNoteTarget(range: range, quote: quote), highlightOnly: true) }
+                                                })
                                 .frame(width: textWidth, height: textHeight, alignment: .topLeading)
                                 .padding(.horizontal, 24).padding(.vertical, 12)
                                 .frame(width: viewport.size.width, height: viewport.size.height)
@@ -302,16 +392,24 @@ struct ReaderView: View {
                     }
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height)
-                .task(id: "\(bookID)-\(Int(textWidth))-\(Int(textHeight))-\(fontSize)-\(book["text"].string.utf16.count)") {
+                .task(id: ReadingLayoutKey(bookID: bookID, width: Int(textWidth), height: Int(textHeight), fontSize: fontSize, text: sourceText)) {
                     guard textWidth > 1, textHeight > 1 else { return }
                     let currentLocation = pages.indices.contains(pageIndex) ? pages[pageIndex].range.location : nil
                     let location: Int
                     if let currentLocation { location = currentLocation }
-                    else if case .number(let saved) = book["location"] { location = max(0, Int(saved)) }
-                    else { location = max(0, Int(book["page"].number) * 1800) }
-                    let result = ReadingLayout.pages(in: book["text"].string, width: textWidth, height: textHeight, fontSize: fontSize)
+                    else if case .number(let saved) = currentBook["location"] { location = max(0, Int(saved)) }
+                    else { location = max(0, Int(currentBook["page"].number) * 1800) }
+                    let requestedFontSize = fontSize
+                    let work = Task.detached(priority: .userInitiated) {
+                        ReadingLayout.pages(in: sourceText, width: textWidth, height: textHeight, fontSize: requestedFontSize)
+                    }
+                    let result = await withTaskCancellationHandler {
+                        await work.value
+                    } onCancel: { work.cancel() }
+                    guard !Task.isCancelled else { return }
+                    let latestLocation = pages.indices.contains(pageIndex) ? pages[pageIndex].range.location : location
                     chapters = result.chapters; pages = result.pages
-                    pageIndex = result.pages.firstIndex { NSLocationInRange(location, $0.range) } ?? max(0, result.pages.count - 1)
+                    pageIndex = result.pages.firstIndex { NSLocationInRange(latestLocation, $0.range) } ?? max(0, result.pages.count - 1)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -330,7 +428,7 @@ struct ReaderView: View {
             }.buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 12)
         }
         .background(Color(uiColor: .systemBackground))
-        .navigationTitle(book["title"].string.replacingOccurrences(of: "_", with: " "))
+        .navigationTitle(currentBook["title"].string.replacingOccurrences(of: "_", with: " "))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
@@ -345,7 +443,7 @@ struct ReaderView: View {
                 .accessibilityLabel("阅读字号")
                 Button { draft = ""; target = ReadingNoteTarget(range: nil, quote: "") } label: {
                     Image(systemName: "text.bubble")
-                }.accessibilityLabel("我和 Rowan 的批注")
+                }.accessibilityLabel("我和 \(store.agentDisplayName) 的批注")
             }
         }
         .sheet(isPresented: $showContents) {
@@ -377,6 +475,7 @@ struct ReaderView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showContents = false } } }
             }.presentationDetents([.medium, .large])
         }
+            .onAppear { lastReadBook = bookID }
             .onChange(of: pageIndex) { _, next in
                 guard pages.indices.contains(next) else { return }
                 let location = pages[next].range.location
@@ -395,8 +494,10 @@ struct ReaderView: View {
                 }
             }
             .sheet(item: $target) { selection in
-                ReadingNoteSheet(target: selection, bookID: bookID, bookTitle: book["title"].string, notes: notes(for: selection), draft: $draft,
-                                 saving: store.saving) { saveNote(for: selection) }
+                ReadingNoteSheet(store: store, target: selection, bookID: bookID, bookTitle: currentBook["title"].string, notes: notes(for: selection), draft: $draft,
+                                 saving: store.saving, save: { await saveNote(for: selection) },
+                                 highlight: { await saveNote(for: selection, highlightOnly: true) },
+                                 edit: { id, text in await editNote(id: id, text: text) })
                     .presentationDetents([.medium, .large])
             }
     }
@@ -408,32 +509,59 @@ struct ReaderView: View {
             return NSIntersectionRange(range, span).length > 0
         }
     }
-    private func saveNote(for selection: ReadingNoteTarget) {
-        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        var fields: [String: JSONValue] = [
-            "id": .string(UUID().uuidString), "page": .number(Double(pageIndex)),
-            "quote": .string(selection.quote), "text": .string(value),
-            "author": .string("Vera"), "date": .string(isoNow())
-        ]
-        if let range = selection.range {
-            fields["rangeStart"] = .number(Double(range.location))
-            fields["rangeLength"] = .number(Double(range.length))
+    private func saveNote(for selection: ReadingNoteTarget, highlightOnly: Bool = false) async {
+        let value = highlightOnly ? "" : draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty || (highlightOnly && selection.range != nil) else { return }
+        if highlightOnly, let range = selection.range,
+           book["notes"].array.contains(where: { note in
+               note["author"].string == "Vera" &&
+               Int(note["rangeStart"].number) == range.location && Int(note["rangeLength"].number) == range.length
+           }) {
+            target = nil
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return
         }
-        let entry = JSONValue.object(fields)
-        Task {
-            let saved = await store.mutate("readingRoom") { current in
-                .array(current.array.map { item in
-                    guard item.id == bookID else { return item }
-                    var changed = item; changed["notes"] = .array(item["notes"].array + [entry]); return changed
+        let entry = ReadingAnnotation.create(range: selection.range, quote: selection.quote, text: value, page: pageIndex)
+        let saved = await store.mutate("readingRoom") { current in
+            .array(current.array.map { item in
+                guard item.id == bookID else { return item }
+                var changed = item; changed["notes"] = .array(item["notes"].array + [entry]); return changed
+            })
+        }
+        if saved {
+            if !highlightOnly { draft = "" }
+            target = nil
+            if highlightOnly { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+        }
+    }
+    private func editNote(id: String, text: String) async -> Bool {
+        guard let original = book["notes"].array.first(where: { $0.id == id && $0["author"].string == "Vera" }),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ReadingAnnotation.isHighlight(original) || original["rangeStart"] != .null else { return false }
+        let saved = await store.mutate("readingRoom") { current in
+            .array(current.array.map { item in
+                guard item.id == bookID else { return item }
+                var changed = item
+                changed["notes"] = .array(item["notes"].array.map { note in
+                    guard note.id == id, note["author"].string == "Vera" else { return note }
+                    return ReadingAnnotation.edited(note, text: text)
                 })
-            }
-            if saved { draft = ""; target = nil }
+                return changed
+            })
         }
+        return saved
     }
 }
 
-private struct ReadingNoteSheet: View {
+private struct ReadingLayoutKey: Equatable {
+    let bookID: String
+    let width: Int
+    let height: Int
+    let fontSize: Double
+    let text: String
+}
+
+struct ReadingNoteSheet: View {
+    let store: AppStore
     let target: ReadingNoteTarget
     let bookID: String
     let bookTitle: String
@@ -441,48 +569,139 @@ private struct ReadingNoteSheet: View {
     let notes: [JSONValue]
     @Binding var draft: String
     let saving: Bool
-    let save: () -> Void
+    let save: () async -> Void
+    let highlight: () async -> Void
+    let edit: (String, String) async -> Bool
+    @State private var isSaving = false
+    @State private var editingID: String?
+    @State private var editDraft = ""
+    @State private var editSaving = false
+    @State private var displayedNotes: [JSONValue]?
     @Environment(\.dismiss) private var dismiss
+    private var visibleNotes: [JSONValue] { displayedNotes ?? notes }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 20) {
                     if !target.quote.isEmpty {
-                        Text(target.quote).font(.system(.body, design: .serif)).italic()
-                            .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
-                        Button { bookmark = true } label: { Label("存到书签", systemImage: "bookmark") }
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label("选中的文字", systemImage: "text.quote").font(.caption.weight(.semibold))
+                                Spacer()
+                                Button { bookmark = true } label: { Label("书签", systemImage: "bookmark") }
+                                    .font(.caption)
+                            }.foregroundStyle(.secondary)
+                            Text(target.quote).font(.system(.body, design: .serif))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(16)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
                     }
-                    if notes.isEmpty {
-                        Text("还没有批注，留下第一段共读心情吧。").foregroundStyle(.secondary)
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("已有记录").font(.headline)
+                            Spacer()
+                            Text("\(visibleNotes.count)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        if visibleNotes.isEmpty {
+                            Text("这段还没有记录。").font(.subheadline).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                        }
+                        ForEach(visibleNotes) { entry in noteCard(entry) }
                     }
-                    ForEach(notes) { entry in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label(entry["author"].string.isEmpty ? "批注" : entry["author"].string, systemImage: "pencil.line")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(entry["author"].string == "Rowan" ? Color.teal : Color.orange)
-                            if target.range == nil && !entry["quote"].string.isEmpty {
-                                Text(entry["quote"].string).font(.caption).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(target.range == nil ? "写给这本书" : "写下批注").font(.headline)
+                        ZStack(alignment: .topLeading) {
+                            if draft.isEmpty {
+                                Text("写点什么…").foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 13).padding(.vertical, 15).allowsHitTesting(false)
                             }
-                            Text(entry["text"].string).textSelection(.enabled)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        Divider()
+                            TextEditor(text: $draft).frame(minHeight: 96)
+                                .scrollContentBackground(.hidden).padding(8)
+                        }
+                        .vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        HStack(spacing: 12) {
+                            if target.range != nil {
+                                Button("只划线") {
+                                    isSaving = true
+                                    Task { await highlight(); isSaving = false }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving || isSaving)
+                            }
+                            Spacer()
+                            Button {
+                                isSaving = true
+                                Task { await save(); isSaving = false }
+                            } label: {
+                                if isSaving { ProgressView().controlSize(.small) }
+                                else { Text("保存批注") }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving || isSaving)
+                        }
                     }
-                    Text("我的批注").font(.headline)
-                    TextEditor(text: $draft).frame(minHeight: 95)
-                        .scrollContentBackground(.hidden)
-                        .padding(8).vesperMaterial(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-                    Text("橙色是你的批注，青色是 Rowan 的批注。选中同一段文字，可以接着写。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("保存批注", action: save).buttonStyle(.borderedProminent)
-                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
                 }.padding(20)
             }
-            .navigationTitle(target.range == nil ? "全文批注" : "划线批注")
+            .navigationTitle(target.range == nil ? "全书笔记" : "划线与批注")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
-        .sheet(isPresented: $bookmark) { BookmarkEditor(quote: target.quote, bookID: bookID, sourceTitle: bookTitle) }
+        .sheet(isPresented: $bookmark) { BookmarkEditor(quote: target.quote, bookID: bookID, sourceTitle: bookTitle).environmentObject(store) }
+    }
+
+    private func noteCard(_ entry: JSONValue) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(entry["author"].string.isEmpty ? "批注" : store.personDisplayName(entry["author"].string),
+                      systemImage: ReadingAnnotation.isHighlight(entry) ? "underline" : "pencil.line")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(entry["author"].string == "Rowan" ? Color.teal : Color.orange)
+                Spacer()
+                if entry["author"].string == "Vera" {
+                    Button {
+                        editingID = entry.id
+                        editDraft = entry["text"].string
+                    } label: { Image(systemName: "pencil").font(.subheadline) }
+                        .buttonStyle(.plain).accessibilityLabel("编辑批注")
+                }
+            }
+            if target.range == nil && !entry["quote"].string.isEmpty {
+                Text(entry["quote"].string).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            }
+            if editingID == entry.id {
+                TextEditor(text: $editDraft).frame(minHeight: 84)
+                    .scrollContentBackground(.hidden)
+                HStack {
+                    Button("取消") { editingID = nil }.buttonStyle(.bordered)
+                    Spacer()
+                    Button {
+                        editSaving = true
+                        let text = editDraft
+                        Task {
+                            if await edit(entry.id, text) {
+                                displayedNotes = visibleNotes.map { $0.id == entry.id ? ReadingAnnotation.edited($0, text: text) : $0 }
+                                editingID = nil
+                            }
+                            editSaving = false
+                        }
+                    } label: {
+                        if editSaving { ProgressView().controlSize(.small) }
+                        else { Text("保存修改") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(editSaving || (editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && entry["rangeStart"] == .null))
+                }
+            } else if ReadingAnnotation.isHighlight(entry) {
+                Text("仅划线").font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                Text(entry["text"].string).font(.subheadline).textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -492,6 +711,7 @@ struct ReadingTextPage: UIViewRepresentable {
     let notes: [JSONValue]
     var fontSize: CGFloat = 18
     let openNote: (NSRange, String) -> Void
+    let highlight: (NSRange, String) -> Void
 
     static func range(for entry: JSONValue, in source: String) -> NSRange? {
         let ns = source as NSString
@@ -520,7 +740,7 @@ struct ReadingTextPage: UIViewRepresentable {
         view.textContainer.lineFragmentPadding = 0
         view.dataDetectorTypes = []
         view.linkTextAttributes = [.foregroundColor: UIColor.label]
-        view.accessibilityHint = "左右滑动翻页；长按选择文字后可添加批注，点划线查看批注。"
+        view.accessibilityHint = "左右滑动翻页；长按选择文字后可划线或添加批注，点划线查看记录。"
         return view
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -530,6 +750,7 @@ struct ReadingTextPage: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.page = page
         context.coordinator.openNote = openNote
+        context.coordinator.highlight = highlight
         context.coordinator.source = source
         let styled = NSMutableAttributedString(string: page.text, attributes: ReadingLayout.attributes(fontSize: fontSize))
         for entry in notes {
@@ -538,44 +759,54 @@ struct ReadingTextPage: UIViewRepresentable {
             guard intersection.length > 0 else { continue }
             let local = NSRange(location: intersection.location - page.range.location, length: intersection.length)
             let color: UIColor = entry["author"].string == "Rowan" ? .systemTeal : .systemOrange
-            styled.addAttributes([.backgroundColor: color.withAlphaComponent(0.12),
-                                  .underlineStyle: NSUnderlineStyle.single.rawValue,
-                                  .underlineColor: color,
-                                  .link: URL(string: "vesper-reading-note://note/\(span.location)")!], range: local)
+            var decoration: [NSAttributedString.Key: Any] = [
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .underlineColor: color,
+                .link: URL(string: "vesper-reading-note://note/\(span.location)")!
+            ]
+            if !ReadingAnnotation.isHighlight(entry) { decoration[.backgroundColor] = color.withAlphaComponent(0.12) }
+            styled.addAttributes(decoration, range: local)
         }
         if !view.attributedText.isEqual(to: styled) { view.attributedText = styled }
     }
-    func makeCoordinator() -> Coordinator { Coordinator(page: page, source: source, openNote: openNote) }
+    func makeCoordinator() -> Coordinator { Coordinator(page: page, source: source, openNote: openNote, highlight: highlight) }
     final class Coordinator: NSObject, UITextViewDelegate {
         var page: ReadingPage
         var source: String
         var openNote: (NSRange, String) -> Void
-        init(page: ReadingPage, source: String, openNote: @escaping (NSRange, String) -> Void) {
-            self.page = page; self.source = source; self.openNote = openNote
+        var highlight: (NSRange, String) -> Void
+        init(page: ReadingPage, source: String, openNote: @escaping (NSRange, String) -> Void,
+             highlight: @escaping (NSRange, String) -> Void) {
+            self.page = page; self.source = source; self.openNote = openNote; self.highlight = highlight
         }
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
                       suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard range.length > 0, NSMaxRange(range) <= (page.text as NSString).length else { return nil }
-            let action = UIAction(title: "批注", image: UIImage(systemName: "pencil.line")) { [weak self] _ in
+            let noteAction = UIAction(title: "写批注", image: UIImage(systemName: "pencil.line")) { [weak self] _ in
                 guard let self else { return }
                 let whole = NSRange(location: self.page.range.location + range.location, length: range.length)
                 self.openNote(whole, (self.source as NSString).substring(with: whole))
             }
-            return UIMenu(children: [action] + suggestedActions)
+            let highlightAction = UIAction(title: "只划线", image: UIImage(systemName: "underline")) { [weak self] _ in
+                guard let self else { return }
+                let whole = NSRange(location: self.page.range.location + range.location, length: range.length)
+                self.highlight(whole, (self.source as NSString).substring(with: whole))
+            }
+            return UIMenu(children: [highlightAction, noteAction] + suggestedActions)
         }
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL,
-                      in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
-            guard URL.scheme == "vesper-reading-note", let start = Int(URL.lastPathComponent),
-                  let note = textView.attributedText.attribute(.link, at: characterRange.location, effectiveRange: nil) as? URL,
-                  note == URL else { return false }
+        func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
+                      defaultAction: UIAction) -> UIAction? {
+            guard case .link(let url) = textItem.content, url.scheme == "vesper-reading-note",
+                  let start = Int(url.lastPathComponent) else { return nil }
+            let characterRange = textItem.range
             let sourceText = source as NSString
             let whole = NSRange(location: page.range.location + characterRange.location, length: characterRange.length)
-            guard NSMaxRange(whole) <= sourceText.length else { return false }
-            // Use the link's starting offset to include every annotation on the same passage.
+            guard start >= 0, start <= NSMaxRange(whole), NSMaxRange(whole) <= sourceText.length else { return nil }
+            // Include every annotation attached to the tapped passage.
             let matching = NSRange(location: start, length: max(1, NSMaxRange(whole) - start))
-            guard NSMaxRange(matching) <= sourceText.length else { return false }
-            openNote(matching, sourceText.substring(with: matching))
-            return false
+            guard NSMaxRange(matching) <= sourceText.length else { return nil }
+            let excerpt = sourceText.substring(with: matching)
+            return UIAction(title: "批注") { [weak self] _ in self?.openNote(matching, excerpt) }
         }
     }
 }

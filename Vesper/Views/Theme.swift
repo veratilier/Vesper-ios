@@ -16,6 +16,11 @@ enum VesperPalette: String, CaseIterable, Identifiable {
     var surface: Color { self == .black ? Color(white: 0.12).opacity(0.85) : .white.opacity(0.72) }
 }
 enum NavigationStyle: String, CaseIterable { case native, vesper }
+enum VesperGlassStyle: String, CaseIterable, Identifiable {
+    case liquid, classic
+    var id: String { rawValue }
+    var name: String { self == .liquid ? "Liquid Glass" : "经典毛玻璃" }
+}
 enum VesperTheme {
     static var palette: VesperPalette { VesperPalette(rawValue: UserDefaults.standard.string(forKey: "vesperPalette") ?? "blue") ?? .blue }
     static var ink: Color { palette.ink }
@@ -24,52 +29,89 @@ enum VesperTheme {
     static var surface: Color { palette.surface }
     static func title(_ size: CGFloat = 32) -> Font { .custom("Ballet-Regular", size: size, relativeTo: .title) }
 }
+enum ChatBubbleAppearance {
+    struct Swatch: Identifiable {
+        let name: String
+        let value: String
+        var id: String { value }
+    }
+    static let outgoingKey = "chatBubbleOutgoingColor"
+    static let incomingKey = "chatBubbleIncomingColor"
+    static let automatic = "automatic"
+    static let swatches: [Swatch] = [
+        .init(name: "Default", value: automatic),
+        .init(name: "Blue", value: "#6B9FC4"),
+        .init(name: "Rose", value: "#E6A4BB"),
+        .init(name: "Lilac", value: "#ADA2D8"),
+        .init(name: "Sage", value: "#94C6AD"),
+        .init(name: "Amber", value: "#E2B879")
+    ]
+    static func color(_ value: String) -> Color? {
+        guard value.count == 7, value.first == "#", let rgb = UInt64(value.dropFirst(), radix: 16) else { return nil }
+        return Color(red: Double((rgb >> 16) & 0xFF) / 255,
+                     green: Double((rgb >> 8) & 0xFF) / 255,
+                     blue: Double(rgb & 0xFF) / 255)
+    }
+    static func hex(_ color: Color) -> String {
+        let resolved = UIColor(color).resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return "#6B9FC4" }
+        return String(format: "#%02X%02X%02X", Int((red * 255).rounded()), Int((green * 255).rounded()), Int((blue * 255).rounded()))
+    }
+    static func tint(_ selection: String, user: Bool, palette: VesperPalette) -> Color {
+        if let selected = color(selection) { return selected.opacity(0.34) }
+        return user ? palette.accent.opacity(0.10) : .clear
+    }
+}
 enum GlassAppearance {
-    static func opacity(transparency: Double) -> Double {
-        1 - (transparency.isFinite ? min(1, max(0, transparency)) : 0)
+    static var supportsLiquidGlass: Bool {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) { return true }
+        #endif
+        return false
+    }
+    static func transparency(_ value: Double) -> Double {
+        value.isFinite ? min(1, max(0, value)) : 0
     }
 }
 
 private struct VesperGlassModifier<S: Shape>: ViewModifier {
     let shape: S
     let interactive: Bool
-    @AppStorage("glassTransparency") private var transparency = 0.0
+    var fallbackMaterial: Material = .ultraThinMaterial
+    @AppStorage("glassFrost") private var frost = 0.0
+    @AppStorage("glassTransparency") private var classicTransparency = 0.0
+    @AppStorage("glassStyle") private var style = VesperGlassStyle.liquid.rawValue
     @AppStorage("vesperPalette") private var palette = "blue"
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
-        // Fade only the surface. Text, icons, and the control's hit area stay intact.
         content.contentShape(shape).background {
             if reduceTransparency {
                 shape.fill(palette == "black" ? Color(white: 0.12) : .white)
             } else {
-                surface.opacity(GlassAppearance.opacity(transparency: transparency))
+                // Shared controls use a clear surface with a subtle neutral tint.
+                surface
             }
         }
     }
+    private var tint: Color {
+        Color(white: 0.5).opacity(0.06)
+    }
     @ViewBuilder private var surface: some View {
         #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            shape.fill(.clear).glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        if #available(iOS 26.0, *), style != VesperGlassStyle.classic.rawValue {
+            let glass: Glass = frost > 0 ? .regular : .clear
+            shape.fill(.clear)
+                .glassEffect(interactive ? glass.tint(tint).interactive() : glass.tint(tint), in: shape)
         } else { fallback }
         #else
         fallback
         #endif
     }
     private var fallback: some View {
-        shape.fill(.ultraThinMaterial).overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
-    }
-}
-private struct VesperMaterialModifier<S: Shape>: ViewModifier {
-    let material: Material
-    let shape: S
-    @AppStorage("glassTransparency") private var transparency = 0.0
-    @AppStorage("vesperPalette") private var palette = "blue"
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    func body(content: Content) -> some View {
-        content.contentShape(shape).background {
-            if reduceTransparency { shape.fill(palette == "black" ? Color(white: 0.12) : .white) }
-            else { shape.fill(material).opacity(GlassAppearance.opacity(transparency: transparency)) }
-        }
+        shape.fill(fallbackMaterial)
+            .overlay(shape.stroke(.white.opacity(0.55), lineWidth: 1))
+            .opacity(1 - GlassAppearance.transparency(classicTransparency))
     }
 }
 extension View {
@@ -77,7 +119,8 @@ extension View {
         modifier(VesperGlassModifier(shape: shape, interactive: interactive))
     }
     func vesperMaterial<S: Shape>(_ material: Material, in shape: S) -> some View {
-        modifier(VesperMaterialModifier(material: material, shape: shape))
+        // Every shared surface follows the same persisted glass style.
+        modifier(VesperGlassModifier(shape: shape, interactive: false, fallbackMaterial: material))
     }
     func vesperMaterial(_ material: Material) -> some View {
         vesperMaterial(material, in: Rectangle())
@@ -172,6 +215,10 @@ struct NavigationStyleToggle: View {
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         image = nil; selectedID = nil
     }
+    func selectedPhotoData() throws -> Data? {
+        guard selectedID != nil else { return nil }
+        return try Data(contentsOf: file)
+    }
     // Downsample before decoding full-resolution camera images; apply EXIF rotation.
     nonisolated static func preparePhoto(_ data: Data) throws -> Data {
         guard data.count <= 50 * 1024 * 1024,
@@ -186,6 +233,52 @@ struct NavigationStyleToggle: View {
             throw ServiceError(message: "Choose a readable photo under 50 MB.")
         }
         return jpeg
+    }
+}
+
+@MainActor enum ChatCaptureAppearanceSync {
+    static func sync(api: APIClient, palette: String, shade: Double, wallpaper: WallpaperStore,
+                     glassStyle: String, glassFrost: Double, glassTransparency: Double,
+                     reduceTransparency: Bool) async throws {
+        #if targetEnvironment(macCatalyst)
+        return
+        #else
+        guard UIDevice.current.userInterfaceIdiom == .phone, !api.token.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let photoID = wallpaper.selectedID ?? ""
+        let effectiveGlassStyle = GlassAppearance.supportsLiquidGlass ? glassStyle : VesperGlassStyle.classic.rawValue
+        let transparency = GlassAppearance.transparency(glassTransparency)
+        let signature = "\(api.baseURL)|\(palette)|\(shade)|\(photoID)|\(effectiveGlassStyle)|\(glassFrost > 0)|\(transparency)|\(reduceTransparency)"
+        guard defaults.string(forKey: "chatCaptureSyncedAppearance") != signature else { return }
+        var backgroundURL = ""
+        if !photoID.isEmpty {
+            let uploadSignature = api.baseURL + "|" + photoID
+            if defaults.string(forKey: "chatCaptureUploadedWallpaper") == uploadSignature {
+                backgroundURL = defaults.string(forKey: "chatCaptureUploadedWallpaperURL") ?? ""
+            }
+            if backgroundURL.isEmpty {
+                guard let data = try wallpaper.selectedPhotoData() else { return }
+                let uploaded = try await api.uploadImage(data, name: "chat-background-\(photoID.prefix(12)).jpg")
+                backgroundURL = uploaded["url"].string
+                guard !backgroundURL.isEmpty else { throw ServiceError(message: "Could not sync the chat background.") }
+                defaults.set(uploadSignature, forKey: "chatCaptureUploadedWallpaper")
+                defaults.set(backgroundURL, forKey: "chatCaptureUploadedWallpaperURL")
+            }
+        }
+        let value: JSONValue = .object([
+            "palette": .string(palette), "shade": .number(shade),
+            "backgroundUrl": .string(backgroundURL),
+            "glassStyle": .string(effectiveGlassStyle),
+            "glassFrost": .bool(glassFrost > 0),
+            "glassTransparency": .number(transparency),
+            "reduceTransparency": .bool(reduceTransparency)
+        ])
+        let receipt = try await api.request("/api/state", method: "PUT", body: .object([
+            "key": .string("chatCaptureAppearance"), "value": value
+        ]))
+        guard receipt["ok"].bool else { throw ServiceError(message: "Could not sync the chat appearance.") }
+        defaults.set(signature, forKey: "chatCaptureSyncedAppearance")
+        #endif
     }
 }
 
@@ -214,8 +307,12 @@ struct Background: View {
 
 struct AppearanceSettingsView: View {
     @AppStorage("vesperPalette") private var palette = "blue"
+    @AppStorage(ChatBubbleAppearance.outgoingKey) private var outgoingBubbleColor = ChatBubbleAppearance.automatic
+    @AppStorage(ChatBubbleAppearance.incomingKey) private var incomingBubbleColor = ChatBubbleAppearance.automatic
     @AppStorage("wallpaperShade") private var shade = 0.16
-    @AppStorage("glassTransparency") private var glassTransparency = 0.0
+    @AppStorage("glassFrost") private var glassFrost = 0.0
+    @AppStorage("glassTransparency") private var classicTransparency = 0.0
+    @AppStorage("glassStyle") private var glassStyle = VesperGlassStyle.liquid.rawValue
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @ObservedObject private var wallpaper = WallpaperStore.shared
     @State private var photo: PhotosPickerItem?
@@ -287,6 +384,17 @@ struct AppearanceSettingsView: View {
                     Slider(value: $shade, in: 0...0.7).accessibilityLabel("Background readability")
                 }
                 section("Glass") {
+                    if GlassAppearance.supportsLiquidGlass {
+                        Picker("Glass style", selection: $glassStyle) {
+                            ForEach(VesperGlassStyle.allCases) { style in
+                                Text(style.name).tag(style.rawValue)
+                            }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("glass-style")
+                    } else {
+                        Text("经典毛玻璃").font(.subheadline)
+                        Text("Liquid Glass 需要 iOS / iPadOS 26 或更新版本。")
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
                     HStack(spacing: 12) {
                         Image(systemName: "sparkles").font(.title2)
                         VStack(alignment: .leading, spacing: 4) {
@@ -294,24 +402,41 @@ struct AppearanceSettingsView: View {
                             Text("Cards and buttons").font(.caption).foregroundStyle(VesperTheme.muted)
                         }
                         Spacer()
-                    }.padding(.vertical, 8)
-                    HStack {
-                        Text("Glass transparency")
-                        Spacer()
-                        Text("\(Int(((1 - GlassAppearance.opacity(transparency: glassTransparency)) * 100).rounded()))%")
-                            .monospacedDigit()
-                    }.font(.subheadline)
-                    Slider(value: $glassTransparency, in: 0...1, step: 0.01)
-                        .disabled(reduceTransparency).accessibilityLabel("Glass transparency")
-                    HStack {
-                        Text("Less transparent")
-                        Spacer()
-                        Text("More transparent")
-                    }.font(.caption).foregroundStyle(VesperTheme.muted)
-                    Text(reduceTransparency ? "Reduce Transparency is enabled in system settings." : "Adjusts Vesper’s glass surfaces. System bars keep their system appearance.")
-                        .font(.caption).foregroundStyle(VesperTheme.muted)
-                    Button("Reset glass transparency") { glassTransparency = 0 }
-                        .font(.subheadline).frame(minHeight: 44)
+                    }.padding(14).vesperGlass(in: RoundedRectangle(cornerRadius: 20))
+                    if GlassAppearance.supportsLiquidGlass && glassStyle != VesperGlassStyle.classic.rawValue {
+                        Picker("Glass finish", selection: Binding(
+                            get: { glassFrost > 0 },
+                            set: { glassFrost = $0 ? 1 : 0 }
+                        )) {
+                            Text("Penetrate").tag(false)
+                            Text("Hazy").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(reduceTransparency)
+                        .accessibilityIdentifier("glass-finish")
+                    } else {
+                        HStack {
+                            Text("Glass transparency")
+                            Spacer()
+                            Text("\(Int((GlassAppearance.transparency(classicTransparency) * 100).rounded()))%")
+                                .monospacedDigit()
+                        }.font(.subheadline)
+                        Slider(value: $classicTransparency, in: 0...1, step: 0.01)
+                            .disabled(reduceTransparency)
+                            .accessibilityLabel("Glass transparency")
+                            .accessibilityIdentifier("classic-glass-transparency")
+                        HStack {
+                            Text("Less transparent")
+                            Spacer()
+                            Text("More transparent")
+                        }.font(.caption).foregroundStyle(VesperTheme.muted)
+                        Button("Reset glass transparency") { classicTransparency = 0 }
+                            .font(.subheadline).frame(minHeight: 44)
+                    }
+                    if reduceTransparency {
+                        Text("Reduce Transparency is enabled in system settings.")
+                            .font(.caption).foregroundStyle(VesperTheme.muted)
+                    }
                 }
                 section("Colors") {
                     HStack(spacing: 12) {
@@ -326,6 +451,28 @@ struct AppearanceSettingsView: View {
                             }.accessibilityAddTraits(palette == item.rawValue ? .isSelected : [])
                         }
                     }
+                }
+                section("Chat bubbles") {
+                    VStack(spacing: 12) {
+                        HStack {
+                            Spacer(minLength: 50)
+                            Text("See you soon").font(.system(size: 15))
+                                .modifier(ChatBubbleSurface(user: true))
+                        }
+                        HStack {
+                            Text("I'll be here").font(.system(size: 15))
+                                .modifier(ChatBubbleSurface(user: false))
+                            Spacer(minLength: 50)
+                        }
+                    }
+                    .padding(16).frame(maxWidth: .infinity)
+                    .background {
+                        WallpaperArtwork(palette: palette)
+                            .overlay(palette == "black" ? Color.black.opacity(shade) : Color.white.opacity(shade))
+                    }
+                    .frame(height: 148).clipShape(RoundedRectangle(cornerRadius: 18))
+                    bubbleColorPicker("Your messages", selection: $outgoingBubbleColor)
+                    bubbleColorPicker("Ash's messages", selection: $incomingBubbleColor)
                 }
                 section("App icon") {
                     #if targetEnvironment(macCatalyst)
@@ -370,6 +517,9 @@ struct AppearanceSettingsView: View {
             }.padding(20).frame(maxWidth: 580).frame(maxWidth: .infinity)
         }.background { Background() }.navigationTitle("Appearance").navigationBarTitleDisplayMode(.inline)
             .transparentNavigationTop().buttonStyle(.plain)
+            .preferredColorScheme(palette == "black" ? .dark : .light)
+            .foregroundStyle((VesperPalette(rawValue: palette) ?? .blue).ink)
+            .tint((VesperPalette(rawValue: palette) ?? .blue).ink)
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 if issue != nil { Button { showingIssue = true } label: { Image(systemName: "exclamationmark.circle") }.accessibilityLabel("Appearance error details") }
             } }
@@ -400,6 +550,38 @@ struct AppearanceSettingsView: View {
                 .vesperGlass(in: RoundedRectangle(cornerRadius: 24))
         }
     }
+    private func bubbleColorPicker(_ title: String, selection: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title).font(.subheadline.weight(.medium))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(ChatBubbleAppearance.swatches) { swatch in
+                        Button { selection.wrappedValue = swatch.value } label: {
+                            VStack(spacing: 5) {
+                                Circle().fill(ChatBubbleAppearance.color(swatch.value) ?? VesperTheme.accent.opacity(0.18))
+                                    .frame(width: 34, height: 34)
+                                    .overlay(Circle().stroke(VesperTheme.ink.opacity(selection.wrappedValue == swatch.value ? 0.9 : 0.25), lineWidth: selection.wrappedValue == swatch.value ? 2 : 1))
+                                    .overlay {
+                                        if selection.wrappedValue == swatch.value {
+                                            Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(VesperTheme.ink)
+                                        }
+                                    }
+                                Text(swatch.name).font(.caption2)
+                            }.frame(width: 54).contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("\(title): \(swatch.name)")
+                        .accessibilityAddTraits(selection.wrappedValue == swatch.value ? .isSelected : [])
+                    }
+                }.padding(.vertical, 2)
+            }
+            ColorPicker("Custom color", selection: Binding(
+                get: { ChatBubbleAppearance.color(selection.wrappedValue) ?? VesperTheme.accent },
+                set: { selection.wrappedValue = ChatBubbleAppearance.hex($0) }
+            ), supportsOpacity: false)
+            .font(.subheadline)
+        }
+    }
     @ViewBuilder private func iconPreview(_ item: VesperPalette) -> some View {
         if let image = ThemeIcons.preview(item.rawValue) { Image(uiImage: image).resizable().scaledToFit() }
         else { Image(item.emblem).resizable().scaledToFill() }
@@ -421,24 +603,59 @@ struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-            .vesperMaterial(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 25))
-            .overlay(RoundedRectangle(cornerRadius: 25).stroke(.white.opacity(0.8), lineWidth: 1.5))
+            .vesperGlass(in: RoundedRectangle(cornerRadius: 25))
     }
 }
 struct Page<Content: View>: View {
     let title: String
     var subtitle = ""
+    var showsTitle = true
     @ViewBuilder var content: Content
     var body: some View {
-        ScrollView {
+        let page = ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(title).font(VesperTheme.title(38))
-                    if !subtitle.isEmpty { Text(subtitle).font(.subheadline).foregroundStyle(VesperTheme.muted) }
-                }.padding(.vertical, 8)
+                if showsTitle {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(title).font(VesperTheme.title(38))
+                        if !subtitle.isEmpty { Text(subtitle).font(.subheadline).foregroundStyle(VesperTheme.muted) }
+                    }.padding(.vertical, 8)
+                } else if !subtitle.isEmpty {
+                    Text(subtitle).font(.subheadline).foregroundStyle(VesperTheme.muted)
+                        .padding(.vertical, 8)
+                }
                 content
             }.padding(20).frame(maxWidth: 780).frame(maxWidth: .infinity)
         }.scrollDismissesKeyboard(.interactively)
+        if showsTitle { page }
+        else { page.navigationTitle(title).navigationBarTitleDisplayMode(.inline) }
+    }
+}
+
+/// A page header that leaves the wallpaper visible across the whole top edge.
+/// Used where Catalyst paints an opaque native navigation bar over that edge.
+struct WallpaperInlineHeader<Leading: View, Trailing: View>: View {
+    let title: String
+    let leading: Leading
+    let trailing: Trailing
+
+    init(_ title: String, @ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
+        self.title = title
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        ZStack {
+            Text(title).font(.headline).lineLimit(1)
+            HStack {
+                leading.frame(width: 90, height: 44, alignment: .leading)
+                Spacer()
+                trailing.frame(width: 90, height: 44, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 68)
+        .frame(maxWidth: .infinity)
     }
 }
 struct EmptyCard: View {
@@ -463,7 +680,7 @@ struct FormField: View {
             if multiline {
                 TextEditor(text: $text).frame(minHeight: 160).scrollContentBackground(.hidden)
             } else { TextField(label, text: $text) }
-        }.padding(12).background(VesperTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        }.padding(12).vesperGlass(in: RoundedRectangle(cornerRadius: 14))
     }
 }
 struct EditorSheet<Content: View>: View {
@@ -525,6 +742,19 @@ struct EditorSheet<Content: View>: View {
 }
 
 extension View {
+    /// Keep the chat transcript visible behind the floating tab bar.
+    @ViewBuilder func transparentChatBottom() -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.toolbarBackground(.hidden, for: .tabBar)
+                .scrollEdgeEffectHidden(true, for: .bottom)
+        } else {
+            self.toolbarBackground(.hidden, for: .tabBar)
+        }
+        #else
+        self.toolbarBackground(.hidden, for: .tabBar)
+        #endif
+    }
     /// Keep the wallpaper visible behind top navigation, including the iOS 26 scroll edge.
     @ViewBuilder func transparentNavigationTop() -> some View {
         #if compiler(>=6.2)

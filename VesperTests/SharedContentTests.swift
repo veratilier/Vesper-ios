@@ -1,9 +1,53 @@
 import XCTest
 import SwiftUI
 import SafariServices
+import AVFoundation
 @testable import Vesper
 
 @MainActor final class SharedContentTests: XCTestCase {
+    func testShortVideoProducesBoundedOrderedFramesAndPlayableAttachment() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("fixture.mp4")
+        let writer = try AVAssetWriter(outputURL: source, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB, kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64])
+        writer.add(input); XCTAssertTrue(writer.startWriting()); writer.startSession(atSourceTime: .zero)
+        for index in 0..<6 {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+            var buffer: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferPoolCreatePixelBuffer(nil, try XCTUnwrap(adaptor.pixelBufferPool), &buffer), kCVReturnSuccess)
+            let pixel = try XCTUnwrap(buffer)
+            CVPixelBufferLockBaseAddress(pixel, [])
+            memset(CVPixelBufferGetBaseAddress(pixel), Int32(30 + index * 35), CVPixelBufferGetBytesPerRow(pixel) * 64)
+            CVPixelBufferUnlockBaseAddress(pixel, [])
+            XCTAssertTrue(adaptor.append(pixel, withPresentationTime: CMTime(seconds: Double(index) / 2, preferredTimescale: 600)))
+        }
+        input.markAsFinished(); await writer.finishWriting()
+        XCTAssertEqual(writer.status, .completed)
+        let (file,audio) = try await ChatVideoProcessing.prepare(source)
+        defer { if let audio { try? FileManager.default.removeItem(at: audio.deletingLastPathComponent()) } }
+        XCTAssertEqual(file.mime, "video/mp4"); XCTAssertFalse(file.data.isEmpty)
+        XCTAssertLessThanOrEqual(file.data.count, ChatVideoProcessing.maximumBytes)
+        let frames = try XCTUnwrap(file.videoFrames)
+        XCTAssertGreaterThan(frames.count, 1); XCTAssertLessThanOrEqual(frames.count, 24)
+        XCTAssertEqual(frames.map(\.seconds), frames.map(\.seconds).sorted())
+        for frame in frames { let image = try XCTUnwrap(UIImage(data: frame.jpeg)); XCTAssertLessThanOrEqual(max(image.size.width,image.size.height),960) }
+        XCTAssertNil(audio); XCTAssertEqual(file.videoAudioNote, "This video has no audio track.")
+        let model = ChatVideoProcessing.input(file)
+        XCTAssertEqual(model.filter { $0["type"].string == "image" }.count, frames.count)
+        XCTAssertTrue(model.first?["text"].string.contains("sampled frames") == true)
+        let restored = try JSONDecoder().decode(ChatFile.self, from: JSONEncoder().encode(file))
+        XCTAssertEqual(restored.videoFrames?.count, frames.count)
+    }
+    func testVideoLimitsRejectLongOrInvalidDurationAndOldFilesRemainReadable() throws {
+        for duration in [0, -1, Double.nan, Double.infinity, 60.01] { XCTAssertThrowsError(try ChatVideoProcessing.sampleTimes(duration: duration)) }
+        XCTAssertEqual(try ChatVideoProcessing.sampleTimes(duration: 60).count, 24)
+        let old = ChatFile(name: "notes.txt", mime: "text/plain", data: Data("fixture".utf8))
+        let decoded = try JSONDecoder().decode(ChatFile.self, from: JSONEncoder().encode(old))
+        XCTAssertNil(decoded.videoFrames); XCTAssertTrue(ChatVideoProcessing.input(decoded).isEmpty)
+    }
     func testRecordingSpeechKeepsChinesePrimaryAndMixedEnglishVocabulary() {
         XCTAssertEqual(ChatSpeechRecognition.recordingLocale, Locale(identifier: "zh-CN"))
         let terms = ChatSpeechRecognition.contextualStrings(from: ["今天复习 coursework，然后整理 biology notes。", "Coursework 要交给 Rowan。"])
@@ -57,6 +101,19 @@ import SafariServices
         let text = "看看 https://example.com/a。\nhttps://example.com/b https://example.com/c https://example.com/d"
         XCTAssertEqual(ChatMarkdownText.render(text).runs.compactMap { $0.link?.absoluteString },
                        ["https://example.com/a", "https://example.com/b", "https://example.com/c", "https://example.com/d"])
+    }
+
+    func testLinkPreviewFindsWebLinksWithoutRepeatingMusicOrCode() {
+        let content = "看这个 https://x.com/example/status/123。 [详情](https://example.com/page) `https://hidden.example` https://x.com/example/status/123 https://music.apple.com/us/song/test"
+        XCTAssertEqual(ChatLinkPreviews.urls(in: content).map(\.absoluteString),
+                       ["https://x.com/example/status/123", "https://example.com/page"])
+    }
+
+    func testStandaloneLinkUsesPreviewWithoutHidingWrittenContext() {
+        XCTAssertTrue(ChatLinkPreviews.isStandaloneLink("  https://x.com/example/status/123?s=46\n"))
+        XCTAssertFalse(ChatLinkPreviews.isStandaloneLink("看看 https://x.com/example/status/123"))
+        XCTAssertFalse(ChatLinkPreviews.isStandaloneLink("[原文](https://x.com/example/status/123)"))
+        XCTAssertFalse(ChatLinkPreviews.isStandaloneLink("`https://x.com/example/status/123`"))
     }
 
     func testFileTypeLabelsKeepExtensionAndHandleMissingNames() {
@@ -251,26 +308,30 @@ extension SharedContentTests {
         XCTAssertEqual(Set(moved), Set(VesperGridOrder.defaults))
         XCTAssertEqual(moved.count, VesperGridOrder.defaults.count)
         XCTAssertTrue(moved.contains(.journal))
+        XCTAssertTrue(moved.contains(.letters))
+        XCTAssertFalse(moved.contains(.studio))
         let back = VesperGridOrder.move(.movieRoom, to: .bookmarks, in: moved)
         XCTAssertEqual(back, VesperGridOrder.defaults)
     }
     func testAppGridMigratesMissingNewItemsAndRejectsDuplicateOrNonGridEntries() {
         let saved = "[\"Music\",\"Notes\",\"Music\",\"Unknown\",\"Chat\"]"
         let restored = VesperGridOrder.restore(saved)
-        XCTAssertEqual(Array(restored.prefix(2)), [.music, .notes])
+        XCTAssertEqual(Array(restored.prefix(2)), [.music, .desire])
+        XCTAssertFalse(restored.contains { $0.rawValue == "Notes" })
+        XCTAssertNil(Destination(rawValue: "Notes"))
         XCTAssertEqual(restored.count, VesperGridOrder.defaults.count)
         XCTAssertEqual(Set(restored), Set(VesperGridOrder.defaults))
         XCTAssertEqual(VesperGridOrder.restore("broken"), VesperGridOrder.defaults)
         XCTAssertEqual(VesperGridOrder.restore(""), VesperGridOrder.defaults)
         let legacySketch = VesperGridOrder.restore("[\"随写\",\"Music\",\"Sketch\"]")
-        XCTAssertEqual(Array(legacySketch.prefix(2)), [.jottings, .music])
-        XCTAssertEqual(legacySketch.filter { $0 == .jottings }.count, 1)
+        XCTAssertEqual(legacySketch, [.music] + VesperGridOrder.defaults.filter { $0 != .music })
+        XCTAssertNil(Destination(rawValue: "Sketch"))
     }
     func testAppGridInvalidOrSameDestinationDoesNotChangeOrder() {
         let pages = VesperGridOrder.defaults
-        XCTAssertEqual(VesperGridOrder.move(.notes, to: .notes, in: pages), pages)
-        XCTAssertEqual(VesperGridOrder.move(.home, to: .notes, in: pages), pages)
-        XCTAssertEqual(VesperGridOrder.move(.notes, to: .home, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.dates, to: .dates, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.home, to: .dates, in: pages), pages)
+        XCTAssertEqual(VesperGridOrder.move(.dates, to: .home, in: pages), pages)
     }
 }
 
@@ -306,9 +367,87 @@ extension SharedContentTests {
 }
 
 @MainActor final class BubbleInteractionTests: XCTestCase {
+    func testWatchTextIsNotRenderedAsLegacyPoke() {
+        let watchText: JSONValue = .object([
+            "id": .string("poke:fixture:tap"), "role": .string("user"), "content": .string("在手表上发的文字"),
+            "metadata": .object(["companionPokeId": .string("fixture"), "source": .string("watch"), "watchMessage": .bool(true)])
+        ])
+        XCTAssertNil(ChatPokeNotice.target(watchText))
+        XCTAssertNil(ChatPokeNotice.text(watchText, agentName: "Ash"))
+        var actualPoke = watchText
+        actualPoke["metadata"]["watchMessage"] = .null
+        XCTAssertEqual(ChatPokeNotice.target(actualPoke), "agent")
+    }
+
+    func testPokeNoticeIsCompactCenteredAndKeepsNormalReplyBubble() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        defer { previous?.makeKeyAndVisible() }
+        let store = AppStore(); store.token = ""
+        let chat = ChatSession(), menu = ChatActionMenu()
+        let tap: JSONValue = .object(["id": .string("poke:fixture:tap"), "role": .string("user"), "status": .string("delivered"),
+            "content": .string("（我在锁屏上轻轻拍了拍你。）"), "metadata": .object(["companionPokeId": .string("fixture")])])
+        let reply: JSONValue = .object(["id": .string("poke:fixture:reply"), "role": .string("agent"), "status": .string("delivered"),
+            "content": .string("怎么啦，宝贝。"), "metadata": .object(["companionPokeId": .string("fixture")])])
+        var noticeFrame = CGRect.zero
+        func row(_ record: JSONValue) -> some View {
+            ChatMessageRow(message: record, mediaMessages: [], activities: [], liveEvents: [], isLive: false,
+                replyIsRunning: false, favorite: false, saving: false, busy: false, highlighted: false,
+                onFavorite: {}, onRemember: {}, onDelete: {}, store: store, chat: chat, conversationID: chat.conversationID,
+                pokeText: ChatPokeNotice.text(record, agentName: "Ash"))
+        }
+        let root = ZStack {
+            Color.white
+            VStack(spacing: 22) {
+                row(tap).onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { noticeFrame = $0 }
+                row(reply)
+                Spacer()
+            }.padding(.horizontal, 20).padding(.top, 120)
+        }.foregroundStyle(VesperTheme.ink).environmentObject(menu)
+        let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 600)
+        let host = UIHostingController(rootView: root); window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await Task.sleep(for: .milliseconds(350)); host.view.layoutIfNeeded()
+        XCTAssertEqual(noticeFrame.midX, window.bounds.midX, accuracy: 1)
+        XCTAssertGreaterThan(noticeFrame.height, 10)
+        XCTAssertLessThan(noticeFrame.height, 30, "A tap is a small notice, not a padded chat bubble")
+        let preview = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        try preview.pngData()?.write(to: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("vesper-poke-layout.png"))
+    }
     private func message(_ text: String, role: String = "agent") -> JSONValue {
         .object(["id": .string("original"), "conversationId": .string("room"), "role": .string(role), "content": .string(text),
                  "createdAt": .string("2026-10-07T10:35:00Z"), "status": .string("delivered")])
+    }
+    func testConversationalSentencesKeepQuotedWordsAndOriginalRecord() throws {
+        let sentences = ["这张照片我看到了。", "你说的“等一下！我找找。”我也记着。", "不着急！！", "我等你。"]
+        let text = sentences.joined(), original = message(text)
+        let parts = ChatBubbles.textParts(original)
+        XCTAssertEqual(parts.map { $0["content"].string }, sentences)
+        XCTAssertEqual(parts.map { $0["content"].string }.joined(), text)
+        XCTAssertEqual(original["content"].string, text)
+        XCTAssertTrue(parts.allSatisfy { $0["metadata"]["sourceMessageId"].string == original.id })
+        XCTAssertEqual(ChatBubbles.textParts(message(text, role: "user")).count, 1)
+        let saved = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(ChatBubbles.textParts(saved), parts)
+    }
+    func testCompletedBubblesStayStableWhileStreamingAndStructuresStayIntact() {
+        let text = "我看到了。你说“这次可以了吗？”，我就去看了一眼。可以了！！我在这儿。"
+        var previous: [String] = []
+        for length in 1...text.count {
+            let next = ChatBubbles.texts(String(text.prefix(length)))
+            XCTAssertEqual(Array(next.prefix(max(0, previous.count - 1))), Array(previous.dropLast()))
+            previous = next
+        }
+        for block in ["- 第一项。第二项。", "1. 第一项。第二项。", "# 第一段。第二段。", "> 引用一句。再一句。", "*动作一句。动作两句。*", "看看[说明](https://example.com)。再试一下。", "https://example.com/download?file=note。文件在这里。", "运行 `print(1)`。然后保存。"] {
+            XCTAssertEqual(ChatBubbles.texts(block), [block])
+        }
+    }
+    func testOldQuoteFindsItsTextAfterSentenceLayoutChanges() {
+        let original = message("第一句。第二句。第三句。\n\n最后一句。")
+        let quote: JSONValue = .object(["messageId": .string(original.id), "partId": .string("original#text-1"), "text": .string("最后一句。")])
+        XCTAssertEqual(ChatBubbles.quoteTarget(quote, original: original), "original#text-3")
+        var spanning = quote; spanning["text"] = .string("第一句。第二句。")
+        XCTAssertEqual(ChatBubbles.quoteTarget(spanning, original: original), original.id)
     }
     func testParagraphsKeepMarkdownAndOriginalHistoryIntact() {
         let prose = "第一句。\n\n第二段，放在一起。\n还有一句。\n\n```swift\nlet a = 1\n\nprint(a)\n```"
@@ -368,7 +507,7 @@ extension SharedContentTests {
             let original = message("这张好安静。\n\n像把今天的风也留住了。")
             let row = ChatMessageRow(message: original, mediaMessages: [], activities: [], liveEvents: [], isLive: false,
                                      replyIsRunning: false, favorite: false, saving: false, busy: false, highlighted: false,
-                                     onFavorite: {}, onRemember: {}, onDelete: {}, onReply: { _ in invoked = true })
+                                     onFavorite: {}, onRemember: {}, onDelete: {}, onReply: { _ in invoked = true }, store: store, chat: chat, conversationID: chat.conversationID)
             let root = ZStack {
                 Background()
                 VStack {
@@ -427,7 +566,7 @@ extension BubbleInteractionTests {
                 VStack(spacing: 12) {
                     ForEach([first, second]) { message in
                         ChatMessageRow(message: message, mediaMessages: [], activities: [], liveEvents: [], isLive: false,
-                            replyIsRunning: false, favorite: false, saving: false, busy: false, highlighted: false, onFavorite: {}, onRemember: {}, onDelete: {})
+                            replyIsRunning: false, favorite: false, saving: false, busy: false, highlighted: false, onFavorite: {}, onRemember: {}, onDelete: {}, store: store, chat: chat, conversationID: chat.conversationID)
                     }
                     HStack {
                         Spacer(minLength: 42)

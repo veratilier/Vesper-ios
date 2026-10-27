@@ -101,11 +101,34 @@ import XCTest
         await eventually { receipt != nil }
         _ = await value.upsert("notes", item: row("one", "Second edit"))
         receipt?.resume(returning: .object(["ok": .bool(true)]))
-        await eventually { !value.syncing }
+        await eventually { value.pendingDocuments.isEmpty }
         XCTAssertEqual(value.document("notes").array[0]["text"].string, "Second edit")
-        await value.syncPendingDocuments()
-        XCTAssertTrue(value.pendingDocuments.isEmpty)
         XCTAssertEqual(remote.array[0]["text"].string, "Second edit")
+    }
+
+    func testNewDocumentDuringUploadSyncsWithoutAnotherTrigger() async throws {
+        try seed(["notes": .array([row("one", "Before")]), "todos": .array([])])
+        var remote: [String: JSONValue] = ["notes": .array([row("one", "Before")]), "todos": .array([])]
+        var receipt: CheckedContinuation<JSONValue, Never>?
+        var first = true
+        let value = store { _, path, method, body in
+            if method == "GET" {
+                let key = String(path.split(separator: "=").last ?? "")
+                return .object(["value": remote[key] ?? .null])
+            }
+            let key = body!["key"].string
+            remote[key] = body!["value"]
+            if first { first = false; return await withCheckedContinuation { receipt = $0 } }
+            return .object(["ok": .bool(true)])
+        }
+        defer { value.token = "" }
+        _ = await value.upsert("notes", item: row("one", "First edit"))
+        await eventually { receipt != nil }
+        _ = await value.upsert("todos", item: row("two", "New task"))
+        receipt?.resume(returning: .object(["ok": .bool(true)]))
+        await eventually { value.pendingDocuments.isEmpty }
+        XCTAssertEqual(remote["todos"]?.array.first?["text"].string, "New task")
+        XCTAssertTrue(try disk.load(client)!.pending.isEmpty)
     }
 
     func testAccountSwitchRejectsLateReadsAndKeepsSeparateLocalReplicas() async throws {

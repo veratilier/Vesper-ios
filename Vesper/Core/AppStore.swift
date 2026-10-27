@@ -1,20 +1,214 @@
 import SwiftUI
 import CryptoKit
+import Combine
+
+enum VesperBackend: String, CaseIterable, Identifiable {
+    case vps, mac
+    var id: String { rawValue }
+    var title: String { self == .vps ? "VPS" : "MAC" }
+    var credentialAccount: String { self == .vps ? "device-token" : "mac-backend-device-token" }
+    func key(_ legacy: String) -> String { self == .vps ? legacy : "mac-backend." + legacy }
+}
+struct BackendConnection: Equatable {
+    var baseURL: String
+    var historyURL: String
+    var socketURL: String
+    static func load(_ backend: VesperBackend, defaults: UserDefaults = .standard) -> Self {
+        Self(baseURL: defaults.string(forKey: backend.key("apiURL")) ?? (backend == .vps ? "https://api.vesper.r-vera.com" : "https://mac-vesper.r-vera.com"),
+             historyURL: defaults.string(forKey: backend.key("historyURL")) ?? (backend == .vps ? "https://codex.r-vera.com/history" : "https://mac-vesper.r-vera.com/history"),
+             socketURL: defaults.string(forKey: backend.key("socketURL")) ?? (backend == .vps ? "wss://codex.r-vera.com" : "wss://mac-vesper.r-vera.com/chat"))
+    }
+    func validate() throws {
+        _ = try APIClient.validatedURL(baseURL, path: "api/state")
+        _ = try APIClient.validatedURL(historyURL, path: "conversations")
+        guard let url = URLComponents(string: socketURL), url.scheme == "wss", url.host != nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw ServiceError(message: "Enter a valid WSS chat address without a token in the URL.")
+        }
+    }
+    func save(_ backend: VesperBackend, defaults: UserDefaults = .standard) {
+        defaults.set(baseURL, forKey: backend.key("apiURL")); defaults.set(historyURL, forKey: backend.key("historyURL")); defaults.set(socketURL, forKey: backend.key("socketURL"))
+    }
+}
+
+/// Both live sessions stay owned by the app while the visible window changes.
+@MainActor final class ChatBackendWorkspace: ObservableObject {
+    struct Runtime {
+        let store: AppStore
+        let chat: ChatSession
+        let inbox: ChatInbox
+    }
+    let vps: Runtime
+    let mac: Runtime
+    @Published private(set) var selectedBackend = VesperBackend.vps
+    @Published private(set) var incomingBackend: VesperBackend?
+    private var openWindows: Set<VesperBackend> = []
+    private var observations: Set<AnyCancellable> = []
+    init(vpsStore: AppStore, vpsChat: ChatSession, macStore: AppStore? = nil, macChat: ChatSession? = nil) {
+        vps = Runtime(store: vpsStore, chat: vpsChat, inbox: .shared)
+        mac = Runtime(store: macStore ?? AppStore(backend: .mac), chat: macChat ?? ChatSession(), inbox: ChatInbox())
+        #if !targetEnvironment(macCatalyst)
+        VesperCompanionPokeBridge.handle = { [weak self] key in
+            guard let self else { throw ServiceError(message: "暂时无法连接聊天。") }
+            try await CompanionPokeDelivery.send(avatarKey: key, workspace: self)
+        }
+        let watchStore = vps.store
+        watchStore.$token.combineLatest(watchStore.$historyURL, watchStore.$documents)
+            .receive(on: RunLoop.main)
+            .sink { [weak watchStore] _, _, _ in
+                guard let watchStore else { return }
+                WatchSyncBridge.shared.publish(store: watchStore)
+            }.store(in: &observations)
+        #endif
+        for backend in [VesperBackend.vps] {
+            #if !targetEnvironment(macCatalyst)
+            let contactStore = runtime(backend).store
+            contactStore.$documents.receive(on: RunLoop.main).sink { [weak contactStore] _ in
+                guard let contactStore else { return }
+                CompanionLiveActivity.shared.update(store: contactStore)
+                CallLiveActivity.shared.updateName(contactStore.agentDisplayName, backend: backend)
+            }.store(in: &observations)
+            #endif
+            runtime(backend).chat.$incomingCall.sink { [weak self] incoming in
+                if incoming {
+                    self?.incomingBackend = backend
+                    #if os(iOS) && !targetEnvironment(macCatalyst)
+                    if let name = self?.runtime(backend).store.agentDisplayName {
+                        SystemIncomingCall.shared.present(backend: backend, name: name)
+                    }
+                    #endif
+                } else {
+                    if self?.incomingBackend == backend { self?.incomingBackend = nil }
+                    #if os(iOS) && !targetEnvironment(macCatalyst)
+                    SystemIncomingCall.shared.dismissPending(for: backend)
+                    #endif
+                }
+            }.store(in: &observations)
+        }
+    }
+    func runtime(_ backend: VesperBackend) -> Runtime { backend == .vps ? vps : mac }
+    func isOpen(_ backend: VesperBackend) -> Bool { openWindows.contains(backend) }
+    func setOpen(_ open: Bool, backend: VesperBackend) {
+        if open { openWindows.insert(backend) } else { openWindows.remove(backend) }
+    }
+    func select(_ backend: VesperBackend, openChat: Bool = false) throws {
+        guard backend == .vps else { throw ServiceError(message: "The Mac backend is disabled.") }
+        guard backend != selectedBackend else { return }
+        guard !NativeCallPresentation.shared.presented, !vps.chat.callActive, !mac.chat.callActive else {
+            throw ServiceError(message: "Finish the call before opening another chat window.")
+        }
+        if openChat, runtime(backend).store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ServiceError(message: "\(backend.title) connection is not configured.")
+        }
+        setOpen(openChat, backend: backend)
+        selectedBackend = backend
+    }
+    func sceneChanged(active: Bool) {
+        #if !targetEnvironment(macCatalyst)
+        if active {
+            CompanionLiveActivity.shared.update(store: vps.store, rotateGreeting: true)
+            WatchSyncBridge.shared.publish(store: vps.store)
+        }
+        #endif
+        vps.chat.sceneChanged(active: active)
+    }
+}
+
+private struct ChatBackendWorkspaceKey: EnvironmentKey {
+    static let defaultValue: ChatBackendWorkspace? = nil
+}
+extension EnvironmentValues {
+    var chatWorkspace: ChatBackendWorkspace? {
+        get { self[ChatBackendWorkspaceKey.self] }
+        set { self[ChatBackendWorkspaceKey.self] = newValue }
+    }
+}
+
+@MainActor final class BackendReplicaCopy: ObservableObject {
+    @Published private(set) var busy = false
+    @Published private(set) var status = ""
+    func copyToMac(connection: BackendConnection, token: String) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        status = "Checking both backends…"
+        do {
+            try connection.validate()
+            let original = BackendConnection.load(.vps)
+            let source = APIClient(baseURL: original.baseURL, historyURL: original.historyURL, token: try CredentialStore.load(account: VesperBackend.vps.credentialAccount))
+            let target = APIClient(baseURL: connection.baseURL, historyURL: connection.historyURL, token: token.trimmingCharacters(in: .whitespacesAndNewlines))
+            let health = try await target.request("/api/backend")
+            guard health["backend"].string == "mac" else { throw ServiceError(message: "The destination is not the Mac backend.") }
+            let sourceID = SHA256.hash(data: Data((original.baseURL + "\n" + original.historyURL).utf8)).map { String(format: "%02x", $0) }.joined()
+            let started = try await target.request("/api/backend/import", method: "POST", body: .object(["action": .string("begin"), "source": .string(sourceID)]))
+            let job = started["jobId"].string
+            guard !job.isEmpty else { throw ServiceError(message: "The Mac did not create an import session.") }
+            func append(_ kind: String, _ rows: [JSONValue]) async throws {
+                // Small batches stay within both services’ request bounds.
+                for offset in stride(from: 0, to: rows.count, by: 10) {
+                    try Task.checkCancellation()
+                    _ = try await target.request("/api/backend/import", method: "POST", body: .object(["action": .string("append"), "jobId": .string(job), "kind": .string(kind), "rows": .array(Array(rows[offset..<min(offset + 10, rows.count)]))]))
+                }
+            }
+            let listing = try await source.request("/conversations", history: true)
+            guard case .array(let rooms) = listing["conversations"], rooms.count < 100 else { throw ServiceError(message: "The VPS room list is incomplete. The previous Mac copy was kept.") }
+            var messageCount = 0
+            for (index, room) in rooms.enumerated() {
+                try Task.checkCancellation()
+                guard !room.id.isEmpty else { throw ServiceError(message: "A VPS conversation is missing its ID.") }
+                status = "Copying conversation \(index + 1)/\(rooms.count)…"
+                try await append("room", [room])
+                var cursor = "", seen: Set<String> = []
+                while true {
+                    var query = URLComponents(); query.queryItems = [URLQueryItem(name: "latest", value: "1"), URLQueryItem(name: "limit", value: "100")]
+                    if !cursor.isEmpty { query.queryItems?.append(URLQueryItem(name: "before", value: cursor)) }
+                    let page = try await source.request("/conversations/\(room.id)?" + (query.percentEncodedQuery ?? ""), history: true)
+                    try ChatSession.validateHistoryRecord(page, expectedID: room.id)
+                    guard case .array(let messages) = page["messages"] else { throw ServiceError(message: "Invalid source history page.") }
+                    let originals = messages.map { item -> JSONValue in var item = item; item["conversationId"] = .string(room.id); return item }
+                    try await append("message", originals); messageCount += messages.count
+                    if !page["hasMore"].bool { break }
+                    cursor = page["before"].string
+                    guard !cursor.isEmpty, seen.insert(cursor).inserted else { throw ServiceError(message: "The VPS history cursor stopped advancing. Previous Mac copy was kept.") }
+                }
+            }
+            var offset = 0
+            while true {
+                status = "Copying shared memories (\(offset))…"
+                var query = URLComponents(); query.queryItems = [URLQueryItem(name: "path", value: "/api/memories?limit=100&offset=\(offset)&include_superseded=false")]
+                let page = try await source.request("/api/shared-memory?" + (query.percentEncodedQuery ?? ""))
+                guard case .array(let rows) = page["items"], case .number(let total) = page["total"] else { throw ServiceError(message: "Shared Memory did not return a complete page.") }
+                try await append("memory", rows); offset += rows.count
+                if offset >= Int(total) { break }
+                guard !rows.isEmpty else { throw ServiceError(message: "Shared Memory pagination was incomplete.") }
+            }
+            let result = try await target.request("/api/backend/import", method: "POST", body: .object(["action": .string("commit"), "jobId": .string(job)]))
+            guard result["ok"].bool else { throw ServiceError(message: "Mac did not confirm the copy.") }
+            status = "Copied \(messageCount) messages and \(offset) memories. Originals stay on VPS; Mac can retrieve this copy."
+        } catch { status = "Copy not completed. Previous copy kept. " + error.localizedDescription }
+    }
+}
 
 @MainActor final class AppStore: ObservableObject {
     private let loadState: (APIClient) async throws -> JSONValue
+    private let loadHistoryHealth: (APIClient) async throws -> JSONValue
     private let retryDelay: () async throws -> Void
     private let disk: LocalDocumentDisk
     private let requestDocument: (APIClient, String, String, JSONValue?) async throws -> JSONValue
-    init(loadState: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/api/state") },
+    init(backend: VesperBackend = .vps,
+         loadState: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/api/state") },
+         loadHistoryHealth: @escaping (APIClient) async throws -> JSONValue = { try await $0.request("/health", history: true) },
          retryDelay: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
          disk: LocalDocumentDisk = LocalDocumentDisk(),
          requestDocument: @escaping (APIClient, String, String, JSONValue?) async throws -> JSONValue = { try await $0.request($1, method: $2, body: $3) }) {
         self.loadState = loadState
+        self.loadHistoryHealth = loadHistoryHealth
         self.retryDelay = retryDelay
         self.disk = disk
         self.requestDocument = requestDocument
-        do { token = try CredentialStore.load() } catch { connectionError = error.localizedDescription }
+        activeBackend = backend
+        let saved = BackendConnection.load(activeBackend)
+        baseURL = saved.baseURL; historyURL = saved.historyURL; socketURL = saved.socketURL
+        do { token = try CredentialStore.load(account: activeBackend.credentialAccount) } catch { connectionError = error.localizedDescription }
         cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
         restoreLocalDocuments()
         // Remove the former NetEase login even when the server is offline.
@@ -42,9 +236,11 @@ import CryptoKit
     @Published private(set) var lastSyncedAt: Date?
     var canEnter: Bool { connected || (hasLocalData && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
     private var syncTask: Task<Void, Never>?
+    private var syncRequested = false
     private var identityGeneration = UUID()
     @Published var legacyMusicCleanupStatus: String?
     @Published var connectionError: String?
+    @Published private(set) var activeBackend: VesperBackend = .vps
     @Published var baseURL: String = UserDefaults.standard.string(forKey: "apiURL") ?? "https://api.vesper.r-vera.com" {
         didSet { if oldValue != baseURL { restoreLocalDocuments() } }
     }
@@ -54,10 +250,23 @@ import CryptoKit
         didSet { if oldValue != token { restoreLocalDocuments() } }
     }
     var api: APIClient { APIClient(baseURL: baseURL, historyURL: historyURL, token: token) }
+    var agentDisplayName: String {
+        let name = document("profile")["agentName"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Rowan" : name
+    }
+    func personDisplayName(_ role: String) -> String { role == "Rowan" ? agentDisplayName : role }
+    /// Format app-owned receipt labels; never apply this to message or document bodies.
+    func personLabel(_ label: String) -> String { label.replacingOccurrences(of: "Rowan", with: agentDisplayName) }
+    func resolvedAgentInstructions(_ saved: String?) -> String {
+        let legacy = "You are Rowan, Vera’s familiar companion. Speak naturally in Chinese."
+        if let saved, saved != legacy,
+           saved != legacy + " Use Vesper’s built-in tools for its data." { return saved }
+        return "You are \(agentDisplayName), Vera’s familiar companion. Speak naturally in Chinese. Use Vesper’s built-in tools for its data."
+    }
     func document(_ key: String) -> JSONValue { documents[key] ?? (key == "profile" ? cachedProfile : .null) }
     private func restoreLocalDocuments() {
         identityGeneration = UUID()
-        syncTask?.cancel(); syncTask = nil; syncing = false
+        syncTask?.cancel(); syncTask = nil; syncRequested = false; syncing = false
         connected = false; hasLocalData = false
         documents = [:]; pendingDocuments = [:]; lastSyncedAt = nil; syncError = nil; conflictingDocuments = []
         cachedProfile = ProfileDisplayCache.load(baseURL: baseURL, token: token)
@@ -68,19 +277,23 @@ import CryptoKit
             }
         } catch { syncError = "Local data could not be read. Reconnect to restore the cloud copy." }
     }
-    private func persist(_ values: [String: JSONValue], pending: [String: PendingDocument], syncedAt: Date?) throws {
-        try disk.save(LocalDocumentSnapshot(documents: values, pending: pending, lastSync: syncedAt), api: api)
+    private func persist(_ values: [String: JSONValue], pending: [String: PendingDocument], syncedAt: Date?) async throws {
+        try await disk.saveOffMain(LocalDocumentSnapshot(documents: values, pending: pending, lastSync: syncedAt), api: api)
     }
     /// User-authored collections can be saved offline. Commands, credentials and
     /// verified room-pointer changes still require a confirmed server response.
     static let localDocumentKeys: Set<String> = ["notes", "todos", "anniversaries", "diary", "favorites", "readingRoom", "music", "musicFavorites", "musicPlaylists", "musicAnnotations"]
     func scheduleSync() {
-        guard syncTask == nil, !pendingDocuments.isEmpty else { return }
+        guard !pendingDocuments.isEmpty else { return }
+        if syncTask != nil { syncRequested = true; return }
+        syncRequested = false
         let generation = identityGeneration
         syncTask = Task { [weak self] in
             guard let self else { return }
             await self.syncPendingDocuments()
-            if self.identityGeneration == generation { self.syncTask = nil }
+            guard self.identityGeneration == generation else { return }
+            self.syncTask = nil
+            if self.syncRequested && !self.saving { self.scheduleSync() }
         }
     }
     func syncPendingDocuments() async {
@@ -107,11 +320,12 @@ import CryptoKit
                     pending[key] = PendingDocument(base: merged, value: rebased); values[key] = rebased
                 } else { pending.removeValue(forKey: key); values[key] = merged }
                 let now = Date()
-                try persist(values, pending: pending, syncedAt: now)
+                let revision = documentRevision
+                try await persist(values, pending: pending, syncedAt: now)
+                guard generation == identityGeneration, revision == documentRevision else { continue }
                 documentRevision += 1
                 documents = values; pendingDocuments = pending; lastSyncedAt = now; hasLocalData = true
                 conflictingDocuments.remove(key)
-                if key == "notes" { WidgetSync.notes(document(key)) }
             } catch {
                 guard generation == identityGeneration, !Task.isCancelled else { return }
                 if error is DocumentMerge.Conflict { conflictingDocuments.insert(key) }
@@ -130,7 +344,8 @@ import CryptoKit
                 let merged = try DocumentMerge.apply(base: selected.base, local: selected.value, remote: latest["value"], preferLocal: true) ?? .null
                 pending[key] = PendingDocument(base: latest["value"], value: merged); values[key] = merged
             } else { pending.removeValue(forKey: key); values[key] = latest["value"] }
-            try persist(values, pending: pending, syncedAt: lastSyncedAt)
+            try await persist(values, pending: pending, syncedAt: lastSyncedAt)
+            guard generation == identityGeneration else { return }
             documentRevision += 1; pendingDocuments = pending; documents = values; syncError = nil; conflictingDocuments.remove(key)
             scheduleSync()
         } catch { if generation == identityGeneration { syncError = error.localizedDescription } }
@@ -145,16 +360,55 @@ import CryptoKit
         connectionError = nil
         do {
             guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ServiceError(message: "Add your device token in Settings to connect.") }
-            _ = try APIClient.validatedURL(baseURL, path: "api/state")
-            _ = try APIClient.validatedURL(historyURL, path: "conversations")
-            guard let s = URL(string: socketURL), s.scheme == "wss", s.host != nil else { throw ServiceError(message: "Enter a valid WSS chat address.") }
-            try CredentialStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines))
-            token = try CredentialStore.load()
-            UserDefaults.standard.set(baseURL, forKey: "apiURL")
-            UserDefaults.standard.set(historyURL, forKey: "historyURL")
-            UserDefaults.standard.set(socketURL, forKey: "socketURL")
+            let connection = BackendConnection(baseURL: baseURL, historyURL: historyURL, socketURL: socketURL)
+            try connection.validate()
+            try CredentialStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines), account: activeBackend.credentialAccount)
+            token = try CredentialStore.load(account: activeBackend.credentialAccount)
+            connection.save(activeBackend)
             await refresh()
         } catch { connectionError = error.localizedDescription }
+    }
+    /// Each store belongs to one backend. Saving cannot retarget another chat window.
+    func saveConnection(connection: BackendConnection, credential: String, canSave: () -> Bool = { true }) async -> Bool {
+        guard !loading, !saving, !syncing, canSave() else { connectionError = "Finish this window’s current reply, call or save before changing its connection."; return false }
+        let backend = activeBackend
+        let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try connection.validate()
+            guard !credential.isEmpty else { throw ServiceError(message: "Enter this backend’s own device token.") }
+            let candidate = APIClient(baseURL: connection.baseURL, historyURL: connection.historyURL, token: credential)
+            loading = true
+            defer { loading = false }
+            let state = try await loadState(candidate)
+            guard case .object(let docs) = state["documents"] else { throw ServiceError(message: "Invalid backend response.") }
+            if backend == .mac {
+                guard state["backend"]["backend"].string == "mac", !state["backend"]["backendId"].string.isEmpty else { throw ServiceError(message: "This address did not identify itself as the Mac backend.") }
+                let history = try await loadHistoryHealth(candidate)
+                guard history["backendId"] == state["backend"]["backendId"] else { throw ServiceError(message: "The history address belongs to a different backend.") }
+            }
+            guard canSave(), !saving, !syncing else { throw ServiceError(message: "Finish this window’s current reply or save before changing its connection.") }
+            try Task.checkCancellation()
+            try CredentialStore.save(credential, account: backend.credentialAccount)
+            connection.save(backend)
+            let changed = baseURL != connection.baseURL || historyURL != connection.historyURL || socketURL != connection.socketURL || token != credential
+            baseURL = connection.baseURL; historyURL = connection.historyURL; socketURL = connection.socketURL; token = credential
+            if changed { restoreLocalDocuments() }
+            // The candidate was already authenticated. Apply that snapshot in its own
+            // local scope rather than adding a second network failure after activation.
+            connected = true; connectionError = nil
+            await applyRemoteDocuments(docs)
+            return true
+        } catch { connectionError = error.localizedDescription; return false }
+    }
+    private func applyRemoteDocuments(_ docs: [String: JSONValue]) async {
+        var values = docs.mapValues { $0["value"] }
+        for (key, pending) in pendingDocuments { values[key] = pending.value }
+        documents = values
+        let now = Date()
+        do { try await persist(values, pending: pendingDocuments, syncedAt: now); hasLocalData = true; lastSyncedAt = now }
+        catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
+        rememberProfile(documents["profile"] ?? .null)
+        scheduleSync()
     }
     private var documentRevision = 0
     private var cleaningLegacyMusic = false
@@ -193,14 +447,7 @@ import CryptoKit
                 connected = true
                 // A read started before a save must never replace the saved document.
                 guard revision == documentRevision, !saving else { return }
-                var values = docs.mapValues { $0["value"] }
-                for (key, pending) in pendingDocuments { values[key] = pending.value }
-                documents = values
-                do { try persist(values, pending: pendingDocuments, syncedAt: Date()); hasLocalData = true; lastSyncedAt = Date() }
-                catch { syncError = "Cloud data loaded, but the local copy could not be saved." }
-                rememberProfile(documents["profile"] ?? .null)
-                WidgetSync.notes(document("notes"))
-                scheduleSync()
+                await applyRemoteDocuments(docs)
                 return
             } catch {
                 guard !Task.isCancelled, !(error is CancellationError),
@@ -292,15 +539,18 @@ import CryptoKit
             }
         }
         if Self.localDocumentKeys.contains(key), !verifySavedValue, hasLocalData {
+            await acquireSave()
+            defer { releaseSave() }
+            guard invocationGeneration == identityGeneration else { return false }
             do {
                 let value = try change(document(key))
-                guard value != document(key) else { return true }
+                if key != "readingRoom", value == document(key) { return true }
                 var pending = pendingDocuments, values = documents
                 pending[key] = PendingDocument(base: pending[key]?.base ?? document(key), value: value)
                 values[key] = value
-                try persist(values, pending: pending, syncedAt: lastSyncedAt)
+                try await persist(values, pending: pending, syncedAt: lastSyncedAt)
+                guard invocationGeneration == identityGeneration else { return false }
                 documentRevision += 1; documents = values; pendingDocuments = pending
-                if key == "notes" { WidgetSync.notes(value) }
                 scheduleSync()
                 return true
             } catch { if reportErrors { self.error = error.localizedDescription }; return false }
@@ -322,9 +572,9 @@ import CryptoKit
             }
             guard generation == identityGeneration else { return false }
             documents[key] = pendingDocuments[key]?.value ?? value
-            do { try persist(documents, pending: pendingDocuments, syncedAt: lastSyncedAt); hasLocalData = true }
+            do { try await persist(documents, pending: pendingDocuments, syncedAt: lastSyncedAt); hasLocalData = true }
             catch { syncError = "Saved in the cloud, but the local copy could not be saved." }
-            if key == "profile" { rememberProfile(value) }; if key == "notes" { WidgetSync.notes(value) }; return true
+            if key == "profile" { rememberProfile(value) }; return true
         } catch { if reportErrors, generation == identityGeneration { self.error = error.localizedDescription }; return false }
     }
     func upsert(_ key: String, item: JSONValue) async -> Bool {

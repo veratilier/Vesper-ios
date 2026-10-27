@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).refresh</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -35,20 +39,34 @@
 	<true/>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Show your Apple Music library and play songs you choose in Vesper.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Let Ash check nearby Bluetooth accessories when you ask in Vesper.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Show your upcoming events and save events you create in Vesper.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Take a photo or share camera frames during a call you start.</string>
+	<key>NSFocusStatusUsageDescription</key>
+	<string>Let Ash check whether Focus is silencing notifications when you ask in Vesper.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Monitor the places you save, including home or school, and let Ash greet you after an arrival even when Vesper is closed. Only the place name and arrival signal are sent to your Vesper server; coordinates remain on this iPhone.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>Show local weather and share location from this Mac only when you request it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Show local weather and share a fresh, precise location with Rowan when you request location help in chat. The coordinates, time and accuracy become part of your conversation.</string>
+	<string>Show local weather and share a fresh, precise location with your companion when you request location help in chat. The coordinates, time and accuracy become part of your conversation.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Use voice input and calls when you tap the microphone.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Let Ash check a recent motion activity such as walking or riding in a vehicle when you ask.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save the chat screenshots you choose to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Let Ash browse and view the iPhone photos you authorize through Vesper. Photos he opens become part of the chat tool result.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Show your reminder lists and save or complete reminders you choose in Vesper.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Share the Mac display you choose with your Vesper chat companion.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Convert your speech into messages for Rowan.</string>
+	<string>Convert your speech into messages for your companion.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Ballet.ttf</string>
@@ -61,6 +79,9 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>voip</string>
+		<string>processing</string>
+		<string>fetch</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

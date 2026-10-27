@@ -47,7 +47,7 @@ enum ChatSpeechRecognition {
         defer { processing = false }
         guard allowed else { error = "Allow microphone access in Settings."; return }
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
             try AVAudioSession.sharedInstance().setActive(true)
             let target = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
             url = target
@@ -93,6 +93,11 @@ enum ChatSpeechRecognition {
         try Task.checkCancellation()
         guard !text.isEmpty else { throw ServiceError(message: "暂时未能识别这条语音，可以再次长按转文字。") }
         return text
+    }
+    func transcribeVideoAudio(_ url: URL) async -> String {
+        let allowed = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) } }
+        guard allowed, !Task.isCancelled else { return "" }
+        return await transcribe(url, locale: ChatSpeechRecognition.recordingLocale)
     }
     private func transcribe(_ url: URL, locale: Locale, contextualStrings: [String] = []) async -> String {
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return "" }

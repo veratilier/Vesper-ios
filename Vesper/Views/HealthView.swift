@@ -471,6 +471,7 @@ enum SleepDetails {
 }
 
 struct HealthView: View {
+    @EnvironmentObject private var store: AppStore
     @StateObject private var reader = HealthReader()
     @Environment(\.scenePhase) private var phase
     @State private var showingAccessGuide = false
@@ -478,7 +479,7 @@ struct HealthView: View {
         PermissionPage(title: "Health") {
             PermissionPanel {
                 Label("Health access", systemImage: "heart.fill").font(.headline)
-                Text("Choose the categories Vesper may read. Rowan can use the summaries you request in chat.").foregroundStyle(VesperTheme.muted)
+                Text("Choose the categories Vesper may read. \(store.agentDisplayName) can use the summaries you request in chat.").foregroundStyle(VesperTheme.muted)
                 Button("Change access") {
                     Task {
                         await reader.checkAuthorizationRequest()
